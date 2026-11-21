@@ -3398,7 +3398,7 @@ async function workstation(bot, task, name, goal) {
     rememberWorkstation(bot, goal, name, q);
   }
   // None in the 5x5 round the feet: an open, supported cell up to 8 off and
-  // 2 up or down, nearest first, walked to on foot with nothing dug or
+  // 2 up or down, in sight first, walked to on foot with nothing dug or
   // towered (workstation-access.js placeWorkstation), within the same three
   // placements. A station scope that starts a few blocks off, or a stand in
   // a doorway, had none in reach (rkhazh/jevcraft 45f4d5a3).
@@ -3409,7 +3409,11 @@ async function workstation(bot, task, name, goal) {
       const q = o.offset(dx, dy, dz);
       if (eligible(q)) sites.push(q);
     }
-    sites.sort((a, b) => a.distanceTo(bot.entity.position) - b.distanceTo(bot.entity.position));
+    // Nearest first among those in sight, then among those to walk to: eight
+    // hidden ones out of reach on foot (a cave below) took every try in
+    // workstation-access.js before a cell in sight was asked.
+    const near = q => q.distanceTo(bot.entity.position), inSight = new Set(sites.filter(q => openForStation(bot, q)).map(String));
+    sites.sort((a, b) => inSight.has(String(b)) - inSight.has(String(a)) || near(a) - near(b));
     if (sites.length) await require('./workstation-access').placeWorkstation(bot, task, name, sites, eligible, async (q, face) => {
       task.check();
       if (!stationCellOk(bot, goal, q)) return false;

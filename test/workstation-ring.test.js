@@ -61,3 +61,17 @@ test('a cell out of sight now is still one to walk to', () => {
   assert.equal(stationCellOk(bot, null, q), false, 'placed only where it is seen');
   assert.equal(stationCellOk(bot, null, q, { visibility: false }), true, 'a site to walk to');
 });
+
+test('the cells in sight are tried before those to walk to', async () => {
+  const { bot } = bridge();
+  // A post at (0, 64, 2), a torch on it: (0, 64, 3) and (0, 64, 4), the
+  // nearest, out of sight, and no cell open on the post.
+  bot.world.setBlockStateId(new Vec3(0, 64, 2), registry.blocksByName.stone.defaultState);
+  bot.world.setBlockStateId(new Vec3(0, 65, 2), registry.blocksByName.torch.defaultState);
+  const access = require('../src/workstation-access'), real = access.placeWorkstation;
+  let sites = [];
+  access.placeWorkstation = async (_bot, _task, _name, tried) => { sites = tried; throw new Error('sites taken'); };
+  try { await assert.rejects(workstation(bot, task, 'furnace', {}), /sites taken/); } finally { access.placeWorkstation = real; }
+  const seen = sites.map(q => stationCellOk(bot, null, q));
+  assert.ok(seen[0] && seen.includes(false) && seen.indexOf(false) === seen.lastIndexOf(true) + 1, sites.map((q, i) => `${q} ${seen[i]}`).join('; '));
+});
