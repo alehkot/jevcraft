@@ -473,6 +473,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   // A build parked on a block someone else put on its site is taken up
   // again by itself once that block is gone (siteChanged in work.js).
   let waitCheckedAt = 0;
+  // JEV_IDLE=wait: when the waiting bot was last in its shelter or in a hole (company.js routine).
+  let lastSheltered = 0;
   const idleTimer = setInterval(() => {
     const now = Date.now();
     if (ready && !pendingRequests && !launchingDream && (!active || active.idle) && now - waitCheckedAt > 5000) {
@@ -499,11 +501,21 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       // blocks and died twice in a minute. From dusk to dawn in the Overworld the
       // ordinary idle loop runs instead (it shelters), and is ended at sunrise.
       const t = bot.time?.timeOfDay, dark = bot.game?.dimension === 'overworld' && Number.isFinite(t) && t >= 12300 && t < 23500;
-      if (active?.idle && !dark && !relaunching) stop('interrupted').catch(console.error);
+      // Nor is the day waited out in the night's shelter. Ended at sunrise where
+      // it stood, the bot stayed sealed in its pocket until a player asked for
+      // something, out of sight four blocks under the grass (2026-11-21). The
+      // idle loop is let run on until the bot is out of the shelter and out of
+      // the ground, and twenty seconds more to finish the climb (company.js
+      // inShelter, holedUp, routine). It leaves by its own judgment, and is
+      // started for that when the bot comes back by day still in one.
+      const company = require('./company'), sheltered = !dark && (company.holedUp(bot) || company.inShelter(bot, survival));
+      if (sheltered) lastSheltered = now;
+      const own = company.routine({ dark, sheltered, sinceSheltered: now - lastSheltered });
+      if (active?.idle && own === 'end' && !relaunching) stop('interrupted').catch(console.error);
       else if (ready && !active && !relaunching && !launchingDream && !pendingRequests) {
         const standing = survival.state.paused ? null : dreamStore.read();
         if (standing?.dream && shouldLaunchDream(standing, store.read(), { ready: readyForDream(), resting: isSetAside(survival, 'dream_launch', standing.dream) })) launchDream(standing);
-        else if (dark && !survival.state.paused && !survival.state.idleBlocked) launchIdle();
+        else if (own === 'run' && !survival.state.paused && !survival.state.idleBlocked) launchIdle();
         else reactiveWait.tick().catch(err => console.error('[reactive wait]', err));
       }
     } else if (ready && !active && !relaunching && !launchingDream && !pendingRequests && !survival.state.paused && !survival.state.idleBlocked) launchIdle();

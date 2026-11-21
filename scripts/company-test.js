@@ -275,6 +275,60 @@ const call = (over = {}) => ({ kind: 'come', request: 'Jev come here', from: 'Ca
     assert.equal((await inPocket(call({ kind: 'follow', request: 'Jev follow me' }))).did, 'asked', 'following is as it was');
   });
 
+  await check('inside the pocket on record, and not when out of it or with none on record', async () => {
+    const s = scene({ at: [10.5, 60, 0.5] });
+    s.set(10, 60, 0, 'air'); s.set(10, 61, 0, 'air');
+    const refuge = { origin: { x: 10, y: 60, z: 0 }, dimension: 'overworld', createdAt: new Date().toISOString(), emergency: true, shaft: true, top: { x: 10, y: 64, z: 0 }, verifiedAt: Date.now() };
+    const survival = createSurvival(s.bot, { state: { shelters: [refuge] }, client: null });
+    assert.equal(company.inShelter(s.bot, survival), true);
+    // climbing out up its shaft is still inside, whatever the record says of keeping away
+    for (let y = 61; y <= 63; y++) { s.set(10, y, 0, 'air'); s.set(10, y + 1, 0, 'air'); s.bot.entity.position = new Vec3(10.5, y, 0.5); assert.equal(company.inShelter(s.bot, survival), true, `in the shaft at ${y}`); }
+    survival.state.shelters[0].avoidUntil = Date.now() + 60000;
+    s.bot.entity.position = new Vec3(10.5, 62, 0.5);
+    assert.equal(company.inShelter(s.bot, survival), true, 'marked to keep away from, and still in its shaft');
+    s.bot.entity.position = new Vec3(10.5, 64, 0.5);
+    assert.equal(company.inShelter(s.bot, survival), false, 'on the grass at the top of it');
+    s.bot.entity.position = new Vec3(11.5, 64, 0.5);
+    assert.equal(company.inShelter(s.bot, survival), false, 'beside it');
+    s.bot.entity.position = new Vec3(10.5, 60, 0.5);
+    assert.equal(company.inShelter(s.bot, createSurvival(s.bot, { state: { shelters: [] }, client: null })), false, 'no shelter on record');
+    assert.equal(company.inShelter(s.bot, null), false);
+    assert.equal(company.inShelter(s.bot, { state: { get shelters() { throw new Error('unreadable'); } } }), false);
+    s.bot.game.dimension = 'the_nether';
+    assert.equal(company.inShelter(s.bot, survival), false, 'another dimension');
+  });
+
+  await check('in a hole one block wide: in the pocket, up its shaft, one block deep; not on the grass, in a tunnel or where the world is not loaded', async () => {
+    const s = scene({ at: [10.5, 60, 0.5] });
+    for (let y = 60; y <= 63; y++) s.set(10, y, 0, 'air');
+    for (const y of [60, 61, 62, 63]) { s.bot.entity.position = new Vec3(10.5, y, 0.5); assert.equal(company.holedUp(s.bot), true, `feet at ${y}`); }
+    s.bot.entity.position = new Vec3(10.5, 64, 0.5);
+    assert.equal(company.holedUp(s.bot), false, 'on the grass');
+    // a tunnel leads off the bottom of it
+    s.set(11, 60, 0, 'air'); s.set(11, 61, 0, 'air');
+    s.bot.entity.position = new Vec3(10.5, 60, 0.5);
+    assert.equal(company.holedUp(s.bot), false, 'a side is open');
+    // glass and leaves are walls; grass in the next cell is not
+    const t = scene({ at: [0.5, 64, 0.5] });
+    for (const [dx, dz, of] of [[1, 0, 'glass'], [-1, 0, 'oak_leaves'], [0, 1, 'stone'], [0, -1, 'short_grass']]) t.set(dx, 64, dz, of);
+    assert.equal(company.holedUp(t.bot), false, 'grass on one side');
+    t.set(0, 64, -1, 'dirt');
+    assert.equal(company.holedUp(t.bot), true);
+    t.bot.entity.position = new Vec3(500.5, 64, 500.5);
+    assert.equal(company.holedUp(t.bot), false, 'not loaded');
+    assert.equal(company.holedUp(null), false);
+  });
+
+  await check('the bot\'s own routine while it waits: runs in the dark and in a shelter, finishes for twenty seconds once out, then ends', async () => {
+    const r = company.routine;
+    assert.equal(r({ dark: true, sheltered: false, sinceSheltered: 1e9 }), 'run', 'night in the open');
+    assert.equal(r({ dark: false, sheltered: true, sinceSheltered: 0 }), 'run', 'sunrise in the pocket, or back by day in one');
+    assert.equal(r({ dark: false, sheltered: false, sinceSheltered: 500 }), 'finish', 'climbing out, the record gone');
+    assert.equal(r({ dark: false, sheltered: false, sinceSheltered: company.OUT_MS - 1 }), 'finish');
+    assert.equal(r({ dark: false, sheltered: false, sinceSheltered: company.OUT_MS }), 'end', 'out: the waiting begins');
+    assert.equal(r({ dark: false, sheltered: false, sinceSheltered: 1e12 }), 'end', 'never sheltered: sunrise after a night stayed up, as before');
+  });
+
   console.log(`\n${passed} checks passed`);
   process.exit(0);   // the decision layer's unanswered questions keep their timers
 })().catch(err => { console.error(err); process.exit(1); });
