@@ -245,8 +245,11 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   let pending = Promise.resolve();
   let generation = 0;
   let requestController = new AbortController();
+  // What the bot has in hand changed: a stop, a death, a new job. A shot answer asked before it is dropped (shot-reflex.js ask).
+  const nextActivity = () => { bot._requestActivityEpoch = (bot._requestActivityEpoch || 0) + 1; };
   function invalidateRequests() {
     generation++;
+    nextActivity();
     requestController.abort(new Error('Player request interrupted'));
     requestController = new AbortController();
   }
@@ -275,6 +278,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   }
 
   function launch(goal) {
+    nextActivity();
     reactiveWait?.cancel().catch(() => {}); bedtime?.cancel().catch(() => {});
     // A request ends the scare a walk back was owed for (company.js): the player has said what comes next.
     if (!goal.back) require('./company').letGo(bot);

@@ -966,32 +966,42 @@ function ask(bot, survival, warned) {
   }
   const state = shotState(bot, warned);
   const goal = bot._survivalGoal || bot._goal || {}, save = bot._goalSave || (() => {});
-  const only = { get cancelled() { return false; }, label: 'shot_answer', check() {} };
+  // Asked under what is in hand: an answer that comes after a stop, a new
+  // request or a death is dropped, and the warnings are asked about again
+  // (session.js bumps bot._requestActivityEpoch). No strike swung after
+  // "stop" for a question put before it (alexrmsouza/jevcraft d1f4533f).
+  const epoch = bot._requestActivityEpoch, current = () => bot._requestActivityEpoch === epoch;
+  const only = { get cancelled() { return !current(); }, label: 'shot_answer', check() { if (!current()) throw new (require('./skills').Cancelled)('shot_answer'); } };
   bot._shotAsking = true;
   Promise.resolve().then(() => survival.decide(only, goal, save, { id: 'shot_answer', state, tree, aside: true }))
     .then(d => {
+      if (!current()) return;
       const choice = d && !d.stale ? d.path?.[0] : null;
       if (!choice || !tree[choice]) return;
       if (choice === 'shield_no_strike') record('shield_up', d.safetyRule ? 'rule' : 'jev', { noStrike: true });
       else record(choice, d.safetyRule ? 'rule' : 'jev');
-      if (choice === 'strike_first') strikeFirst(bot, tree.strike_first.target).catch(() => {});
+      if (choice === 'strike_first') strikeFirst(bot, tree.strike_first.target, epoch).catch(() => {});
     })
     .catch(() => null)
-    .finally(() => { bot._shotAsking = false; });
+    .finally(() => {
+      if (!current()) for (const k of keys.values()) bot._shotAsked?.delete(k);
+      bot._shotAsking = false;
+    });
 }
 // The shot's safety rule, when Jev cannot answer: the shield, or where the shooters are split round
 // the bot and a cell out of their line is a step off, that cell (note 691).
 const shotRule = tree => tree.shield_up?.split && tree.behind_cover ? 'behind_cover' : tree.shield_up ? 'shield_up' : null;
 // The strike chosen: swings at the shooter while it is in reach and its
 // warning is on, as the weapon's recharge allows.
-async function strikeFirst(bot, id) {
+async function strikeFirst(bot, id, epoch = bot._requestActivityEpoch) {
   const { canStrike } = require('./combat');
   const until = Date.now() + 4000;
-  while (Date.now() < until) {
+  while (Date.now() < until && bot._requestActivityEpoch === epoch) {
     const e = bot.entities?.[id];
     if (!e || e.isValid === false || !canStrike(bot, e)) return;
     const lookAt = bot._shotRaw?.lookAt || bot.lookAt.bind(bot);
     await lookAt(e.position.offset(0, (e.height || 1.8) / 2, 0), true);
+    if (bot._requestActivityEpoch !== epoch) return;
     bot.attack(e);
     await sleep(650);
   }
@@ -1023,4 +1033,4 @@ function mealThroughShot(bot, shot) {
   try { return !!require('./body').lasts(bot, 'fire', { inFire: false })?.burnsToDeath; } catch (_) { return false; }
 }
 
-module.exports = { mealThroughShot, strikeFireball, STANCE_SHOTS, stanceShotsOf, stanceAnswer, shotComing, shotRule, behindSays, SHOT_W, SEEN_W, install, tick, hitting, shotAt, holdRefused, facingFor, shotOptions, answerFor, answeredOtherwise, trackWarnings, warnDue, warningOn, shieldActive, shieldHeld, mainHandBusy, watchShots, settle, release, lockBody, coverCell, blockedSays, MEASURED, SHOTS, WARNS, RISE_MS, ask, farHeld, FAR, FAR_HOLD_MS, FAR_NEARER_BY, shotWord };
+module.exports = { mealThroughShot, strikeFireball, STANCE_SHOTS, stanceShotsOf, stanceAnswer, shotComing, shotRule, behindSays, SHOT_W, SEEN_W, install, tick, hitting, shotAt, holdRefused, facingFor, shotOptions, answerFor, answeredOtherwise, trackWarnings, warnDue, warningOn, shieldActive, shieldHeld, mainHandBusy, watchShots, settle, release, lockBody, coverCell, blockedSays, MEASURED, SHOTS, WARNS, RISE_MS, ask, strikeFirst, farHeld, FAR, FAR_HOLD_MS, FAR_NEARER_BY, shotWord };
