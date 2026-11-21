@@ -1,0 +1,13 @@
+when:
+  - event: [push, manual]
+    ref: refs/heads/companion
+
+labels:
+  backend: local
+  platform: darwin/arm64
+
+steps:
+  - name: build-and-test
+    image: bash
+    commands:
+      - caffeinate -i bash .ci/check.sh
