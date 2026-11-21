@@ -1,7 +1,6 @@
 when:
-  - event: push
-    branch: companion
-  - event: manual
+  - event: [push, manual]
+    ref: refs/heads/companion
 
 labels:
   backend: local
