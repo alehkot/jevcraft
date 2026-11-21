@@ -59,6 +59,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   const closed = new Promise(resolve => { resolveClosed = resolve; });
   const bot = mineflayer.createBot({ ...config, respawn: false });
   global.__jevBot = bot;
+  // The time of day from the Overworld's own clock, not the End's (world-clock.js).
+  require('./world-clock').install(bot);
   // The damage types by index, from the registry the server sends before
   // login, for the flight record's damage frames (recorder/observer.js).
   bot._damageTypeNames = [];
