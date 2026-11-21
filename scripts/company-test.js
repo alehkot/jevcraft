@@ -612,6 +612,24 @@ const call = (over = {}) => ({ kind: 'come', request: 'Jev come here', from: 'Ca
     });
   });
 
+  await check('sealed in at a start with a player close by: the survival layer claims the pocket\'s turn, and the work is not weighed against that claim', async () => {
+    // A start on 2026-11-21 as its flight record has it: the claims were survival (pocket_next, a "stay" held from before the restart) and work, and the work was given the turn.
+    await waitingFor(async () => { await withNight(async () => {
+      const s = scene({ at: [10.5, 60, 0.5] });
+      s.set(10, 60, 0, 'air'); s.set(10, 61, 0, 'air');
+      s.bot.time.timeOfDay = 13498; s.bot.entities = {};
+      const refuge = { origin: { x: 10, y: 60, z: 0 }, dimension: 'overworld', createdAt: new Date().toISOString(), emergency: true, shaft: true, top: { x: 10, y: 64, z: 0 }, verifiedAt: Date.now() };
+      const survival = createSurvival(s.bot, { state: { shelters: [refuge] }, client: null });
+      const claim = require('../src/survival').claim(s.bot, idle, survival);
+      assert.equal(claim?.action, 'pocket_next', JSON.stringify(claim || null).slice(0, 200));
+      const work = { layer: 'work', action: 'step', urgency: 'routine' };
+      assert.equal(company.darkNow(s.bot), true);
+      assert.equal(company.pocketFirst(s.bot, idle, [claim, null, null, work]), true);
+      s.bot.players = playerAt(10.5 + 24, 60);
+      assert.equal(company.pocketFirst(s.bot, idle, [claim, null, null, work]), false, 'the player 24 blocks off: weighed as before');
+    }); });
+  });
+
   await check('in the step itself, by day, the bot waiting: the pocket is opened by rule and climbed out of; with a mob about it is asked as before', async () => {
     await waitingFor(async () => {
       const out = await inPocket(idle, { timeOfDay: 6000 });

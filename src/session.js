@@ -501,7 +501,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       // midnight with two zombies summoned beside it, the waiting bot ran eighty
       // blocks and died twice in a minute. From dusk to dawn in the Overworld the
       // ordinary idle loop runs instead (it shelters), and is ended at sunrise.
-      const t = bot.time?.timeOfDay, dark = bot.game?.dimension === 'overworld' && Number.isFinite(t) && t >= 12300 && t < 23500;
+      const dark = require('./company').darkNow(bot);
       // Nor is the day waited out in the night's shelter. Ended at sunrise where
       // it stood, the bot stayed sealed in its pocket until a player asked for
       // something, out of sight four blocks under the grass (2026-11-21). The

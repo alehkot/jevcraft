@@ -163,7 +163,9 @@ function standing(bot, survival, dark, now = Date.now()) {
 }
 
 // ---- Whose turn it is in a pocket that is to be left --------------------------
-// The dark as the waiting reads it (session.js).
+// The dark of the waiting, read in one place: session.js's timer decides by it
+// whether the routine runs, and the rules below whether a pocket is left for
+// the day. Two readings that disagreed would open a pocket at night.
 const darkNow = bot => bot?.game?.dimension === 'overworld' && Number.isFinite(bot?.time?.timeOfDay) && bot.time.timeOfDay >= 12300 && bot.time.timeOfDay < 23500;
 // The bot's own routine, run while it waits between requests.
 const waitingIdle = goal => process.env.JEV_IDLE === 'wait' && goal?.kind === 'survive';
