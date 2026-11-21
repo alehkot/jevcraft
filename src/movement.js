@@ -203,6 +203,7 @@ class SurvivalMovements extends Movements {
       return [];
     }
     const neighbors = super.getNeighbors(node);
+    if (this.bot.companionMemory?.state.stayClose) require('./stay-close').biasRoutes(this.bot, node, neighbors);
     if (!this._hostileObservation || Date.now() - this._hostileObservation.at > 250) {
       this._hostileObservation = { at: Date.now(), entities: hostileEntities(this.bot, 64), sight: new Map() };
     }

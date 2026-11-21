@@ -5,16 +5,26 @@ The same bot takes requests in game chat. Setup is under [Playing with Jev](../R
 | Request | What it does |
 | --- | --- |
 | `Jev follow me` | Follow until stopped. |
+| `Jev stay close to me` | Aim to keep within 12 blocks of you while working and between jobs. |
+| `Jev stay within 8 blocks of me` | Change the preferred distance during any job. |
+| `Jev stop staying close` | Switch off the distance preference and continue the current task. |
 | `Jev get me a pumpkin` | Find, collect and deliver one. |
 | `Jev give me full diamond armor and a bed` | Plan all items together, sharing materials. |
 | `Jev find a cherry biome` | Explore. |
 | `Jev build a small cherry mansion` | Design and build. |
 | `Jev help me build a house` | Build a small starter house for two, using nearby wood. |
 | `Jev build a simple house for three people` | Build a single room with a door, roof, windows and three beds. |
+| `Jev build a house next to the closest tree to me` | Find the tree nearest you and put the house beside it. |
+| `Jev craft a chest next to the closest crafting table to me` | Make the chest at that table. |
+| `Jev build a house beside the block I'm pointing at` | Mark the block you're looking at when you ask, and build beside it. |
 | `Jev remember this as home` / `Jev go home` | Named places. |
 | `Jev status` / `stop` / `resume` | Control the current task. |
 
 A new request replaces the current one, and tasks survive restarts (state is in `.bot-state/`). When a request is ambiguous, Jev asks, for example "Did you mean short grass or grass block?" Server commands work only for players listed in `MC_COMMAND_USERS`, and are never used on the bot's own initiative. Settings are in [.env.example](../.env.example).
+
+Stay-close mode remembers the player and radius in this world across jobs and restarts. Jev can go farther for a job, favours nearby options, and regroups when you move on or the work ends. If you leave view, it picks up the preference when you are visible again. Ask `Jev stay-close status` for the setting.
+
+A landmark belongs to one request. Jev picks it from your position when you ask and gives you its coordinates. You can name a nearby block such as a chest, furnace or crafting table, a tree, or a visible creature's current spot. You can also point at a block within 32 blocks. When Jev cannot resolve the spot, it asks you to choose again.
 
 ## Dreams
 

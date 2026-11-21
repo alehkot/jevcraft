@@ -7,6 +7,7 @@ const { dryPassable, damagingTerrain } = require('./terrain');
 const { safeFromHostiles } = require('./danger');
 const { surfaceMovement } = require('./surface');
 const { surveyRoute } = require('./skills');
+const workSites = require('./work-site');
 
 function discoveryCatalog(registry, kind) {
   const entries = kind === 'biome' ? registry.biomesArray : registry.entitiesArray.filter(e => ['animal', 'mob', 'water_creature', 'ambient', 'hostile', 'passive'].includes(e.type) || /mobs/i.test(e.category || ''));
@@ -119,16 +120,17 @@ async function discoverStep(bot, task, goal, save, { navigate, explore, boatTrav
     state.found = { ...target, position: { ...position }, dimension: bot.game.dimension, observedAt: new Date().toISOString(), ...extra };
     goal.step = { action: 'found', ...state.found }; save(); return true;
   };
-  if (target.kind === 'biome' && biomeAt(bot, bot.entity.position) === target.name) return finish(bot.entity.position);
+  const site = goal.workSite;
+  if (target.kind === 'biome' && workSites.within(site, bot.entity.position) && biomeAt(bot, bot.entity.position) === target.name) return finish(bot.entity.position);
   if (target.kind === 'entity') {
     const entries = Object.values(bot.entities).filter(e => e.name === target.name && e.isValid !== false && e.position &&
-      e.position.distanceTo(bot.entity.position) <= 80).sort((a, b) => a.position.distanceTo(bot.entity.position) - b.position.distanceTo(bot.entity.position));
+      e.position.distanceTo(bot.entity.position) <= 80 && workSites.within(site, e.position)).sort((a, b) => a.position.distanceTo(bot.entity.position) - b.position.distanceTo(bot.entity.position));
     const entity = entries[0];
     if (entity) {
       const hostile = /hostile/i.test(bot.registry.entitiesByName[target.name]?.category || '');
       const radius = hostile ? 24 : 4;
       const visible = () => {
-        if (bot.entities[entity.id] !== entity || entity.isValid === false || entity.position.distanceTo(bot.entity.position) > radius + 2) return false;
+        if (bot.entities[entity.id] !== entity || entity.isValid === false || !workSites.within(site, entity.position) || entity.position.distanceTo(bot.entity.position) > radius + 2) return false;
         const eye = bot.entity.position.offset(0, 1.62, 0), delta = entity.position.offset(0, .8, 0).minus(eye);
         const hit = bot.world?.raycast?.(eye, delta.unit(), delta.norm());
         return !hit || eye.distanceTo(hit.intersect || hit.position) >= delta.norm() - 1;
@@ -141,10 +143,11 @@ async function discoverStep(bot, task, goal, save, { navigate, explore, boatTrav
     }
   }
   let candidates = [];
-  if (target.kind === 'biome') candidates = await biomeLocations(bot, task, target.name);
+  if (target.kind === 'biome') candidates = (await biomeLocations(bot, task, target.name)).filter(p => workSites.within(site, p));
   if (target.kind === 'block') {
     const id = bot.registry.blocksByName[target.name]?.id;
-    candidates = id === undefined ? [] : bot.findBlocks({ matching: id, maxDistance: 96, count: 16 });
+    candidates = id === undefined ? [] : bot.findBlocks({ matching: id, count: 16, maxDistance: 96,
+      ...(site && { point: point(site.position), maxDistance: workSites.WORK_RADIUS }) }).filter(p => workSites.within(site, p));
     const near = candidates.find(p => p.distanceTo(bot.entity.position) <= 6 && (!bot.canSeeBlock || bot.canSeeBlock(bot.blockAt(p))));
     if (near) return finish(near);
   }
@@ -163,6 +166,7 @@ async function discoverStep(bot, task, goal, save, { navigate, explore, boatTrav
       return false;
     }
   } finally { policy?.restore(); }
+  if (site) throw Object.assign(new Error(`I cannot find a reachable ${target.name.replaceAll('_', ' ')} beside the ${site.name.replaceAll('_', ' ')}. Please choose another spot.`), { name: 'Blocked', needsPlayer: true });
   state.visits++;
   goal.step = { action: 'explore', ...target, currentBiome: biomeAt(bot, bot.entity.position), visits: state.visits }; save();
   await explore(bot, task, goal, save, `discover:${target.kind}:${target.name}`, { surfaceOnly: true, frontier: true });

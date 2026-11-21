@@ -20,6 +20,8 @@ const { parseAddress, chatNames, clarificationReply, CLARIFY_MS } = require('./c
 const { createReactiveWait } = require('./reactive-wait');
 const { createHandoff } = require('./handoff');
 const { createGuide } = require('./guide');
+const stayClose = require('./stay-close');
+const { splitLocation, resolveLocation, discoveryAt } = require('./work-site');
 const { compatibilityPlugin } = require('./compatibility');
 const { requestedCommand, createCommandAccess } = require('./commands');
 const { classifyCommand } = require('./command-classifier');
@@ -471,6 +473,15 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     }).finally(() => { if (active === session) active = null; });
   }
 
+  function walkWhileWaiting() {
+    const task = new Task('stay_close', 'stay near the player');
+    const session = { idle: true, closeWalk: true, goal: { kind: 'stay_close' }, task };
+    active = session;
+    session.promise = stayClose.regroup(bot, task, require('./skills').navigate, true)
+      .catch(err => { if (err.name !== 'Cancelled') console.log('[stay close]', err.message); })
+      .finally(() => { if (active === session) active = null; });
+  }
+
   async function resume(revision = generation, options) {
     await reactiveWait?.cancel(); await bedtime?.cancel();
     if (active?.idle) await stop('interrupted');
@@ -523,7 +534,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     if (guideQueue?.rest.length && ready && (!active || active.idle) && !pendingRequests && !relaunching && !launchingDream) {
       const last = store.read();
       if (clarifying.get(guideQueue.from)?.until > now || ['blocked', 'cancelled'].includes(last?.status)) guideQueue = null;
-      else if (!last || last.status === 'complete') inject(guideQueue.sender, guideQueue.rest.shift(), { useBuildings: guideQueue.useBuildings });
+      else if (!last || last.status === 'complete') inject(guideQueue.sender, guideQueue.rest.shift(), guideQueue);
     }
     if (waitMode) {
       // JEV_IDLE=wait: nothing is done between requests but answering what would
@@ -547,7 +558,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       const company = require('./company'), stands = company.standing(bot, survival, dark, now);
       if (stands.sheltered) lastSheltered = now;
       const own = company.routine({ ...stands, sinceSheltered: now - lastSheltered });
-      if (active?.idle && own === 'end' && !relaunching) stop('interrupted').catch(console.error);
+      if (active?.idle && !active.closeWalk && own === 'end' && !relaunching) stop('interrupted').catch(console.error);
       else if (ready && !active && !relaunching && !launchingDream && !pendingRequests) {
         const standing = survival.state.paused ? null : dreamStore.read();
         // The waiting bot's two own moves, by rule: to bed when every player is in one (bedtime.js), and back to its
@@ -572,7 +583,10 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         else if (abed) { if (hurting) bedtime.cancel().catch(err => console.error('[bedtime]', err)); }
         else if (back) { try { launchBack(back); } catch (err) { console.error('[company] the walk back was not begun:', err); } }
         else if (own === 'run' && !survival.state.paused && !survival.state.idleBlocked) launchIdle();
-        else if (hurting || !toBed()) reactiveWait.tick().catch(err => console.error('[reactive wait]', err));
+        else if (hurting || !toBed()) {
+          if (!hurting && !survival.state.paused && !bot._reactiveWaitActive && stayClose.due(bot, true)) walkWhileWaiting();
+          else reactiveWait.tick().catch(err => console.error('[reactive wait]', err));
+        }
       }
     } else if (ready && !active && !relaunching && !launchingDream && !pendingRequests && !survival.state.paused && !survival.state.idleBlocked) launchIdle();
   }, 500);
@@ -587,7 +601,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   const passOn = data => { guided.add(data); onPlayerChat(data); };
   // `useBuildings`: the player's leave to take from what is built (built.js), carried by the request itself so that
   // one held for a "may I switch?" or waiting its turn in the queue keeps it.
-  const inject = (sender, text, { useBuildings = false } = {}) => passOn({ sender, plainMessage: `${bot.username} ${text}`, ...(useBuildings && { useBuildings: true }) });
+  const inject = (sender, text, { useBuildings = false, workSite } = {}) => passOn({ sender, plainMessage: `${bot.username} ${text}`, workSite, ...(useBuildings && { useBuildings: true }) });
   // The work in hand may use them, said by a player while it runs. -> the line for chat.
   const useBuildingsNow = from => {
     const goal = active && !active.idle ? active.goal : null;
@@ -602,6 +616,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     const me = bot.entity?.position, them = bot.players[from]?.entity?.position, t = bot.time?.timeOfDay;
     const mine = memory.context(from);
     return { health: bot.health, food: bot.food, dimension: bot.game?.dimension,
+      ...(stayClose.preference(bot) && { stayClose: stayClose.status(bot) }),
       time: Number.isFinite(t) ? (t >= 12300 && t < 23500 ? 'night' : 'day') : undefined,
       holding: bot.heldItem?.name, carrying: Object.fromEntries(bot.inventory.items().slice(0, 16).map(item => [item.name, item.count])),
       doing: active && !active.idle ? { request: active.goal.request, for: active.goal.from, ...(require('./built').allowed(active.goal) && { mayUseBuildings: true }) } : active?.idle ? 'looking after itself' : 'waiting for a request',
@@ -646,10 +661,12 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     // the count and the recipient. The reply is read together with the
     // request it answers.
     const known = text => { const name = text.toLowerCase().replace(/\s+/g, '_'); return !!(bot.registry?.itemsByName?.[name] || bot.registry?.blocksByName?.[name] || bot.registry?.entitiesByName?.[name]); };
-    const answer = !literal && !control.test(address.text) && clarificationReply(clarifying.get(from), address, { known });
+    const question = clarifying.get(from);
+    const answer = !literal && !control.test(address.text) && clarificationReply(question, address, { known });
     // A new addressed message moves on from the question either way.
     if (answer || address.explicit) clarifying.delete(from);
     if (answer) {
+      if (question.workSite) data.workSite = question.workSite;
       request = `${bot.username} ${answer}`;
       address = parseAddress(request, bot.username);
     }
@@ -673,6 +690,21 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       return;
     }
     if (!ready) { bot.chat('Still loading the world; please repeat the request in a moment. Stop is available now.'); return; }
+    const proximity = address.explicit && !literal && stayClose.readControl(address.text);
+    if (proximity) {
+      bot.chat(stayClose.applyControl(bot, from, proximity));
+      if (proximity.mode === 'on' && !active) { survival.state.paused = false; saveSurvival(); }
+      if (guided.has(data) && guideQueue?.rest.length) inject(data.sender, guideQueue.rest.shift(), guideQueue);
+      return;
+    }
+    const location = !literal && address.explicit && splitLocation(address.text, bot.registry);
+    if (location) {
+      try { data.workSite ||= resolveLocation(bot, from, location); }
+      catch (err) { bot.chat(err.message); return; }
+      request = `${bot.username} ${location.task}`;
+      address = parseAddress(request, bot.username);
+    }
+    const directDiscovery = data.workSite && discoveryAt(address.text, bot.registry);
     // A literal status request reads local state immediately, even while a
     // previous natural-language request is waiting for a model response.
     if (/^status( please)?[.!?]?$/i.test(normalized)) {
@@ -683,7 +715,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     if (require('./built').on() && address.explicit && !literal && !answer && /^(yes,? )?(you (may|can) )?use the buildings?[.!]?$/i.test(normalized)) {
       bot.chat(useBuildingsNow(from)); return;
     }
-    if (guide && !guided.has(data) && !literal && !answer && address.explicit && !control.test(address.text)) {
+    if (guide && !directDiscovery && !guided.has(data) && !literal && !answer && address.explicit && !control.test(address.text)) {
       guideQueue = null;
       bot.swingArm?.('right');
       guide.consult({ from, text: address.text, botName: bot.username, status: guideStatus(from) }).then(out => {
@@ -694,8 +726,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         if (out.say) bot.chat(out.say);
         const useBuildings = !!out.useBuildings && require('./built').on();
         if (out.requests.length) {
-          guideQueue = { sender: data.sender, from, rest: out.requests.slice(1), useBuildings };
-          inject(data.sender, out.requests[0], { useBuildings });
+          guideQueue = { sender: data.sender, from, rest: out.requests.slice(1), useBuildings, workSite: data.workSite };
+          inject(data.sender, out.requests[0], guideQueue);
         } else if (useBuildings && !out.addedRule) {
           // No request with it: the leave is for the work in hand (a standing rule just stored is for the
           // requests to come). The guide's own line has been said; ours only where it says something else.
@@ -721,8 +753,9 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       // A catalog or list walk is several calls: look like it is thinking,
       // not like it did not hear. Not over work in hand: the glance turns the
       // head, and a dig in progress needs it where it is.
-      const stopThinking = literal || active ? () => {} : thinking(bot);
-      const spec = literal ? { kind: 'operator_command' } : await interpret(requestClient, request, from, bot.username, {
+      const stopThinking = literal || directDiscovery || active ? () => {} : thinking(bot);
+      const spec = literal ? { kind: 'operator_command' } : directDiscovery ?
+        { kind: 'find', discoveryTarget: directDiscovery, from, request } : await interpret(requestClient, request, from, bot.username, {
         registry: bot.registry, players: Object.keys(bot.players),
         ...requestPosition, memory: { ...memory.context(from), found: require('./exploration').foundEntries(world.known) },
         builds: builds.describe(bot, bot.entity.position, bot.game.dimension),
@@ -738,6 +771,12 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
           discoveryResolution: spec.discoveryResolution, buildContinuation: spec.buildContinuation, usage: spec.usage, latencyMs: spec.latencyMs });
       }
       if (!spec || revision !== generation) return;
+      if (data.workSite && ['build', 'house', 'obtain', 'craft', 'bundle', 'find', 'come'].includes(spec.kind)) {
+        spec.workSite = data.workSite;
+        if (spec.kind === 'house') spec.kind = 'build';
+        if (spec.kind === 'build') spec.buildAnchor = { ...data.workSite.position };
+        if (spec.tasks) for (const child of spec.tasks) child.workSite = data.workSite;
+      }
       if (spec.kind === 'operator_command') {
         const allowed = (process.env.MC_COMMAND_USERS || '').split(',').map(name => name.trim().toLowerCase());
         if (!allowed.includes(from.toLowerCase())) { bot.chat(`${from} is not enabled for Jev's operator commands`); return; }
@@ -830,7 +869,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       }
       if (spec.kind === 'clarify') {
         const reason = spec.clarification?.reason;
-        clarifying.set(from, { request: address.text, options: spec.clarification?.options, until: Date.now() + CLARIFY_MS,
+        clarifying.set(from, { request: address.text, workSite: data.workSite, options: spec.clarification?.options, until: Date.now() + CLARIFY_MS,
           confirm: ['uncertain_interaction', 'dream_unsure'].includes(reason), which: ['no_item', 'no_discovery_target', 'ambiguous_item', 'incomplete_bundle'].includes(reason) });
         bot.chat(spec.message); return;
       }
@@ -868,6 +907,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         requesterPosition: bot.players[from]?.entity ? { ...bot.players[from].entity.position } : null,
         initialInventory: bot.inventory.items().map(i => ({ name: i.name, count: i.count })) };
       saveGoal(goal);
+      if (goal.workSite) { const s = goal.workSite; bot.chat(`I'll work beside the ${s.name.replaceAll('_', ' ')} at ${s.position.x}, ${s.position.y}, ${s.position.z}.`); }
       const changing = spec.kind === 'build' && spec.buildContinuation?.name &&
         { edit: `I'll work out what to change about ${spec.buildContinuation.name}.`,
           finish: `I'll carry on with ${spec.buildContinuation.name}.`,

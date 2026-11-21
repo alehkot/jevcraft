@@ -7,6 +7,7 @@ const air = block => block && ['air', 'cave_air', 'void_air'].includes(block.nam
 const open = block => air(block) || /^(short_grass|tall_grass|fern|large_fern|dead_bush|vine|snow|short_dry_grass|tall_dry_grass|bush|firefly_bush|leaf_litter|dandelion|poppy|blue_orchid|allium|azure_bluet|(red|orange|white|pink)_tulip|oxeye_daisy|cornflower|lily_of_the_valley|wildflowers|pink_petals)$/.test(block?.name || '');
 
 function reservedForConstruction(goal, p, { from = null, bot = null } = {}) {
+  if (goal?.workSite && require('./work-site').protects(goal.workSite, p)) return true;
   // A dug-in pocket is one night's stop, not construction: reserving its
   // cells froze the tunnel at the pocket against a fortress wall, thirty-eight
   // rounds of "no route away from the blocked staircase".

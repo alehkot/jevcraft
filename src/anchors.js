@@ -9,9 +9,13 @@
 // portal to go back for them. It drowned at 17:56Z on the way, its iron
 // armour and shield lost two thousand blocks from the End portal.
 const r = n => Math.round(n);
+const stayClose = require('./stay-close');
 
 function anchorsOf(bot, goal) {
   const out = [];
+  const player = stayClose.player(bot);
+  if (player) out.push({ what: `${stayClose.preference(bot).player} (preferred distance ${stayClose.preference(bot).radius} blocks)`, at: player.position });
+  if (goal?.workSite && goal.workSite.dimension === bot.game?.dimension) out.push({ what: goal.workSite.name, at: goal.workSite.position });
   try {
     const rs = require('./rod-stash');
     const dim = rs.dimOf(bot);

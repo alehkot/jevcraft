@@ -399,7 +399,7 @@ function sitePositions(bot, width, depth, anchor, at, nearbyRadius) {
  * player's: a small number of them are preserved and built around rather than
  * demolished, and too many of them rule the site out.
  */
-function selectSchematicSite(bot, schematic, { anchor, prefer, owned = new Set(), protect = new Set(), at, baseY: floor, allowPreserved = true, nearbyRadius } = {}) {
+function selectSchematicSite(bot, schematic, { anchor, prefer, owned = new Set(), protect = new Set(), at, baseY: floor, allowPreserved = true, nearbyRadius, landmark } = {}) {
   anchor = anchor || prefer;
   const o = bot.entity.position.floored(), [width, height, depth] = schematic.source.size;
   const isSurface = surfaceObserver(bot);
@@ -416,7 +416,25 @@ function selectSchematicSite(bot, schematic, { anchor, prefer, owned = new Set()
   // Neighbouring candidates overlap. On a hillside a wider search can try
   // hundreds of sites, but each vertical column needs surveying only once.
   const heights = new Map();
-  for (const candidate of sitePositions(bot, width, depth, anchor, at, nearbyRadius)) {
+  let positions = sitePositions(bot, width, depth, anchor, at, nearbyRadius);
+  if (landmark) {
+    const p = landmark.position;
+    if (!at) {
+      // Try each face of the landmark. The trunk or bench stays outside
+      // the footprint even when the building is wider than the usual grid.
+      positions = [];
+      for (const gap of [landmark.tree ? 2 : 1, 3, 4]) for (const offset of [0, -2, 2]) {
+        const x = p.x - Math.floor(width / 2) + offset, z = p.z - Math.floor(depth / 2) + offset;
+        positions.push(new Vec3(p.x + gap, p.y, z), new Vec3(p.x - gap - width + 1, p.y, z),
+          new Vec3(x, p.y, p.z + gap), new Vec3(x, p.y, p.z - gap - depth + 1));
+      }
+    }
+    positions = positions.filter(c => {
+      const dx = Math.max(c.x - p.x, p.x - (c.x + width - 1), 0), dz = Math.max(c.z - p.z, p.z - (c.z + depth - 1), 0);
+      return Math.hypot(dx, dz) <= 5 && Math.max(dx, dz) >= (landmark.tree ? 2 : 1);
+    });
+  }
+  for (const candidate of positions) {
     const ground = new Map();
     for (let x = 0; x < width; x++) for (let z = 0; z < depth; z++) {
       const wx = candidate.x + x, wz = candidate.z + z, column = `${wx},${wz}`;
@@ -436,6 +454,7 @@ function selectSchematicSite(bot, schematic, { anchor, prefer, owned = new Set()
     // base is the highest ground under the footprint, which can only ever put
     // the building on top of the hill.
     const baseY = at ? at.y : Number.isFinite(floor) ? floor : Math.max(...ground.values());
+    if (landmark && Math.abs(baseY - landmark.position.y) > 4) continue;
     // Uneven ground is answered with a stepped foundation rather than by
     // flattening the landscape, but a cliff must not become a pedestal.
     // Setting into a slope lowers the floor, which this never restricted. A
@@ -494,13 +513,14 @@ function selectSchematicSite(bot, schematic, { anchor, prefer, owned = new Set()
       bounds: { min: { x: origin.x, y: baseY - SITE.step, z: origin.z }, max: { x: origin.x + width - 1, y: baseY + height - 1, z: origin.z + depth - 1 } } };
     // Prefer a site that disturbs least: no preserved player blocks, then the
     // shallowest foundation, then closest to what the player asked for.
-    // Prefer a site that disturbs least: no preserved player blocks, then the
-    // shallowest foundation, then closest to what the player asked for.
     scored.push({ site, cost: preserved.length * 100 + plinth + (anchor ? origin.distanceTo(new Vec3(anchor.x, anchor.y, anchor.z)) : 0) });
     if (!preserved.length && (plinth === 0 || nearbyRadius && plinth <= width)) break;
   }
   if (scored.length) return scored.sort((a, b) => a.cost - b.cost)[0].site;
   const earthworks = where => require('./build-terrain').planTerrainSite(bot, schematic, { naturalGround, replaceable, at: where });
+  if (landmark) return require('./build-terrain').planTerrainSite(bot, schematic, { naturalGround, replaceable, positions,
+    accept: site => Math.abs(site.origin.y - landmark.position.y) <= 4 && !occupiedByBody(bot, site.blocks) &&
+      [...site.blocks, ...site.terrain.clear, ...site.terrain.fill].every(p => !protect.has(key(p)) && !require('./work-site').protects(landmark, p)) });
   if (prefer) return earthworks(prefer);
   if (anchor) return null;
   return earthworks();

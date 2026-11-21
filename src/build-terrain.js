@@ -8,7 +8,7 @@ const PREP_LIMITS = { cut: 4, fill: 6, changes: 2400 };
 // A surveyed, bounded earthwork plan: cut natural high ground and fill low
 // ground/shallow water. Unknown columns, lava and recognizable builds rule out
 // a site. Every cell is snapshotted before the first shovel or block placement.
-function planTerrainSite(bot, schematic, { naturalGround, replaceable, at }) {
+function planTerrainSite(bot, schematic, { naturalGround, replaceable, at, positions, accept }) {
   const o = bot.entity.position.floored(), [width, height, depth] = schematic.source.size;
   const isSurface = surfaceObserver(bot), columns = new Map(), candidates = [];
   const entry = new Vec3(...(schematic.access || schematic.source.entrance || [Math.floor(width / 2), 1, 0]));
@@ -33,7 +33,7 @@ function planTerrainSite(bot, schematic, { naturalGround, replaceable, at }) {
     columns.set(k, found); return found;
   };
   const foundation = new Set(schematic.blocks.filter(p => p.y === 0).map(p => `${p.x},${p.z}`));
-  const offsets = at ? [[at.x - o.x, at.z - o.z]]
+  const offsets = positions ? positions.map(p => [p.x - o.x, p.z - o.z]) : at ? [[at.x - o.x, at.z - o.z]]
     : [5, -width - 5, 12, -width - 12].flatMap(dx => [5, -depth - 5, 12, -depth - 12].map(dz => [dx, dz]));
   for (const [dx, dz] of offsets) {
     const footprint = [];
@@ -118,7 +118,7 @@ function planTerrainSite(bot, schematic, { naturalGround, replaceable, at }) {
         max: { x: Math.max(...all.map(p => p.x)), y: base + height - 1, z: Math.max(...all.map(p => p.z)) } } });
     }
   }
-  return candidates.sort((a, b) => a.terrain.changedBlocks - b.terrain.changedBlocks ||
+  return (accept ? candidates.filter(accept) : candidates).sort((a, b) => a.terrain.changedBlocks - b.terrain.changedBlocks ||
     new Vec3(a.origin.x, a.origin.y, a.origin.z).distanceTo(o) - new Vec3(b.origin.x, b.origin.y, b.origin.z).distanceTo(o))[0] || null;
 }
 

@@ -122,7 +122,7 @@ function intakeProblem(error) {
 function friendlyProblem(error, { known = null } = {}) {
   const text = String(error?.message || error || '');
   if (/silk touch/i.test(text)) return 'I need a tool with Silk Touch to pick up that block.';
-  if (/That place is in the /i.test(text)) return text;
+  if (/That place is in the |^The spot you chose |^The .* you chose has gone|^I cannot .+ (beside the |you chose\.)/i.test(text)) return text;
   if (REPLAN.test(text)) {
     const w = error?.waitOn;
     const thing = String(w?.name || 'block').replaceAll('_', ' ');

@@ -1,6 +1,7 @@
 'use strict';
 const { setAside, isSetAside } = require('./progress');
 const { Vec3 } = require('vec3');
+const stayClose = require('./stay-close');
 const pos = p => new Vec3(p.x, p.y, p.z);
 
 // What Jev is asked to choose between when the bot needs a resource.
@@ -27,11 +28,13 @@ function failedSeeds(failures, now) {
   });
 }
 
-function resourceSources(bot, candidates, { radius = 6, limit = 4, failures = {}, resting = () => false, now = Date.now() } = {}) {
+function resourceSources(bot, candidates, { radius = 6, limit = 4, failures = {}, resting = () => false, now = Date.now(), workSite } = {}) {
   const origin = bot.entity.position;
+  const player = stayClose.player(bot);
+  const cost = player || workSite ? p => stayClose.travelScore(bot, p, workSite?.position) : p => p.distanceTo(origin);
   const failed = failedSeeds(failures, now);
   const remaining = candidates.map(pos).filter(p => !resting(p))
-    .sort((a, b) => a.distanceTo(origin) - b.distanceTo(origin));
+    .sort((a, b) => cost(a) - cost(b));
   const sources = [];
   while (remaining.length && sources.length < limit) {
     const seed = remaining.shift(), block = bot.blockAt(seed)?.name;
@@ -43,9 +46,12 @@ function resourceSources(bot, candidates, { radius = 6, limit = 4, failures = {}
     }
     const key = `source_${block}_${seed.x}_${seed.y}_${seed.z}`;
     if (failed.some(f => f.block === block && blocks.some(p => p.distanceTo(f.seed) <= radius))) continue;
-    blocks.sort((a, b) => a.distanceTo(origin) - b.distanceTo(origin));
+    blocks.sort((a, b) => cost(a) - cost(b));
     sources.push({ key, block, blocks, description: { block, blocksWithinReach: blocks.length,
-      distance: Math.round(seed.distanceTo(origin)), elevationChange: seed.y - Math.floor(origin.y), ...sourceSurroundings(bot, seed) } });
+      distance: Math.round(seed.distanceTo(origin)), elevationChange: seed.y - Math.floor(origin.y),
+      ...(player && { distanceFromCompanionPlayer: Math.round(seed.distanceTo(player.position)) }),
+      ...(workSite && { distanceFromWorkSite: Math.round(seed.distanceTo(pos(workSite.position))) }),
+      ...sourceSurroundings(bot, seed) } });
   }
   return sources;
 }

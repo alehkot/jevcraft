@@ -4,6 +4,7 @@ const { friendlyProblem, recoveryHint, activity, name } = require('./speech');
 function statusMessage(bot, active, saved) {
   const goal = active && !active.idle ? active.goal : saved;
   const messages = [];
+  if (require('./stay-close').preference(bot)) messages.push(require('./stay-close').status(bot));
   if (goal) {
     if (goal.status === 'complete') messages.push('I finished your last task.');
     else if (goal.status === 'cancelled' || goal.status === 'interrupted') messages.push('I stopped. Say "Jev resume" when you want me to carry on.');

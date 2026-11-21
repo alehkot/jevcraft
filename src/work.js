@@ -13,6 +13,8 @@ const { houseBlueprint, verifyHouse } = require('./objectives');
 const { deliver } = require('./delivery');
 const { reservedForConstruction, portalSiteClear, selectPortalSite, portalSiteDig, portalSupports } = require('./build-sites');
 const built = require('./built');
+const workSites = require('./work-site');
+const stayClose = require('./stay-close');
 const { updateDigCapabilities } = require('./movement');
 const { resourceTunnelStep, tunnelStep, staircaseResting, safeExcavation } = require('./tunneling');
 const { maintainVitals, checkAir, needsAir, chooseFood, digWithAirGuard, safeFood } = require('./vitals');
@@ -142,7 +144,7 @@ function planningInventory(bot) {
   return stock;
 }
 
-async function withUsableWorkstations(bot, task, stock, requested = []) {
+async function withUsableWorkstations(bot, task, stock, requested = [], site) {
   const available = { ...stock };
   if (bot.game?.gameMode === 'creative') return available;
   // World stations satisfy reusable recipe dependencies, not requested carried
@@ -150,7 +152,7 @@ async function withUsableWorkstations(bot, task, stock, requested = []) {
   for (const name of ['crafting_table', 'furnace']) {
     task.check();
     if (available[name] || requested.includes(name)) continue;
-    const candidates = find(bot, [name], 32, 8);
+    const candidates = site ? workSites.stations(bot, name, site) : find(bot, [name], 32, 8);
     if (candidates.length && await reachableWorkstation(bot, task, name, candidates)) available[name] = 1;
   }
   return available;
@@ -1150,6 +1152,10 @@ const UPKEEP_HOLD_MS = 5 * 60 * 1000;
 // dark within the last few minutes of day.
 const NEAR_BED = 64, FOOD_BEFORE_DUSK_S = 180;
 async function upkeepStep(bot, task, goal, save, client, onStep = () => {}) {
+  // Finish a player's local harvest before optional tool crafting can spend
+  // the logs just collected. Required tools and emergency care run separately.
+  if (goal.workSite && (workSites.forOutput(goal, goal.step?.drops) ||
+      (goal.item && countOf(bot, goal.item) >= goal.count - (goal.delivered || 0)))) return false;
   const { options, budget } = await upkeepOffers(bot, task, goal, save);
   // On the bank's walk out with rods (rod-bank.js) the stems are offered
   // with the way home against them (note 946): the portal's distance, and
@@ -1698,6 +1704,7 @@ async function dig(bot, task, p, { done, requiredTool, enchantment, requireDrops
   if (done?.()) return;
   let block = bot.blockAt(p);
   if (air(block)) return;
+  if (workSites.protects(bot._activeWorkSite, p)) throw new Blocked('That block marks the spot the player chose.');
   if (!block?.diggable) throw new Error(`Cannot dig ${block?.name || 'unloaded block'}`);
   if (p.equals(supportCell(bot.entity.position))) await stepOff(bot, task, p, { dropInto });
   if (!bot.canDigBlock(block)) {
@@ -2029,14 +2036,19 @@ function find(bot, names, distance = 48, count = 32) {
 // post. `noteAs`: with none free found, those passed over are kept with the
 // goal under that resource's name (the line in chat, the last resort).
 function findFree(bot, goal, names, distance = 48, count = 32, { noteAs = null } = {}) {
-  if (!built.on() || built.allowed(goal)) return find(bot, names, distance, count);
+  if ((!built.on() || built.allowed(goal)) && !goal?.workSite) return find(bot, names, distance, count);
   const ids = names.map(n => bot.registry.blocksByName[n]?.id).filter(n => n !== undefined);
   if (!ids.length) return [];
   const passedOver = [];
   const found = bot.findBlocks({ matching: ids, maxDistance: distance, count,
-    useExtraInfo: b => { if (!built.leftAlone(bot, goal, b.position)) return true; if (passedOver.length < 8) passedOver.push(b.position); return false; } })
+    useExtraInfo: b => {
+      if (workSites.protects(goal?.workSite, b.position)) return false;
+      if (!built.leftAlone(bot, goal, b.position)) return true;
+      if (passedOver.length < 8) passedOver.push(b.position);
+      return false;
+    } })
     // A search that does not ask the test (a test's world) is asked it here.
-    .filter(p => !built.leftAlone(bot, goal, p));
+    .filter(p => !built.leftAlone(bot, goal, p) && !workSites.protects(goal?.workSite, p));
   if (noteAs && !found.length && passedOver.length) built.noteSkipped(bot, goal, noteAs, passedOver);
   return found;
 }
@@ -2277,7 +2289,7 @@ async function explore(bot, task, goal, save, resource, { surfaceOnly = isSurfac
     const observed = [...new Map([...findFree(bot, goal, resourceNames, 128, 8, { noteAs: resource }), ...knownResourceLocations(bot, goal, resourceNames)]
       .map(p => [`${p}`, p])).values()].filter(p => !reservedForConstruction(goal, p) && safeFromHostiles(bot, p) &&
       !isSetAside(goal, 'reach', p) && !built.leftAlone(bot, goal, p) && (!surface || !bot.blockAt(p) || surface.isSurface(p)))
-      .sort((a, b) => a.distanceTo(bot.entity.position) - b.distanceTo(bot.entity.position));
+      .sort((a, b) => stayClose.travelScore(bot, a, goal.workSite?.position) - stayClose.travelScore(bot, b, goal.workSite?.position));
     // Nothing free in view and the search goes elsewhere: why, said once.
     if (!observed.length && built.hint(bot, goal, resource)) save();
     // Cobwebs (string) hang in mineshafts: with none in view, a remembered
@@ -2419,7 +2431,9 @@ async function miningCandidates(bot, task, step, goal) {
   // could otherwise be had; those passed over are kept with the goal.
   const passedOver = [];
   const free = b => { if (!built.leftAlone(bot, goal, b.position)) return true; if (passedOver.length < 8) passedOver.push(b.position); return false; };
+  const local = workSites.forOutput(goal, step.drops);
   const options = { matching: ids, maxDistance: 48, count: 32,
+    ...(local && { point: pos(local.position), maxDistance: workSites.WORK_RADIUS }),
     useExtraInfo: b => (!step.properties || Object.entries(step.properties).every(([key, value]) => String(b.getProperties()[key]) === String(value))) &&
       (step.minimumY === undefined || b.position.y >= step.minimumY) && !reservedForConstruction(goal, b.position) &&
       // Planks the world put there, not the bot's own (note 754e).
@@ -2447,7 +2461,7 @@ async function miningCandidates(bot, task, step, goal) {
   if (passedOver.length) built.noteSkipped(bot, goal, step.block || step.drops, passedOver);
   rememberResources(bot, goal, candidates);
   return candidates.filter(p => {
-    return safeFromHostiles(bot, p) && !isSetAside(goal, 'reach', p);
+    return workSites.within(local, p) && safeFromHostiles(bot, p) && !isSetAside(goal, 'reach', p);
   });
 }
 
@@ -2504,7 +2518,7 @@ async function workSource(bot, task, step, goal, save, source) {
               faces.some(f => air(bot.blockAt(p.plus(f)))))
             .sort((a, b) => a.distanceTo(here) - b.distanceTo(here))[0] || null;
         }
-        if (!next || next.distanceTo(bot.entity.position) > 6) break;
+        if (!next || next.distanceTo(bot.entity.position) > 6 || !workSites.within(workSites.forOutput(goal, step.drops), next)) break;
         task.check(); checkAir(bot);
         try { await mine(bot, task, step, goal, save, next); } catch (err) { task.check(); if (['NeedsAir', 'NeedsSafety'].includes(err.name)) throw err; break; }
       }
@@ -2525,6 +2539,11 @@ async function workSource(bot, task, step, goal, save, source) {
 async function continueSource(bot, task, step, goal, save, onStep) {
   const source = committedSource(bot, goal, step);
   if (!source) return false;
+  if (goal.workSite) {
+    const local = workSites.forOutput(goal, step.drops);
+    source.blocks = source.blocks.filter(p => workSites.within(local, p) && !workSites.protects(goal.workSite, p));
+    if (!nearestRemaining(bot, source)) { delete goal.workingSource; return false; }
+  }
   goal.decisions ||= [];
   goal.decisions.push({ at: new Date().toISOString(), path: ['continue_source', source.key], latencyMs: 0, committed: true, judgments: [],
     options: { continue_source: { description: `Keep working the ${source.block} source chosen earlier; ${source.blocks.length} blocks remain within reach.`, children: { [source.key]: { description: source.description || { block: source.block } } } } } });
@@ -3346,9 +3365,12 @@ async function workstation(bot, task, name, goal) {
   // Use a carried table nearby instead of spending ingredients/scaffolding
   // walking back to a distant bench. Existing nearby player tables may still
   // be reused, but only tables placed by this session are collected afterward.
-  const candidates = find(bot, [name], name === 'crafting_table' && countOf(bot, name) ? 4 : 32, 8);
+  if (goal?.workSite) await workSites.approach(bot, task, goal.workSite, navigate);
+  const candidates = goal?.workSite ? workSites.stations(bot, name, goal.workSite) :
+    find(bot, [name], name === 'crafting_table' && countOf(bot, name) ? 4 : 32, 8);
   const existing = await approachWorkstation(bot, task, name, candidates);
   if (existing) return existing;
+  if (goal?.workSite?.name === name) throw Object.assign(new Blocked(`I cannot reach the ${name.replaceAll('_', ' ')} you chose.`), { needsPlayer: true });
   if (!countOf(bot, name)) throw new Blocked(`I can't reach a ${name.replaceAll('_', ' ')}. I need one I can use.`);
   let p, refused = null, tries = 0;
   const o = bot.entity.position.floored();
@@ -3421,6 +3443,7 @@ async function craft(bot, task, step, goal) {
   // Diagnostic for the dream run: a seventh furnace was crafted with six in
   // the pockets, and no planner path reproduces it offline.
   await settleCraftInventory(bot, task);
+  if (!step.needs_table && workSites.forOutput(goal, step.item)) await workSites.approach(bot, task, goal.workSite, navigate);
   const table = step.needs_table ? await workstation(bot, task, 'crafting_table', goal) : null;
   const id = bot.registry.itemsByName[step.item]?.id;
   const recipe = step.recipe ? new (require('prismarine-recipe')(bot.registry).Recipe)({ result: { id, count: step.recipe.count },
@@ -4610,7 +4633,7 @@ async function acquireSetStep(bot, task, items, goal, save) {
   const inv = planningInventory(bot);
   const outputs = items.map(item => ({ item, count: 1 })).filter(o => (inv[o.item] || 0) < o.count);
   if (!outputs.length) return true;
-  const available = await withUsableWorkstations(bot, task, inv, outputs.map(o => o.item));
+  const available = await withUsableWorkstations(bot, task, inv, outputs.map(o => o.item), goal.workSite);
   const plan = catalogPlan(bot, outputs, undefined, available, goal);
   if (await prepareMiningTool(bot, task, goal, save, plan, available)) return false;
   if (await ensureDescentSupplies(bot, task, goal, save, plan)) return false;
@@ -4637,7 +4660,7 @@ async function acquireStep(bot, task, item, count, goal, save, { minimumMiningY,
     if (countOf(bot, item) >= count) return true;
     inv[item] = countOf(bot, item);
   }
-  const available = await withUsableWorkstations(bot, task, inv, [item]);
+  const available = await withUsableWorkstations(bot, task, inv, [item], goal.workSite);
   const plan = catalogPlan(bot, item, count, available, goal);
   // A plan that mines what is found only in another dimension is the
   // caller's to answer, before any of it is begun here (game-progress.js
@@ -4825,6 +4848,8 @@ async function buildHouseStep(bot, task, goal, save) {
 function decisionObservation(bot, goal) {
   return {
     playerRequest: goal.request, retainedGoal: goal.kind,
+    ...(stayClose.preference(bot) && { stayClose: stayClose.status(bot) }),
+    ...(goal.workSite && { requestedWorkSite: goal.workSite }),
     playerUrgency: goal.urgency?.level,
     inventory: planningInventory(bot), health: bot.health, food: bot.food, oxygen: bot.oxygenLevel,
     survivalFacts: { healthMaximum: 20, hungerMaximum: 20, hungerNeedsAttention: bot.food <= 16,
@@ -4865,7 +4890,7 @@ async function houseDecisionStep(bot, task, goal, save, client, onStep) {
   const stock = planningInventory(bot);
   const required = bot.game.gameMode === 'creative' ? Math.min(1, missing.length) : missing.length;
   if ((stock[goal.material] || 0) < required) {
-    const inv = await withUsableWorkstations(bot, task, stock, [goal.material]);
+    const inv = await withUsableWorkstations(bot, task, stock, [goal.material], goal.workSite);
     const step = catalogPlan(bot, goal.material, required, inv, goal)[0];
     const actions = {};
     if (step?.action === 'mine' && await continueSource(bot, task, step, goal, save, onStep)) return false;
@@ -4873,7 +4898,7 @@ async function houseDecisionStep(bot, task, goal, save, client, onStep) {
       // Do not ask Jev to choose unsupported targets such as the trunk it
       // stands on or floating remnants with no currently feasible approach.
       const reachable = await reachableBlocks(bot, task, await miningCandidates(bot, task, step, goal), { limit: 16 });
-      for (const source of resourceSources(bot, reachable, { failures: attemptsFor(goal).of('option'), resting: p => isSetAside(goal, 'reach', p) })) {
+      for (const source of resourceSources(bot, reachable, { workSite: goal.workSite, failures: attemptsFor(goal).of('option'), resting: p => isSetAside(goal, 'reach', p) })) {
         actions[source.key] = leaf({ action: 'approach, dig and collect', ...source.description, resourceNeeded: step.drops },
           () => workSource(bot, task, step, goal, save, source), () => !!nearestRemaining(bot, source));
       }
@@ -5144,16 +5169,17 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
       const target = pos(goal.buildAnchor);
       await navigate(bot, task, new goals.GoalNear(target.x, target.y, target.z, 4)); return false;
     }
-    const nearbyRadius = goal.starterBeds && (!goal.buildContinuation || goal.buildContinuation.placement === 'anywhere') ? 24 : undefined;
+    const nearbyRadius = goal.workSite ? undefined : goal.starterBeds && (!goal.buildContinuation || goal.buildContinuation.placement === 'anywhere') ? 24 : undefined;
     goal.blueprint = selectSchematicSite(bot, schematic, { anchor: goal.buildAnchor, prefer: proposed, owned, protect, at, baseY: proposed?.y,
-      allowPreserved: !goal.starterBeds, nearbyRadius });
-    if (!goal.blueprint && proposed) goal.blueprint = selectSchematicSite(bot, schematic, { owned, protect });
+      allowPreserved: !goal.starterBeds, nearbyRadius, landmark: goal.workSite });
+    if (!goal.blueprint && !goal.workSite && proposed) goal.blueprint = selectSchematicSite(bot, schematic, { owned, protect });
     // A dream's anchor is where the village would like the next part,
     // not where a player pointed. When nothing fits there, anywhere near will do.
-    if (!goal.blueprint && goal.buildAnchor && goal.dream && !at) { delete goal.buildAnchor; goal.blueprint = selectSchematicSite(bot, schematic, { owned, protect }); }
+    if (!goal.blueprint && goal.buildAnchor && goal.dream && !goal.workSite && !at) { delete goal.buildAnchor; goal.blueprint = selectSchematicSite(bot, schematic, { owned, protect }); }
     if (!goal.blueprint) {
       // Wandering off to find ground elsewhere is the wrong answer to a spot
       // the player chose: they asked for it there, so say it will not work.
+      if (goal.workSite) throw Object.assign(new Blocked(`I cannot fit this building beside the ${goal.workSite.name.replaceAll('_', ' ')}. Clear a little space or choose another spot.`), { needsPlayer: true });
       if (edited) throw new Blocked(`I cannot fit that change onto ${edited.name} where it stands. Ask me again and I will plan it differently.`);
       if (goal.buildAnchor) throw new Blocked('I cannot fit that building where you asked. Clear some space there, or ask me to build it somewhere else.');
       goal.step = { action: 'find_build_site', dimensions: schematic.source.size }; save();
@@ -5235,7 +5261,7 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     const cells = remainingBuildBatch(bot, batch), outputs = materialCounts(cells);
     if (bot.game.gameMode === 'creative') for (const output of outputs) output.count = 1;
     if (batch.phase === 'gather' || outputs.some(o => !countOf(bot, o.item))) {
-      const stock = await withUsableWorkstations(bot, task, planningInventory(bot), outputs.map(o => o.item));
+      const stock = await withUsableWorkstations(bot, task, planningInventory(bot), outputs.map(o => o.item), goal.workSite);
       const plan = catalogPlan(bot, outputs, undefined, stock, goal);
       if (plan.length) {
         goal.buildPhase = 'gather';
@@ -5412,17 +5438,18 @@ async function obtainStep(bot, task, goal, save, client, onStep) {
     goal.step = { action: 'deliver', item: goal.item, count: remaining, recipient: goal.from }; save();
     return deliver(bot, task, goal, save);
   }
-  const stock = await withUsableWorkstations(bot, task, planningInventory(bot), [goal.item]);
+  const stock = await withUsableWorkstations(bot, task, planningInventory(bot), [goal.item], goal.workSite);
   const plan = catalogPlan(bot, goal.item, remaining, stock, goal);
   return executePlannedAcquisition(bot, task, goal, save, client, onStep, plan, { item: goal.item, count: remaining }, stock);
 }
 
 async function prepareBundleStep(bot, task, goal, save, client, onStep) {
   const work = goal.batchWork ||= { kind: 'obtain' };
+  if (goal.workSite) { work.workSite = goal.workSite; work.siteOutputs = goal.tasks.map(child => child.item); }
   Object.assign(work, { request: goal.request, from: goal.from, requesterPosition: goal.requesterPosition,
     resourceMemory: goal.resourceMemory ||= {}, opportunistic: goal.opportunistic ||= { primarySteps: 0, history: [], skipped: {} } });
   if (work.smelting) { await smelt(bot, task, work.smelting, work, save); return false; }
-  const stock = await withUsableWorkstations(bot, task, planningInventory(bot), remainingOutputs(goal).map(o => o.item));
+  const stock = await withUsableWorkstations(bot, task, planningInventory(bot), remainingOutputs(goal).map(o => o.item), goal.workSite);
   const batch = selectBundleBatch(bot.registry, goal, stock, outputs => catalogPlan(bot, outputs, undefined, stock, work));
   const outputs = batchOutputs(goal, batch);
   const plan = catalogPlan(bot, outputs, undefined, stock, work);
@@ -5444,7 +5471,9 @@ async function prepareBundleStep(bot, task, goal, save, client, onStep) {
 async function executePlannedAcquisition(bot, task, goal, save, client, onStep, plan, acquisition, available) {
   const first = plan[0];
   if (first?.action === 'mine') {
+    const local = workSites.forOutput(goal, first.drops);
     if (await collectNearbyDrops(bot, task, first.drops, {
+      ...(local && { origin: pos(local.position), radius: workSites.WORK_RADIUS }),
       allowExcavation: true,
       onTarget: target => { goal.step = { action: 'collect', ...target }; save(); },
     })) return false;
@@ -5467,13 +5496,20 @@ async function executePlannedAcquisition(bot, task, goal, save, client, onStep, 
   if (step.action === 'mine' && await continueSource(bot, task, step, goal, save, onStep)) return false;
   const actions = {};
   if (step.action === 'mine') {
-    const reachable = await reachableBlocks(bot, task, await miningCandidates(bot, task, step, goal), { limit: 16 });
+    const local = workSites.forOutput(goal, step.drops);
+    const candidates = await miningCandidates(bot, task, step, goal);
+    if (stayClose.preference(bot) || goal.workSite) {
+      const score = p => stayClose.travelScore(bot, p, goal.workSite?.position);
+      candidates.sort((a, b) => score(a) - score(b));
+    }
+    const reachable = await reachableBlocks(bot, task, candidates, { limit: 16 });
+    if (!reachable.length && local) throw Object.assign(new Blocked(`I cannot reach any ${step.drops.replaceAll('_', ' ')} beside the ${goal.workSite.name.replaceAll('_', ' ')}. Please choose another spot.`), { needsPlayer: true });
     // Jev chooses between sources that differ; code picks the block inside one.
     // What the place round each source is (a spawner in reach, a dungeon or
     // mineshaft remembered, the mobs met there lately): mid-220-g went back
     // to the same gravel by a dungeon it knew for eighteen minutes, told
     // only the block and its distance (note 476).
-    for (const source of resourceSources(bot, reachable, { failures: attemptsFor(goal).of('option'), resting: p => isSetAside(goal, 'reach', p) })) {
+    for (const source of resourceSources(bot, reachable, { workSite: goal.workSite, failures: attemptsFor(goal).of('option'), resting: p => isSetAside(goal, 'reach', p) })) {
       const place = mobSourceAbout(bot, goal, { at: source.blocks[0], of: 'it' });
       actions[source.key] = { description: { ...source.description, ...(place ? { aboutThePlace: place.says.trim() } : {}), resource: step.drops, requiredTool: step.tool },
         valid: () => !!nearestRemaining(bot, source), run: () => workSource(bot, task, step, goal, save, source) };
@@ -10611,7 +10647,7 @@ async function runIdle(bot, task, goal, store, { survival, decisionClient, recov
         noticeVillage(bot, goal, save);
         noticeLandmarks(bot, goal, save);
         const acted = ((!turn || turn.unclaimed) && await survival.step(task, goal, save, onStep)) || await lootNearby(bot, task, goal, save, lootActions());
-        if (!acted) await idleWork(bot, task, goal, save, decisionClient, onStep);
+        if (!acted && !await stayClose.regroup(bot, task, navigate, true)) await idleWork(bot, task, goal, save, decisionClient, onStep);
       }
       failures = 0; delete goal.lastError; delete goal.lastErrorAt; save(); onStep(goal); narrate(bot, goal);
     } catch (err) {
@@ -10757,6 +10793,7 @@ async function runGoal(bot, task, goal, store, { maxSteps = Infinity, onStep = (
   survival ||= createSurvival(bot, { state: goal.survival, client: decisionClient });
   goal.survival = survival.state;
   protectConstruction(bot, goal);
+  bot._activeWorkSite = goal.workSite;
   recallWorkstations(bot, goal);
   recoveryAdviser ||= createRecoveryAdviser(bot, decisionClient);
   goal.status = 'running'; goal.failures = 0; goal.stalls = 0; save();
@@ -10889,6 +10926,11 @@ async function runGoal(bot, task, goal, store, { maxSteps = Infinity, onStep = (
       }
       if (!endTask && await upkeepStep(bot, task, goal, save, decisionClient, onStep)) { goal.stalls = 0; save(); onStep(goal); continue; }
       bot._goal = goal; bot._goalSave = save;
+      if (goal.workSite && !goal.visitedWorkSite) {
+        await workSites.approach(bot, task, goal.workSite, navigate);
+        goal.visitedWorkSite = true; save();
+      }
+      if (!endTask && !['come', 'follow'].includes(goal.kind) && await stayClose.regroup(bot, task, navigate, false)) continue;
       if (!endTask && await sculkStep(bot, task, goal, save, decisionClient, onStep)) { goal.stalls = 0; save(); onStep(goal); continue; }
       // A structure's chest within reach is opened as a rule (looting.js).
       if (goal.kind === 'win' && !endTask && await inCatch(task, goal, () => lootNearby(bot, task, goal, save, lootActions()))) { goal.stalls = 0; save(); onStep(goal); continue; }
@@ -10914,7 +10956,7 @@ async function runGoal(bot, task, goal, store, { maxSteps = Infinity, onStep = (
         { prepare: () => prepareBundleStep(bot, task, goal, save, decisionClient, () => onStep(goal)) });
       if (goal.kind === 'find') complete = await discoverStep(bot, task, goal, save, { navigate, explore,
         boatTravel: target => boatTravelStep(bot, task, goal, save, target, { acquireStep }) });
-      if (['come', 'follow'].includes(goal.kind)) complete = await movementStep(bot, task, goal, save);
+      if (['come', 'follow'].includes(goal.kind)) complete = goal.kind === 'come' && goal.workSite ? true : await movementStep(bot, task, goal, save);
       if (goal.kind === 'visit') complete = await visitPlace(bot, task, goal, save, { navigate,
         boatTravel: target => boatTravelStep(bot, task, goal, save, target, { acquireStep }) });
       if (prepared && goal.kind === 'concrete') {
@@ -11057,7 +11099,7 @@ async function runGoal(bot, task, goal, store, { maxSteps = Infinity, onStep = (
   goal.status = 'blocked'; goal.lastError = 'Action budget reached'; save();
   bot.chat('This is taking a while. I saved our progress. Say "Jev resume" to keep going.');
   return { ok: false, reason: goal.lastError, goal };
-  } finally { stopObserving(); if (bot._stalls) bot._stalls.goalOf = null; task.stallCheck = undefined; require('./arbiter').unwatch(bot); }
+  } finally { delete bot._activeWorkSite; stopObserving(); if (bot._stalls) bot._stalls.goalOf = null; task.stallCheck = undefined; require('./arbiter').unwatch(bot); }
 }
 
 // Placement in Creative consumes no inventory. Observe the actual construction
