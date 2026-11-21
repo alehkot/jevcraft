@@ -12573,7 +12573,8 @@ class Survival {
       // blocks, or sealed to heal or against a threat, it is asked as before.
       // The same for a player come close at night, whatever is in hand
       // (JEV_NIGHT=company, company.js comesOut).
-      const drawnOut = require('./company').calledOver(goal, bot) ? 'the call' : night && require('./company').comesOut(bot) ? 'a player close by' : null;
+      // And for the day, for the bot waiting between requests (JEV_IDLE=wait).
+      const drawnOut = require('./company').drawnOut(bot, goal, night);
       const calledOut = drawnOut && options.leave && !watcher && !about.length &&
         !(sealHold?.kinds || []).some(kind => kind !== 'surface_night') ? 'leave' : null;
       if (calledOut) console.log(`[company] the night's pocket is opened for ${drawnOut}`);

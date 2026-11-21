@@ -244,10 +244,10 @@ const call = (over = {}) => ({ kind: 'come', request: 'Jev come here', from: 'Ca
   // leave (stood in for here), or its question put to the decision layer,
   // which nobody answers in this test.
   const { createSurvival } = require('../src/work');
-  const inPocket = async (goal, { players, entities = {} } = {}) => {
+  const inPocket = async (goal, { players, entities = {}, timeOfDay = 16000 } = {}) => {
     const s = scene({ at: [10.5, 60, 0.5] });
     s.set(10, 60, 0, 'air'); s.set(10, 61, 0, 'air');
-    s.bot.time.timeOfDay = 16000; s.bot.entities = entities;
+    s.bot.time.timeOfDay = timeOfDay; s.bot.entities = entities;
     if (players) s.bot.players = players;
     const refuge = { origin: { x: 10, y: 60, z: 0 }, dimension: 'overworld', createdAt: new Date().toISOString(), emergency: true, shaft: true, top: { x: 10, y: 64, z: 0 }, verifiedAt: Date.now() };
     const survival = createSurvival(s.bot, { state: { shelters: [refuge] }, client: null });
@@ -573,6 +573,58 @@ const call = (over = {}) => ({ kind: 'come', request: 'Jev come here', from: 'Ca
     assert.equal(called.did, 'leave');
     assert.equal(called.survival.state.leftPocket, undefined);
     assert.equal(called.walks.length, 0, 'the call walks itself');
+  });
+
+  // ---------------------------------------------------------------- 9. whose turn it is in a pocket that is to be left
+  await check('what a pocket is opened for by rule: a call, a player come close at night, the day for the bot waiting', async () => {
+    const at = (timeOfDay, players) => { const { bot } = scene({ at: [10.5, 64, 0.5] }); bot.time.timeOfDay = timeOfDay; if (players) bot.players = players; return bot; };
+    assert.equal(company.drawnOut(at(16000), call()), 'the call');
+    assert.equal(company.drawnOut(at(16000), idle), null, 'night, the switch not set');
+    assert.equal(company.drawnOut(at(6000), idle), null, 'day, not waiting');
+    await waitingFor(() => {
+      assert.equal(company.drawnOut(at(6000), idle), 'the day');
+      assert.equal(company.drawnOut(at(23600), idle), 'the day', 'after the dark has ended');
+      assert.equal(company.drawnOut(at(16000), idle), null, 'night alone: the pocket is its shelter');
+      assert.equal(company.drawnOut(at(6000), call({ kind: 'obtain' })), null, 'work in hand by day is not the waiting');
+    });
+    await withNight(() => {
+      assert.equal(company.drawnOut(at(16000), idle), 'a player close by');
+      assert.equal(company.drawnOut(at(10000), idle, true), 'a player close by', 'the survival layer\'s night begins at 9500');
+      assert.equal(company.drawnOut(at(16000, playerAt(10.5 + 24)), idle), null, 'the player 24 blocks off');
+      assert.equal(company.drawnOut(at(6000), idle), null, 'by day a player close by opens nothing');
+    });
+  });
+
+  await check('the pocket\'s turn is not weighed against the waiting bot\'s own work, where the pocket is to be left; elsewhere the two are weighed as before', async () => {
+    const claims = [{ layer: 'survival', action: 'pocket_next', urgency: 'routine' }, null, { layer: 'work', action: 'step', urgency: 'routine' }];
+    const at = (timeOfDay, players) => { const { bot } = scene({ at: [10.5, 60, 0.5] }); bot.time.timeOfDay = timeOfDay; if (players) bot.players = players; return bot; };
+    assert.equal(company.pocketFirst(at(6000), idle, claims), false, 'not waiting');
+    await waitingFor(async () => {
+      assert.equal(company.pocketFirst(at(6000), idle, claims), true, 'by day');
+      assert.equal(company.pocketFirst(at(16000), idle, claims), false, 'at night alone');
+      assert.equal(company.pocketFirst(at(6000), idle, [{ layer: 'survival', action: 'obtain_food' }, claims[2]]), false, 'not in a pocket');
+      assert.equal(company.pocketFirst(at(6000), idle, [claims[2]]), false, 'no claim of the survival layer');
+      assert.equal(company.pocketFirst(at(6000), call({ kind: 'obtain' }), claims), false, 'a request in hand');
+      await withNight(() => {
+        assert.equal(company.pocketFirst(at(16000), idle, claims), true, 'at night, a player close by');
+        assert.equal(company.pocketFirst(at(16000, playerAt(10.5 + 24, 60)), idle, claims), false, 'the player 24 blocks off');
+      });
+    });
+  });
+
+  await check('in the step itself, by day, the bot waiting: the pocket is opened by rule and climbed out of; with a mob about it is asked as before', async () => {
+    await waitingFor(async () => {
+      const out = await inPocket(idle, { timeOfDay: 6000 });
+      assert.equal(out.did, 'leave', out.said.slice(0, 4).join(' / '));
+      assert.ok(out.said.some(l => /opened for the day/.test(l)), out.said.join(' / ').slice(0, 300));
+      assert.equal(out.bot.entity.position.y, 64, 'up on the grass');
+      const zombie = { 7: { id: 7, name: 'zombie', type: 'hostile', kind: 'Hostile mobs', displayName: 'Zombie', position: new Vec3(14.5, 64, 0.5), velocity: new Vec3(0, 0, 0), height: 1.95, width: 0.6, isValid: true, metadata: [] } };
+      assert.equal((await inPocket(idle, { timeOfDay: 6000, entities: zombie })).did, 'asked', 'a zombie four blocks from the lid');
+    });
+    // Not waiting: the routine at its own day goes its own way out, with no rule of the waiting and no climb.
+    const own = await inPocket(idle, { timeOfDay: 6000 });
+    assert.ok(!own.said.some(l => /\[company\]/.test(l)), own.said.filter(l => /company/.test(l)).join(' / '));
+    assert.equal(own.survival.state.leftPocket, undefined);
   });
 
   console.log(`\n${passed} checks passed`);

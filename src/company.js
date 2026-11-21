@@ -162,6 +162,33 @@ function standing(bot, survival, dark, now = Date.now()) {
   return { dark: alone, sheltered, out: !sheltered && !!bot?._outAt && now - bot._outAt < 5000 };
 }
 
+// ---- Whose turn it is in a pocket that is to be left --------------------------
+// The dark as the waiting reads it (session.js).
+const darkNow = bot => bot?.game?.dimension === 'overworld' && Number.isFinite(bot?.time?.timeOfDay) && bot.time.timeOfDay >= 12300 && bot.time.timeOfDay < 23500;
+// The bot's own routine, run while it waits between requests.
+const waitingIdle = goal => process.env.JEV_IDLE === 'wait' && goal?.kind === 'survive';
+// What a pocket sealed for the night alone is opened for, by rule (the
+// pocket's turn in survival.js; `night` is the survival layer's own, from
+// 9500): a call, a player come close at night, the day for the bot waiting.
+function drawnOut(bot, goal, night = darkNow(bot)) {
+  if (calledOver(goal, bot)) return 'the call';
+  if ((night || darkNow(bot)) && comesOut(bot)) return 'a player close by';
+  return !darkNow(bot) && waitingIdle(goal) ? 'the day' : null;
+}
+// The pocket's turn comes before the waiting bot's own work (work.js
+// liveTurn): its routine has a claim on the turn like any request's ("stay
+// alive and prepare supplies"), the two are weighed by the decision layer, and
+// with a player beside the pocket at a start it gave the turn to the work,
+// which has nothing to do in a pocket. The bot sat sealed in, a player five
+// blocks off, for 45 seconds, until the stillness rule dug it free (the
+// fourth run with a player, 2026-11-21). Where the pocket is to be left for
+// the day or for a player close by, the work is not weighed against it.
+function pocketFirst(bot, goal, claims = []) {
+  if (!waitingIdle(goal) || !claims.some(c => c?.layer === 'survival' && c.action === 'pocket_next')) return false;
+  const why = drawnOut(bot, goal);
+  return why === 'the day' || why === 'a player close by';
+}
+
 // ---- Out of a pocket, onto the ground ---------------------------------------
 // The survival layer's leave opens a pocket and, where the way is not straight
 // up, stops there: its doors are the four sides at the feet and the head, and
@@ -359,4 +386,4 @@ async function standInView(bot, task, target, { navigate, goals, walkMs = WALK_M
   return { seen: inView(bot, target), moved: true, cell };
 }
 
-module.exports = { calledOver, callerState, lapsed, here, inShelter, holedUp, routine, standing, CLIMB_MS, rimOf, openGround, inLeftPocket, climbOut, afterLeave, LEFT_MS, nightMode, staysUp, comesOut, nearestPlayer, STAY_UP, COME_OUT, ALONE_MS, OUT_MS, inView, spotsInView, standInView, standable, EYE, REACH, RISE, CALL_HOLDS_MS, GONE_MS };
+module.exports = { calledOver, callerState, lapsed, here, inShelter, holedUp, routine, standing, darkNow, drawnOut, pocketFirst, CLIMB_MS, rimOf, openGround, inLeftPocket, climbOut, afterLeave, LEFT_MS, nightMode, staysUp, comesOut, nearestPlayer, STAY_UP, COME_OUT, ALONE_MS, OUT_MS, inView, spotsInView, standInView, standable, EYE, REACH, RISE, CALL_HOLDS_MS, GONE_MS };

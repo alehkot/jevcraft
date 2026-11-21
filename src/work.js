@@ -10660,8 +10660,10 @@ async function liveTurn(bot, task, goal, activeWork, survival, saveWork, { clien
   // A claim that throws is said once and counts as none: survival's step
   // then runs as the backstop, as it did before the arbiter.
   const read = f => { try { return f(); } catch (err) { if (!liveTurn.failed) { liveTurn.failed = true; console.log(`[arbiter] a claim failed (said once): ${err?.stack || err}`); } return null; } };
-  const claims = [read(() => require('./survival').claim(bot, activeWork, survival)), read(() => require('./vitals').claim(bot)),
+  let claims = [read(() => require('./survival').claim(bot, activeWork, survival)), read(() => require('./vitals').claim(bot)),
     read(() => require('./mob-hunt').claim(bot, activeWork)), workClaim(goal, bot)].map(c => c && { ...c, run: () => runs[c.layer](c) });
+  // Waiting for a player, in a pocket that is to be left: the pocket's turn is not weighed against the routine's own work (company.js pocketFirst).
+  if (read(() => require('./company').pocketFirst(bot, goal, claims))) claims = claims.map(c => c?.layer === 'work' ? null : c);
   return require('./arbiter').take(bot, claims, { task, goal, save, client, backstop: runs.survival, backstopFor });
 }
 // The layer an action reported during the survival step belongs to: the
