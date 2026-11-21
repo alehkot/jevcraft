@@ -17,6 +17,7 @@ const { planCatalog } = require('./knowledge');
 const { runGoal, runIdle, createSurvival } = require('./work');
 const { Task } = require('./skills');
 const { parseAddress, chatNames, clarificationReply, CLARIFY_MS } = require('./chat-address');
+const { createReactiveWait } = require('./reactive-wait');
 const { compatibilityPlugin } = require('./compatibility');
 const { requestedCommand, createCommandAccess } = require('./commands');
 const { classifyCommand } = require('./command-classifier');
@@ -219,6 +220,10 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   // The old goal's copy only where it can be this world's: with a world id
   // the goal store is still per server.
   const survival = createSurvival(bot, { state: survivalStore.read() || (memoryIdentity === identity ? store.read()?.survival : undefined), client: routed });
+  // JEV_IDLE=wait: between requests, wait where it stands and only defend itself.
+  const waitMode = process.env.JEV_IDLE === 'wait';
+  const reactiveWait = waitMode ? createReactiveWait({ bot, survival, save: () => saveSurvival(),
+    isReady: () => ready && !ended, isBusy: () => Boolean(active) || relaunching || launchingDream }) : null;
   if (!survivalStore.read() && store.read()?.status === 'cancelled') survival.state.paused = true;
   const saveSurvival = () => { if (!ended) { survival.state.version = 1; survivalStore.save(survival.state); } };
   const saveGoal = goal => { if (!ended) { memory.recordGoal(goal, bot); world.harvest(goal); store.save(goal); } };
@@ -245,6 +250,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         const saved = store.read();
         if (saved && ['pending', 'running', 'recovering'].includes(saved.status)) { saved.status = 'cancelled'; saveGoal(saved); }
       }
+      await reactiveWait?.cancel();
       return;
     }
     active.task.cancel();
@@ -257,6 +263,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   }
 
   function launch(goal) {
+    reactiveWait?.cancel().catch(() => {});
     world.hydrate(goal);
     memory.bind(goal);
     goal.memoryContext = memory.context(goal.from);
@@ -428,6 +435,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   }
 
   async function resume(revision = generation, options) {
+    await reactiveWait?.cancel();
     if (active?.idle) await stop('interrupted');
     // The dream is what the bot does with nobody's work waiting. A player's
     // stopped or replaced request under it comes first; the dream picks up
@@ -441,7 +449,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     const current = store.read(), saved = resumeSaved(current, options);
     if (!saved || saved.status === 'complete') {
       survival.state.paused = false; delete survival.state.idleBlocked; delete survival.state.deathBlocked; saveSurvival();
-      bot.chat("I'm back! I'll look after myself while I wait for your next task."); return;
+      bot.chat(waitMode ? "I'm back! I'll wait here for your next task and defend myself meanwhile." : "I'm back! I'll look after myself while I wait for your next task."); return;
     }
     delete saved.waitingOn;
     if (saved.kind === 'build' && !saved.design) saved.designAttempts = 0;
@@ -472,7 +480,16 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         return;
       }
     }
-    if (ready && !active && !relaunching && !launchingDream && !pendingRequests && !survival.state.paused && !survival.state.idleBlocked) launchIdle();
+    if (waitMode) {
+      // JEV_IDLE=wait: nothing is done between requests but answering what would
+      // hurt the bot where it stands; a standing dream is still launched, since
+      // a player set it. Stopped ("Jev stop") it still defends itself.
+      if (ready && !active && !relaunching && !launchingDream && !pendingRequests) {
+        const standing = survival.state.paused ? null : dreamStore.read();
+        if (standing?.dream && shouldLaunchDream(standing, store.read(), { ready: readyForDream(), resting: isSetAside(survival, 'dream_launch', standing.dream) })) launchDream(standing);
+        else reactiveWait.tick().catch(err => console.error('[reactive wait]', err));
+      }
+    } else if (ready && !active && !relaunching && !launchingDream && !pendingRequests && !survival.state.paused && !survival.state.idleBlocked) launchIdle();
   }, 500);
 
   bot._client.on('playerChat', data => {
@@ -778,6 +795,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     if (ended) return;
     observation?.detach(String(reason || 'connection closed'));
     ready = false; clearInterval(idleTimer); invalidateRequests();
+    reactiveWait?.cancel().catch(() => {});
     if (active && !active.task.cancelled) stop('running').catch(console.error);
     // This connection's saves on disk before a replacement reads state (note 2042): the survival store's save waits up to
     // 1.5 s, the rejoin read the file without the death just recorded, and its own saves then wrote over it. full-2's death
