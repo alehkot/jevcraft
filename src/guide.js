@@ -21,7 +21,14 @@ const clean = (value, size = 200) => typeof value === 'string'
 const owner = name => clean(String(name || ''), 64).toLowerCase();
 const MAX_RULES = 16, MAX_REQUESTS = 3, TALK_KEPT = 6;
 
-const SYSTEM = (bot, { built = false } = {}) => `You are the language layer of ${bot}, a companion bot in Minecraft survival. ${bot} plays honest survival: no commands, no cheats, nothing from nowhere. Everything it has was gathered, mined, smelted or crafted by it.
+// JEV_PERSONALITY: how "say" sounds, the three manners of alexrmsouza/jevcraft
+// e244c34d's personality.js. Unset: the instructions as measured (.env.example).
+const PERSONALITIES = {
+  reserved: 'Speak briefly and calmly. Keep to what the player needs: no jokes, no filler, no question that is not needed.',
+  companion: 'Be cooperative, curious and conversational, with light humor now and then when it fits. Ask a useful question when a preference or a missing fact changes the task.',
+  playful: 'Be cooperative and lightly playful: a short joke about the situation now and then, never in place of useful information or while the player is in danger, and no catchphrase twice.',
+};
+const SYSTEM = (bot, { built = false, personality = null } = {}) => `You are the language layer of ${bot}, a companion bot in Minecraft survival. ${bot} plays honest survival: no commands, no cheats, nothing from nowhere. Everything it has was gathered, mined, smelted or crafted by it.
 
 You never act yourself. A separate engine does the work. Your job is to turn what the player said into what that engine understands, following the player's standing rules.
 
@@ -50,7 +57,7 @@ How to decide:
 6. Something the engine cannot do: say so in "say" and name the nearest thing it can do. No requests.
 7. A job for idle time ("when you have nothing to do, collect coal"): that is a dream. Emit "your dream is to get me <N> <item>" yourself, with a sensible amount such as one stack, and say what you set. Never tell the player how to phrase something you can emit yourself.
 ${built ? `8. What someone built is left alone by the engine: it takes wood, stone and the rest from the wild, and never from a house, a village, a fence, a wall or anything else made by players or villagers. When the only source in view is built it says so and looks further. "use_buildings" is false unless the player clearly allows taking from buildings, in this message or in a standing rule ("take the wood from that house", "you can break the village houses", "use the buildings"): then true. With requests in the answer it covers those requests; with none it covers the work in hand (status.doing), and "say" confirms it. A plain request ("get wood") never sets it, and you never set it because it would be quicker. A standing rule that allows it ("you may always take wood from buildings") is stored like any other and applied to each request. Asked not to touch buildings: say that is how ${bot} works already, no rule needed.
-` : ''}Never write anything that starts with "/". Never promise what the engine cannot do. "say" is plain text, friendly and brief, in the player's language.`;
+` : ''}Never write anything that starts with "/". Never promise what the engine cannot do. "say" is plain text, friendly and brief, in the player's language.${PERSONALITIES[personality] ? ` ${PERSONALITIES[personality]} The manner is for "say" only: it never changes the requests.` : ''}`;
 
 function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_API_KEY,
   url = process.env.JEV_GUIDE_URL || 'https://api.openai.com/v1/chat/completions',
@@ -62,7 +69,9 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
   maxTokens = Number(process.env.JEV_GUIDE_MAX_TOKENS || 600),
   minGapMs = 1500, perHour = Number(process.env.JEV_GUIDE_PER_HOUR || 60),
   // Whether the engine leaves built things alone (built.js): the layer is told so, and may pass on a player's leave.
-  built = require('./built').on() } = {}) {
+  built = require('./built').on(), personality = process.env.JEV_PERSONALITY } = {}) {
+  const manner = String(personality || '').trim().toLowerCase();
+  if (manner && !PERSONALITIES[manner]) console.log(`[guide] JEV_PERSONALITY=${clean(manner, 32)} is not ${Object.keys(PERSONALITIES).join(', ')}; the instructions are left as they are`);
   let state = { version: 1, rules: [] };
   if (file && fs.existsSync(file)) {
     try { const saved = JSON.parse(fs.readFileSync(file, 'utf8')); if (saved.version === 1 && Array.isArray(saved.rules)) state = saved; }
@@ -105,7 +114,7 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
       const body = { model, max_completion_tokens: maxTokens, response_format: { type: 'json_object' },
         ...(temperature !== undefined && temperature !== '' && { temperature: Number(temperature) }),
         ...(reasoning && { reasoning_effort: reasoning }),
-        messages: [{ role: 'system', content: SYSTEM(botName, { built }) }, { role: 'user', content: JSON.stringify(user) }] };
+        messages: [{ role: 'system', content: SYSTEM(botName, { built, personality: manner }) }, { role: 'user', content: JSON.stringify(user) }] };
       let reply;
       // A setting this model does not take is left out from then on and the call made again, so one
       // wrong line in .env does not leave the layer silently off.
@@ -157,4 +166,4 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
   return { available: Boolean(apiKey), consult, rulesFor, model };
 }
 
-module.exports = { createGuide, SYSTEM };
+module.exports = { createGuide, SYSTEM, PERSONALITIES };

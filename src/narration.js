@@ -332,8 +332,15 @@ function stepKey(goal, step, decision) {
   return `${action}:${target}`;
 }
 
+// JEV_NARRATION, the levels of alexrmsouza/jevcraft dad68758: off says none
+// of these lines (answers to the player are said as ever), important only
+// what survival does (a run, a meal, a shelter), unset or full each new step
+// of the work too.
+const narration = () => { const v = String(process.env.JEV_NARRATION || '').trim().toLowerCase(); return v === 'off' || v === 'important' ? v : 'full'; };
 function narrate(bot, goal, { now = Date.now() } = {}) {
   if (typeof bot?.chat !== 'function' || !goal) return null;
+  const level = narration();
+  if (level === 'off') return null;
   const state = goal.narrated ||= {};
   const speak = line => {
     if (!line || (state.at && now - state.at < MIN_GAP_MS)) return false;
@@ -365,6 +372,7 @@ function narrate(bot, goal, { now = Date.now() } = {}) {
     if (!phrase || !line || speak(line)) { state.survival = action.at; if (line) state.lastSurvivalLine = { news, at: now }; return line || null; }
     return null;
   }
+  if (level === 'important') return null;
   // The work's step is not said while the body is out of air or its head
   // in a block: the step is stopped then, and "Crafting a bread." as the
   // head sat in gravel read as work going on through it (note 680).
