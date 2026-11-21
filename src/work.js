@@ -64,7 +64,7 @@ const { batchPlan, remainingOutputs } = require('./batch-plan');
 const { visitPlace } = require('./memory');
 const { selectBundleBatch, batchOutputs } = require('./bundle-batch');
 const { remainingBuildBatch, materialCounts, createBuildBatch } = require('./build-batch');
-const { isBed, bedFloor, matchesBuildBlock, placementGoal, buildCellComplete, buildFootprint, blockOwnership, placementFacing, placementPitch, assertPlacementFootprint } = require('./build-blocks');
+const { isBed, bedFloor, matchesBuildBlock, placementGoal, buildCellComplete, buildFootprint, blockOwnership, placementFacing, placementPitch } = require('./build-blocks');
 const { isDoor, doorPairMatches } = require('./doors');
 const interactableBlocks = new Set(require('mineflayer-pathfinder/lib/interactable.json'));
 const { chooseConstructionWork, approachConstruction } = require('./construction-access');
@@ -1932,7 +1932,6 @@ async function place(bot, task, p, material, { face, properties, stay = false, r
   task.check(); checkAir(bot);
   const cell = { ...p, material, properties };
   if (buildCellComplete(bot, cell)) return;
-  if (properties?.type === 'single') assertPlacementFootprint(bot, p, material);
   // Walling in on a ledge: a cell that needs the bot to step aside, back
   // off or walk closer is left, never moved for. Sealing on a Nether ledge
   // with a piglin about, the dream run stepped back off it into the lava
@@ -1993,7 +1992,9 @@ async function place(bot, task, p, material, { face, properties, stay = false, r
     if (ref?.boundingBox !== 'block') continue;
     task.check();
     const wasSneaking = bot.getControlState?.('sneak') || false;
-    const sneak = interactableBlocks.has(ref.name) && !wasSneaking;
+    // Crouched as well for a chest drawn single, so the game does not join it
+    // to one of its kind beside it (build-blocks.js, the furnishings).
+    const sneak = (interactableBlocks.has(ref.name) || properties?.type === 'single') && !wasSneaking;
     try {
       if (sneak) { bot.setControlState('sneak', true); await bot.waitForTicks(1); task.check(); }
       // A stair or door takes its facing from the way the player looks, and

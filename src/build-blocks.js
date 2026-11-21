@@ -10,9 +10,13 @@ const directions = [new Vec3(0, -1, 0), new Vec3(0, 1, 0), new Vec3(0, 0, -1), n
 // Furnishings a design may place (rkhazh/jevcraft df911c12): a table as it
 // comes; a furnace, smoker, blast furnace, barrel, stonecutter or loom with
 // its front to a side, which it turns to the player placing it (a stair's
-// facing is the way the player looks); a single chest the same, never beside
-// another of its kind, which it would join. Copper chests weather into other
-// blocks and are left out.
+// facing is the way the player looks); a single chest the same, never drawn
+// beside another of its kind (designer.js). Beside one already in the world
+// it is put down crouched and not on that chest's side (work.js place,
+// placementGoal): the game joins a chest put down standing to a single one of
+// its kind to its left or right facing the same way, and one put down
+// crouched to the chest whose side was clicked. Copper chests weather into
+// other blocks and are left out.
 const plainFurnishings = new Set(['crafting_table', 'cartography_table', 'smithing_table', 'fletching_table', 'enchanting_table']);
 const facingFurnishings = new Set(['furnace', 'blast_furnace', 'smoker', 'barrel', 'stonecutter', 'loom']);
 const singleChest = name => name === 'chest' || name === 'trapped_chest';
@@ -25,14 +29,6 @@ const placementPitch = (material, aimPitch) => material === 'barrel' ? 0 : aimPi
 // type. A chest's type (single) is none: read as a top half, the floor under
 // a chest was no face to place it on.
 const placedHalf = properties => [properties?.half, properties?.type].find(v => v === 'top' || v === 'bottom');
-function assertPlacementFootprint(bot, p, material) {
-  if (!singleChest(material)) return;
-  for (const [dx, dz] of Object.values(bedDirections)) {
-    const other = bot.blockAt(new Vec3(p.x + dx, p.y, p.z + dz));
-    if (!other) throw new Error(`Cannot see beside the ${material.replaceAll('_', ' ')} at ${p}`);
-    if (other.name === material) throw new Error(`A ${material.replaceAll('_', ' ')} at ${p} would join the one beside it`);
-  }
-}
 
 // The design contract exposes just the states we can deliberately place.
 // Minecraft derives stair corners from neighbors; the designer cannot force
@@ -151,6 +147,8 @@ function placementGoal(bot, point, cell = {}) {
   // GoalPlaceBlock's facing means the face toward the player, opposite the
   // player's horizontal look direction used by Minecraft for stairs.
   const goal = new goals.GoalPlaceBlock(p, bot.world, { range: 4.25, facing: opposite[placementFacing(cell.material, state.facing)] });
+  // A chest drawn single is not put on another of its kind (the furnishings above).
+  if (state.type === 'single') goal.facesPos = goal.facesPos.filter(([, , ref]) => bot.blockAt(ref)?.name !== cell.material);
   if (!half) return goal;
   goal.facesPos = [];
   for (const face of directions) {
@@ -174,4 +172,4 @@ function placementGoal(bot, point, cell = {}) {
   return goal;
 }
 
-module.exports = { furnishingPlacement, placementFacing, placementPitch, placedHalf, assertPlacementFootprint, isBed, bedFloor, bedPairMatches, regionProperties, matchesBuildBlock, placementGoal, buildFootprint, buildCellComplete, enclosedCell, blockOwnership, matchesOwnership };
+module.exports = { furnishingPlacement, placementFacing, placementPitch, placedHalf, isBed, bedFloor, bedPairMatches, regionProperties, matchesBuildBlock, placementGoal, buildFootprint, buildCellComplete, enclosedCell, blockOwnership, matchesOwnership };
