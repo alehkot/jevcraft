@@ -531,6 +531,36 @@ const call = (over = {}) => ({ kind: 'come', request: 'Jev come here', from: 'Ca
     });
   });
 
+  await check('while the climb is in hand the routine is not ended, whatever the ground says; a pocket built on the grass is not walked back through', async () => {
+    const s = scene({ at: [10.5, 64, 0.5] });
+    assert.deepEqual(company.standing(s.bot, { state: {} }, false), { dark: false, sheltered: false, out: false });
+    s.bot._climbing = Date.now();
+    assert.equal(company.standing(s.bot, { state: {} }, false).sheltered, true, 'the climb in hand');
+    assert.equal(company.routine({ ...company.standing(s.bot, { state: {} }, false), sinceSheltered: 60000 }), 'run');
+    s.bot._climbing = Date.now() - company.CLIMB_MS - 1000;
+    assert.equal(company.standing(s.bot, { state: {} }, false).sheltered, false, 'a climb of long ago is not believed');
+    // A hut on the lawn, its doorway walked out of by the leave: the bot stands on the grass two blocks from where it sat.
+    const hut = scene({ at: [12.5, 64, 0.5] });
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) for (const y of [64, 65]) if (dx !== 1) hut.set(10 + dx, y, dz, 'dirt');
+    hut.set(10, 66, 0, 'dirt');
+    let during = null;
+    const walk = async (b, t, goal) => { during = company.standing(b, { state: {} }, true).sheltered; b.entity.position = new Vec3(goal.x + 0.5, goal.y, goal.z + 0.5); };
+    hut.bot.players = { Caller: { entity: { position: new Vec3(30.5, 64, 0.5), id: 2, type: 'player' } } };   // not close: no walk into view either
+    const done = await company.afterLeave({ bot: hut.bot, state: {} }, task, call({ kind: 'follow' }), () => {}, { origin: { x: 10, y: 64, z: 0 }, dimension: 'overworld' }, { drawnOut: 'a player close by', navigate: walk, goals });
+    assert.equal(done.up, true);
+    assert.equal(during, null, 'already on the grass: no walk back to a rim');
+    assert.deepEqual({ ...hut.bot.entity.position }, { x: 12.5, y: 64, z: 0.5 });
+    assert.equal(hut.bot._climbing, undefined, 'and the climb is over');
+    // With the player close and out of view behind the hut, the walk into view is made with the climb in hand.
+    const near = scene({ at: [12.5, 64, 0.5], player: [6.5, 64, 0.5] });
+    for (const dz of [-1, 0, 1]) for (const y of [64, 65, 66]) near.set(10, y, dz, 'dirt');
+    let held = null;
+    const into = async (b, t, goal) => { held = company.standing(b, { state: {} }, false).sheltered; b.entity.position = new Vec3(goal.x + 0.5, goal.y, goal.z + 0.5); };
+    const seen = await company.afterLeave({ bot: near.bot, state: {} }, task, call({ kind: 'follow' }), () => {}, { origin: { x: 10, y: 64, z: 0 }, dimension: 'overworld' }, { drawnOut: 'a player close by', navigate: into, goals });
+    assert.equal(held, true, 'the routine is kept for the walk');
+    assert.equal(seen.seen, true);
+  });
+
   await check('in the step itself: a pocket opened for a player close by is climbed out of; one opened for a call is not', async () => {
     await withNight(async () => {
       const out = await inPocket(idle);

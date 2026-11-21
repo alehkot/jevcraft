@@ -154,7 +154,11 @@ function routine({ dark, sheltered, sinceSheltered, out = false }) {
 // again (inLeftPocket); `out` is the climb saying it has finished (climbOut).
 function standing(bot, survival, dark, now = Date.now()) {
   const kept = dark && staysUp(bot, now), drawn = dark && comesOut(bot), alone = dark && !kept;
-  const sheltered = ((!dark || drawn) && (holedUp(bot) || inShelter(bot, survival))) || (!alone && inLeftPocket(bot, survival, now));
+  // The climb in hand is the routine's to finish (afterLeave): the second run
+  // with a player (2026-11-21) had a pocket built on the grass opened, its
+  // record gone, and the walk into the player's view stopped three seconds on.
+  const climbing = !!bot?._climbing && now - bot._climbing < CLIMB_MS;
+  const sheltered = ((!dark || drawn) && (holedUp(bot) || inShelter(bot, survival))) || (!alone && inLeftPocket(bot, survival, now)) || climbing;
   return { dark: alone, sheltered, out: !sheltered && !!bot?._outAt && now - bot._outAt < 5000 };
 }
 
@@ -176,6 +180,7 @@ function standing(bot, survival, dark, now = Date.now()) {
 // it, so the waiting does not take an opened pocket for the ground.
 const LEFT_MS = 5 * 60000;    // a pocket left is remembered this long: the time the routine has to get out of one the climb failed in
 const RIM_UP = 8, RIM_OUT = 3;
+const CLIMB_MS = 45000;       // the longest a climb is believed to be in hand
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // Nothing but leaves over the bot's head there, eighteen blocks up.
@@ -240,13 +245,16 @@ function nearestPlayerEntity(bot, within = Infinity) {
 // A walk that fails is not the end of the bot's turn; air, safety and a
 // cancel are passed up as everywhere.
 async function climbOut(bot, task, { navigate, goals, rim, walkMs = 15000 } = {}) {
-  if (rim && typeof navigate === 'function') {
+  // Not from the ground: a pocket built on the grass is walked out of by its
+  // doorway, and the leave has done that.
+  const onGround = () => { try { return openGround(bot, require('./terrain').feetCell(bot)); } catch (_) { return false; } };
+  if (rim && typeof navigate === 'function' && !onGround()) {
     try { await navigate(bot, task, new goals.GoalBlock(rim.x, rim.y, rim.z), { timeoutMs: walkMs, stallMs: 4000 }); }
     catch (err) { task?.check?.(); if (['NeedsAir', 'NeedsSafety', 'Cancelled'].includes(err?.name)) throw err; }
   }
   const player = nearestPlayerEntity(bot, COME_OUT);
   const view = player ? await standInView(bot, task, player, { navigate, goals }) : null;
-  const up = !rim || require('./terrain').feetCell(bot).y >= rim.y;
+  const up = !rim || onGround() || require('./terrain').feetCell(bot).y >= rim.y;
   if (up) bot._outAt = Date.now();
   return { up, ...(view ? { seen: view.seen } : {}) };
 }
@@ -263,7 +271,10 @@ async function afterLeave(survival, task, goal, save, refuge, { drawnOut = null,
   if (!rim) return null;
   survival.state.leftPocket = { origin: { x: refuge.origin.x, y: refuge.origin.y, z: refuge.origin.z }, rim: { x: rim.x, y: rim.y, z: rim.z }, dimension: bot.game?.dimension, at: Date.now() };
   save?.();
-  const done = await climbOut(bot, task, { navigate, goals, rim });
+  bot._climbing = Date.now();
+  let done;
+  try { done = await climbOut(bot, task, { navigate, goals, rim }); }
+  finally { delete bot._climbing; }
   console.log(`[company] out of the pocket: ${done.up ? 'up on the ground' : 'not up yet'}${done.seen === undefined ? '' : done.seen ? ', in view of the player' : ', the player not in view'}`);
   // The waiting ends the routine here (session.js); it is given the moment to.
   if (done.up && waiting) for (let i = 0; i < 12; i++) { task?.check?.(); await pause(100); }
@@ -336,4 +347,4 @@ async function standInView(bot, task, target, { navigate, goals, walkMs = WALK_M
   return { seen: inView(bot, target), moved: true, cell };
 }
 
-module.exports = { calledOver, callerState, lapsed, here, inShelter, holedUp, routine, standing, rimOf, openGround, inLeftPocket, climbOut, afterLeave, LEFT_MS, nightMode, staysUp, comesOut, nearestPlayer, STAY_UP, COME_OUT, ALONE_MS, OUT_MS, inView, spotsInView, standInView, standable, EYE, REACH, RISE, CALL_HOLDS_MS, GONE_MS };
+module.exports = { calledOver, callerState, lapsed, here, inShelter, holedUp, routine, standing, CLIMB_MS, rimOf, openGround, inLeftPocket, climbOut, afterLeave, LEFT_MS, nightMode, staysUp, comesOut, nearestPlayer, STAY_UP, COME_OUT, ALONE_MS, OUT_MS, inView, spotsInView, standInView, standable, EYE, REACH, RISE, CALL_HOLDS_MS, GONE_MS };
