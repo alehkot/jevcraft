@@ -12566,7 +12566,15 @@ class Survival {
       // method bed_nook) is carried out at bedtime, not asked again.
       // So is the wait for daylight chosen sealed (wait_for_day_sealed), while
       // health does not come back.
-      let choice = held || (this.state.bedNookPlan?.until > Date.now() && options.sleep_in_nook ? 'sleep_in_nook' : null)
+      // Called over by a player (company.js): a pocket sealed for the night
+      // alone is opened for the call, not held to the dawn with it waiting
+      // (the stay was answered five times in two minutes with "come here"
+      // waiting, 2026-11-21). With a mob at the wall or within sixteen
+      // blocks, or sealed to heal or against a threat, it is asked as before.
+      const calledOut = require('./company').calledOver(goal, bot) && options.leave && !watcher && !about.length &&
+        !(sealHold?.kinds || []).some(kind => kind !== 'surface_night') ? 'leave' : null;
+      if (calledOut) console.log('[company] the night\'s pocket is opened for the call');
+      let choice = calledOut || held || (this.state.bedNookPlan?.until > Date.now() && options.sleep_in_nook ? 'sleep_in_nook' : null)
         // Not under rock: daylight does not come down to it, and a wait for
         // dawn there waits for nothing the pocket can use. 25588 (20:02:29 to
         // 20:10:37Z) sat walled in underground eight minutes before the
@@ -12651,6 +12659,12 @@ class Survival {
         await options.stay.run();
       }
       onStep(goal); return true;
+    }
+    // Called over by a player (company.js): the hunt and the mine chosen to
+    // pass the night end with the call. A hunt for food runs its time.
+    if (require('./company').calledOver(goal, bot)) {
+      if (this.state.nightPlan?.plan === 'hunt' && !this.state.nightPlan.food) { delete this.state.nightPlan; delete bot._nightHunt; }
+      delete this.state.nightMine;
     }
     // The hunt Jev chose for the night, while it holds.
     const hunt = this.state.nightPlan?.plan === 'hunt' ? this.state.nightPlan : null;
@@ -12779,7 +12793,11 @@ class Survival {
     // held shelter plan with no reason to seal there is let go.
     const nightFree = nightFreeBelow(bot, goal, this.state, { underground, debt: this.sleepDebt() });
     if (nightFree && this.state.nightPlan?.plan === 'shelter') { console.log('[survival] the night\'s shelter plan let go: under the rock with no reason to seal'); delete this.state.nightPlan; }
-    const nightNow = shelterNeeded(bot) && !nightFree;
+    // Called over by a player (company.js): the night's shelter, and the walk
+    // home to bed, wait for the call. The reflexes do not: threats, air and
+    // food are answered as before.
+    const called = require('./company').calledOver(goal, bot);
+    const nightNow = shelterNeeded(bot) && !nightFree && !called;
     const homeWalk = homeBed && nightNow && homeBed.foot.distanceTo(bot.entity.position) > 6 && (underground || !routeBlocked) &&
       !sleepWaiting(this) && !isSetAside(this, 'surface_home', 'here');
     const heldPlan = this.state.nightPlan?.until > Date.now() ? this.state.nightPlan : null;
@@ -14019,7 +14037,9 @@ function claim(bot, goal = {}, survival = null) {
   // sleepDebt() without its first-look write of sleptAtAge.
   const debt = Number.isFinite(worldAge(bot)) && Number.isFinite(state.sleptAtAge) && worldAge(bot) - state.sleptAtAge > SLEEP_DEBT_TICKS;
   const nightFree = nightFreeBelow(bot, goal, state, { underground, debt, now });
-  const needsShelter = shelterNeeded(bot) && !nightFree && nightPlan?.plan !== 'stay_up' && nightPlan?.plan !== 'hunt' && !(state.nightRecover?.until > now);
+  // Not while a player's "come here" is in hand (company.js), as the step reads it.
+  const called = require('./company').calledOver(goal, bot);
+  const needsShelter = shelterNeeded(bot) && !nightFree && nightPlan?.plan !== 'stay_up' && nightPlan?.plan !== 'hunt' && !(state.nightRecover?.until > now) && !called;
   if (!needsShelter && state.recovery?.status === 'pending' && !(state.recovery.dimension && state.recovery.dimension !== bot.game?.dimension)) return make('recover_items', 'routine', { dropsAt: state.recovery.position || null });
   const expeditionFood = ((goal.preparingExpedition && goal.kind !== 'win') || goal.preparingEnd || goal.preparingNether) && bot.game?.difficulty !== 'peaceful';
   const reserve = require('./food-reserve');
@@ -14050,7 +14070,7 @@ function claim(bot, goal = {}, survival = null) {
   // chosen was dropped for it): not when the mine would not dig a block,
   // not when it has mined nothing for NIGHT_MINE_IDLE_MS, and never over a
   // food errand the bot chose.
-  if (!needsShelter && shelterNeeded(bot) && nightMineHolds(bot, state, survival, now) && !threat) return make('night_mine', 'routine', {
+  if (!needsShelter && !called && shelterNeeded(bot) && nightMineHolds(bot, state, survival, now) && !threat) return make('night_mine', 'routine', {
     nightMine: { minutes: Math.round((now - (state.nightMine.startedAt || now)) / 60000), mined: state.nightMine.mined || 0 }, minutesToDawn: minutesToDawn(bot) });
   if (!needsShelter && !needsFood) return null;
   // Food or the work, Jev's answer held (food-plan.js, note 784): the work

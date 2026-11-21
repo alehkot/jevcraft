@@ -847,6 +847,12 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       ready = true;
       console.log(JSON.stringify({ sessionReady: true, username: bot.username }));
       const saved = store.read();
+      // A "come here" is not taken up again when its player is not in the
+      // game, or it was said minutes ago (company.js lapsed).
+      if (saved && ['running', 'recovering'].includes(saved.status) && require('./company').lapsed(saved, bot)) {
+        console.log('[company] a call from before this start is not taken up again');
+        saved.status = 'complete'; saved.lapsed = new Date().toISOString(); store.save(saved);
+      }
       if (saved && ['running', 'recovering'].includes(saved.status) && !survival.state.paused) {
         bot.chat(survival.state.recovery?.status === 'pending' ? "I'm back! I'll look for my dropped items, then carry on." : "I'm back! I'll carry on where I left off.");
         // What was tried, judged by its own clock: moved on by the time the

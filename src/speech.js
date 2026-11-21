@@ -208,6 +208,8 @@ function activity(step = {}) {
 }
 
 function completion(goal) {
+  // A come or a follow whose player left the game (company.js callerState).
+  if (goal.callerLeft) return `${goal.target || goal.from} has left the game, so I've stopped ${goal.kind === 'follow' ? 'following' : 'coming over'}.`;
   const chest = [goal, ...(goal.tasks || [])].flatMap(g => g.deliveryEvidence || []).filter(e => e.method === 'chest');
   if (chest.length) {
     const places = [...new Set(chest.map(e => `${e.position.x}, ${e.position.y}, ${e.position.z}`))];
@@ -219,7 +221,8 @@ function completion(goal) {
     const p = goal.discovery.found.position;
     return `Found ${name(goal.discoveryTarget.name)}! It's at ${Math.floor(p.x)}, ${Math.floor(p.y)}, ${Math.floor(p.z)}.`;
   }
-  if (goal.kind === 'come') return `I'm here with ${goal.target || goal.from}!`;
+  // Arrived, and whether the two can see each other (company.js standInView).
+  if (goal.kind === 'come') return goal.outOfView ? `I'm right by ${goal.target || goal.from}, but I can't get to where we can see each other.` : `I'm here with ${goal.target || goal.from}!`;
   if (goal.kind === 'visit') return `I'm at ${goal.destination.label}!`;
   if (goal.kind === 'house' || goal.kind === 'build') {
     const changed = goal.buildContinuation?.mode === 'edit' && goal.buildContinuation.name;

@@ -5454,6 +5454,17 @@ async function executePlannedAcquisition(bot, task, goal, save, client, onStep, 
 
 async function movementStep(bot, task, goal, save) {
   let target = bot.players[goal.target || goal.from]?.entity;
+  // The player has left the game: waited for a moment, then the request ends
+  // with them, not failed on "Cannot see" until someone stops it (company.js).
+  if (!target) {
+    const caller = require('./company').callerState(bot, goal);
+    if (caller === 'left') { goal.callerLeft = true; save(); return true; }
+    if (caller === 'wait') {
+      bot.pathfinder.setGoal(null); bot.clearControlStates();
+      for (let i = 0; i < 10; i++) { task.check(); await sleep(100); }
+      return false;
+    }
+  } else if (goal.callerGoneAt) delete goal.callerGoneAt;
   if (!target && goal.requesterPosition) {
     const p = goal.requesterPosition;
     await navigate(bot, task, new goals.GoalNear(p.x, p.y, p.z, 3));
@@ -5463,9 +5474,17 @@ async function movementStep(bot, task, goal, save) {
   goal.requesterPosition = { ...target.position };
   goal.step = { action: goal.kind, target: goal.target || goal.from, position: { ...target.position } }; save();
   const distance = bot.entity.position.distanceTo(target.position);
+  // Called over, the bot ends where the two can see each other, not three
+  // blocks off under the player's feet or behind a wall (company.js).
+  const arrived = async () => {
+    const view = await require('./company').standInView(bot, task, target, { navigate, goals });
+    if (view.seen) delete goal.outOfView; else goal.outOfView = true;
+    goal.step = { action: goal.kind, target: goal.target || goal.from, position: { ...target.position }, inView: view.seen, ...(view.moved ? { stoodAside: true } : {}) }; save();
+    return true;
+  };
   if (distance <= 3) {
     bot.pathfinder.setGoal(null); bot.clearControlStates();
-    if (goal.kind === 'come') return true;
+    if (goal.kind === 'come') return arrived();
     for (let i = 0; i < 5; i++) { task.check(); await sleep(100); }
     return false;
   }
@@ -5475,7 +5494,7 @@ async function movementStep(bot, task, goal, save) {
   catch (err) {
     task.check(); if (err.name === 'NeedsAir' || bot.entity.position.distanceTo(before) < 1) throw err;
   }
-  return goal.kind === 'come' && target.position.distanceTo(bot.entity.position) <= 3;
+  return goal.kind === 'come' && target.position.distanceTo(bot.entity.position) <= 3 ? arrived() : false;
 }
 
 // The blocks the cast's walls are made of are any ordinary full block
