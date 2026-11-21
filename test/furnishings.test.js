@@ -46,7 +46,7 @@ test('a chest beside another of its kind is not drawn', () => {
 // blocks `around` ([at, name, properties]), the game turning its front to the
 // player, the way the player last looked, and joining a chest put down
 // standing to a single one of its kind beside it facing the same way.
-async function placing(material, properties, at, standing, state, around = []) {
+async function placing(material, properties, at, standing, state, around = [], interruptTurn = false) {
   const world = new World().sync;
   world.setColumn(0, 0, new Chunk({ minY: -64, worldHeight: 384 }));
   for (let x = 0; x < 3; x++) for (let z = 0; z < 4; z++) world.setBlockStateId(new Vec3(x, 63, z), registry.blocksByName.stone.defaultState);
@@ -59,11 +59,13 @@ async function placing(material, properties, at, standing, state, around = []) {
     entity: { position: standing, height: 1.8, width: 0.6, eyeHeight: 1.62, onGround: true, effects: {}, metadata: [] },
     entities: {}, players: {}, controlState: {}, health: 20, food: 20, oxygenLevel: 20,
     inventory: { items: () => [{ name: material, type: registry.itemsByName[material].id, count: 1 }] },
-    equip: async () => {}, waitForTicks: async () => {},
+    equip: async () => {}, waitForTicks: async () => {
+      if (interruptTurn && looks.length) { bot.entity.yaw = 0; interruptTurn = false; }
+    },
     getControlState(k) { return !!this.controlState[k]; }, setControlState(k, v) { this.controlState[k] = v; },
-    look: async (yaw, pitch) => { looks.push({ yaw, pitch }); },
+    look: async (yaw, pitch) => { looks.push({ yaw, pitch }); bot.entity.yaw = yaw; bot.entity.pitch = pitch; },
     _placeBlockWithOptions: async (ref, face) => {
-      const q = ref.position.plus(face), facing = opposite[looked[looks.at(-1).yaw]], sneak = !!bot.controlState.sneak;
+      const q = ref.position.plus(face), facing = opposite[looked[bot.entity.yaw]], sneak = !!bot.controlState.sneak;
       clicks.push({ ref: ref.name, sneak });
       const partner = material === 'chest' && !sneak && [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dz]) => blockAt(q.offset(dx, 0, dz)))
         .find(b => b.name === material && b.getProperties().type === 'single' && b.getProperties().facing === facing);
@@ -77,6 +79,13 @@ async function placing(material, properties, at, standing, state, around = []) {
 test('placed looking away from the side its front is to face', async () => {
   const { looks, placed } = await placing('furnace', { facing: 'north' }, new Vec3(0, 64, 2), new Vec3(0.5, 64, 0.5), { lit: false });
   assert.equal(looks[0].yaw, Math.PI);
+  assert.equal(placed.facing, 'north');
+});
+
+test('a turn interrupted before the click is restored before spending the stonecutter', async () => {
+  const { looks, clicks, placed } = await placing('stonecutter', { facing: 'north' }, new Vec3(0, 64, 2), new Vec3(0.5, 64, 0.5), {}, [], true);
+  assert.equal(looks.length, 2);
+  assert.equal(clicks.length, 1);
   assert.equal(placed.facing, 'north');
 });
 

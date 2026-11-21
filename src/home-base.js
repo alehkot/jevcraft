@@ -159,11 +159,11 @@ function claimedCells(bot, now = Date.now()) {
 // The planned cells of Jev's buildings by "x,y,z", kept as claimedCells is.
 function plannedCells(bot, now = Date.now()) {
   const where = String(bot.game?.dimension || 'overworld').replace(/^minecraft:/, '').replace(/^the_/, '');
-  const cache = bot._plannedCells;
-  if (cache && cache.where === where && cache.registry === bot.buildRegistry && now - cache.at < 5000) return cache.cells;
+  const cache = bot._plannedCells, registry = bot.buildRegistry;
+  if (cache && cache.where === where && cache.registry === registry && cache.revision === registry?.revision && now - cache.at < 5000) return cache.cells;
   const cells = new Map();
-  for (const entry of bot.buildRegistry?.all?.(where) || []) for (const cell of entry.blueprint?.blocks || []) cells.set(`${cell.x},${cell.y},${cell.z}`, cell);
-  bot._plannedCells = { where, registry: bot.buildRegistry, at: now, cells };
+  for (const entry of registry?.all?.(where) || []) for (const cell of entry.blueprint?.blocks || []) cells.set(`${cell.x},${cell.y},${cell.z}`, cell);
+  bot._plannedCells = { where, registry, revision: registry?.revision, at: now, cells };
   return cells;
 }
 // A block that is one of Jev's buildings as it stands: what the plan put in

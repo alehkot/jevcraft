@@ -1884,8 +1884,11 @@ const openForStation = (bot, q, { visibility = true } = {}) => {
 // its cell fifteen times, 25593 0.018, 25595 at 09:28Z 0.015.
 const STATION_CELL_REST_MS = 10 * 60000;
 const stationKey = q => `${q.x},${q.y},${q.z}`;
+function atStationSite(site, q) {
+  return workSites.within(site, q, workSites.STATION_RADIUS) && !workSites.protects(site, q);
+}
 function stationCellOk(bot, goal, q, options) {
-  return openForStation(bot, q, options) && !hitboxIntrudes(bot, q, 0) && !(goal && isSetAside(goal, 'station_cell', stationKey(q)));
+  return atStationSite(goal?.workSite, q) && openForStation(bot, q, options) && !hitboxIntrudes(bot, q, 0) && !(goal && isSetAside(goal, 'station_cell', stationKey(q)));
 }
 // A cell the game refused a workstation in rests, said, and the next is tried.
 function restStationCell(goal, q, name, err) {
@@ -2005,11 +2008,16 @@ async function place(bot, task, p, material, { face, properties, stay = false, r
       const facingYaw = PLACEMENT_YAW[placementFacing(material, properties?.facing)];
       if (facingYaw !== undefined) {
         const target = face?.to || ref.position.offset(0.5, 0.5, 0.5), eyes = bot.entity.position.offset(0, 1.62, 0);
-        await bot.look(facingYaw, placementPitch(material, Math.atan2(target.y - eyes.y, Math.hypot(target.x - eyes.x, target.z - eyes.z))), true);
-        // The turn reaches the server with the next movement packet, but the
-        // click goes at once: a stair placed straight after walking took the
-        // walking direction. Let the turn go out first.
-        await bot.waitForTicks(2);
+        const pitch = placementPitch(material, Math.atan2(target.y - eyes.y, Math.hypot(target.x - eyes.x, target.z - eyes.z)));
+        // A movement packet carries the turn before the click. A correction
+        // or another look during those ticks can change the requested facing.
+        for (let turn = 0; turn < 2; turn++) {
+          await bot.look(facingYaw, pitch, true);
+          await bot.waitForTicks(2);
+          task.check();
+          if (Math.cos(bot.entity.yaw - facingYaw) > .999 && (material !== 'barrel' || Math.abs(bot.entity.pitch) < .05)) break;
+          if (turn === 1) throw new Error(`Could not hold the requested facing for ${material}`);
+        }
       }
       const look = facingYaw !== undefined ? { forceLook: 'ignore' } : {};
       if (face?.to) await bot._placeBlockWithOptions(ref, f.scaled(-1), { delta: face.to.minus(ref.position), swingArm: 'right', ...look });
@@ -3440,6 +3448,7 @@ async function workstation(bot, task, name, goal) {
   // shaft, which had none (2026-09-24).
   if (!p) {
     const notch = [0, 1].flatMap(dy => faces.slice(1, 5).map(d => o.plus(d).offset(0, dy, 0))).find(q => {
+      if (!atStationSite(goal?.workSite, q)) return false;
       const b = bot.blockAt(q);
       return b?.boundingBox === 'block' && b.diggable && !reservedForConstruction(goal || {}, q, { from: o }) && bot.blockAt(q.offset(0, -1, 0))?.boundingBox === 'block' &&
         !faces.some(f => /lava|water/.test(bot.blockAt(q.plus(f))?.name || ''));
@@ -3450,6 +3459,7 @@ async function workstation(bot, task, name, goal) {
       rememberWorkstation(bot, goal, name, notch);
     }
   }
+  if (!p && goal?.workSite) throw Object.assign(new Blocked(`I cannot place a ${name.replaceAll('_', ' ')} beside the ${goal.workSite.name.replaceAll('_', ' ')}. Please clear a space or choose another spot.`), { needsPlayer: true });
   if (!p) throw new Error(`No place for ${name}`);
   const placed = await approachWorkstation(bot, task, name, [p]);
   if (!placed) throw new Blocked(`I can't reach the ${name.replaceAll('_', ' ')} I placed`);

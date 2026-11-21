@@ -24,6 +24,7 @@ const MAX_RULES = 16, MAX_REQUESTS = 3, TALK_KEPT = 6;
 // JEV_PERSONALITY: how "say" sounds, the three manners of alexrmsouza/jevcraft
 // e244c34d's personality.js. Unset: the instructions as measured (.env.example).
 const PERSONALITIES = {
+  __proto__: null,
   reserved: 'Speak briefly and calmly. Keep to what the player needs: no jokes, no filler, no question that is not needed.',
   companion: 'Be cooperative, curious and conversational, with light humor now and then when it fits. Ask a useful question when a preference or a missing fact changes the task.',
   playful: 'Be cooperative and lightly playful: a short joke about the situation now and then, never in place of useful information or while the player is in danger, and no catchphrase twice.',

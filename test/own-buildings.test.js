@@ -13,6 +13,7 @@ const Chunk = require('prismarine-chunk')(registry);
 const World = require('prismarine-world')(registry);
 const Block = require('prismarine-block')(registry);
 const { SurvivalMovements } = require('../src/movement');
+const { BuildRegistry } = require('../src/builds');
 
 function scene(planned) {
   const world = new World().sync;
@@ -37,4 +38,17 @@ test("a cell of Jev's own building is not dug through on a walk", () => {
   assert.equal(movements.safeToBreak(at(3)), true, 'its own laid block elsewhere');
   assert.equal(movements.safeToBreak(at(4)), false, 'its own laid block in its building');
   assert.equal(movements.safeToBreak(at(5)), true, 'dirt where its plan has planks not yet laid');
+});
+
+test('a newly registered wall is protected immediately and a forgotten one is released', () => {
+  const { movements, at } = scene([]);
+  const bot = movements.bot;
+  bot.buildRegistry = new BuildRegistry();
+  const p = { x: 2, y: 64, z: 1 };
+  const plan = { blueprint: { origin: p, bounds: { min: p, max: p }, blocks: [{ ...p, material: 'dirt' }] } };
+  assert.equal(movements.safeToBreak(at(2)), true);
+  const entry = bot.buildRegistry.remember(plan, { dimension: 'overworld', status: 'complete' });
+  assert.equal(movements.safeToBreak(at(2)), false);
+  bot.buildRegistry.forget(entry.id);
+  assert.equal(movements.safeToBreak(at(2)), true);
 });

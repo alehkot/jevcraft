@@ -24,7 +24,7 @@ test('narration: unset and full say both, important survival only, off neither',
 
 test('personality: a manner for say only, none when unset or unknown', async () => {
   assert.ok(SYSTEM('Jev', { personality: 'playful' }).includes(PERSONALITIES.playful));
-  assert.equal(SYSTEM('Jev'), SYSTEM('Jev', { personality: 'grumpy' }));
+  for (const unknown of ['grumpy', 'constructor', '__proto__']) assert.equal(SYSTEM('Jev'), SYSTEM('Jev', { personality: unknown }));
   const sent = [];
   const fetchImpl = async (url, { body }) => { sent.push(JSON.parse(body).messages[0].content); return { ok: true, json: async () => ({ choices: [{ message: { content: '{"say":"Hi!","requests":[]}' } }] }) }; };
   const guide = createGuide({ apiKey: 'test', fetchImpl, personality: 'Reserved' });

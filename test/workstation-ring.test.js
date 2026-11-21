@@ -47,6 +47,20 @@ test('placed on the nearest open cell past the stencil', async () => {
   assert.deepEqual(placed.map(String), [String(new Vec3(0, 64, 3))]);
 });
 
+test('a station beside a landmark stays close enough to reuse on the next task', async () => {
+  const { bot, placed } = bridge();
+  const site = new Vec3(0, 64, -2);
+  const goal = { workSite: { dimension: 'overworld', kind: 'block', position: site, name: 'torch' } };
+  for (let z = -6; z <= -3; z++) bot.world.setBlockStateId(new Vec3(0, 64, z), registry.blocksByName.torch.defaultState);
+  await assert.rejects(workstation(bot, task, 'furnace', goal), err => err.needsPlayer && /beside the torch/.test(err.message));
+  assert.deepEqual(placed, []);
+  // The nearest clear spot to the bot is outside the site.
+  const inside = site.offset(0, 0, -1);
+  assert.equal(stationCellOk(bot, goal, site.offset(0, 0, -5), { visibility: false }), false);
+  bot.world.setBlockStateId(inside, registry.blocksByName.air.defaultState);
+  assert.ok((await workstation(bot, task, 'furnace', goal)).position.equals(inside));
+});
+
 test('a refused cell rests and the next is tried', async () => {
   const { bot, placed } = bridge({ refuse: 1 }), goal = {};
   const station = await workstation(bot, task, 'furnace', goal);

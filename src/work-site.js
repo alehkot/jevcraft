@@ -5,6 +5,7 @@ const { position } = require('./memory');
 const point = p => new Vec3(p.x, p.y, p.z);
 const blocked = message => Object.assign(new Error(message), { name: 'Blocked', needsPlayer: true });
 const WORK_RADIUS = 6;
+const STATION_RADIUS = 4;
 const aliases = { workbench: 'crafting_table', bench: 'crafting_table' };
 
 // Detach the location before resolving what is being made. A crafting table
@@ -87,8 +88,8 @@ function forOutput(goal, item) {
   return item && goal?.workSite && (goal.siteOutputs ? goal.siteOutputs.includes(item) : item === goal.item) ? goal.workSite : null;
 }
 
-function within(site, p) {
-  return !site || point(site.position).distanceTo(p) <= WORK_RADIUS;
+function within(site, p, radius = WORK_RADIUS) {
+  return !site || point(site.position).distanceTo(p) <= radius;
 }
 
 function protects(site, p) {
@@ -112,7 +113,7 @@ function stations(bot, name, site) {
     if (block && block.name !== name) throw blocked(`The ${name.replaceAll('_', ' ')} you chose has gone. Please choose a new spot.`);
     return [at];
   }
-  return bot.findBlocks({ point: at, matching: bot.registry.blocksByName[name].id, maxDistance: 4, count: 8 });
+  return bot.findBlocks({ point: at, matching: bot.registry.blocksByName[name].id, maxDistance: STATION_RADIUS, count: 8 });
 }
 
-module.exports = { WORK_RADIUS, forOutput, within, splitLocation, discoveryAt, resolveLocation, protects, approach, stations };
+module.exports = { WORK_RADIUS, STATION_RADIUS, forOutput, within, splitLocation, discoveryAt, resolveLocation, protects, approach, stations };
