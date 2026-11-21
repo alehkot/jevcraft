@@ -253,13 +253,14 @@ const call = (over = {}) => ({ kind: 'come', request: 'Jev come here', from: 'Ca
     const survival = createSurvival(s.bot, { state: { shelters: [refuge] }, client: null });
     let did = null;
     survival.leave = async () => { did = 'leave'; return true; };
+    survival.actions = { ...survival.actions, navigate: s.navigate };
     const log = console.log, err = console.error, said = [];
     console.log = console.error = (...a) => { said.push(a.join(' ')); };
     // The step is let go of as soon as it has shown its hand.
     const stepTask = { check() { if (!did && said.some(l => /pocket_next/.test(l))) did = 'asked'; if (did === 'asked') { const e = new Error('enough'); e.name = 'Cancelled'; throw e; } } };
     try { await Promise.race([survival.step(stepTask, goal, () => {}, () => {}).catch(e => { if (e.name !== 'Cancelled') throw e; }), new Promise(r => setTimeout(r, 8000))]); }
     finally { console.log = log; console.error = err; }
-    return { claim: survival_claim(s.bot, goal, survival), did, said };
+    return { claim: survival_claim(s.bot, goal, survival), did, said, survival, bot: s.bot, walks: s.walks };
   };
   const survival_claim = (bot, goal, survival) => require('../src/survival').claim(bot, goal, survival)?.action;
   await check('sealed in for the night and called: the pocket is opened, by rule', async () => {
@@ -391,18 +392,157 @@ const call = (over = {}) => ({ kind: 'come', request: 'Jev come here', from: 'Ca
   await check('what the waiting reads: the dark with a player near is waited out like the day; a pocket a player comes close to is left', async () => {
     const pocketed = () => { const s = scene({ at: [10.5, 60, 0.5] }); s.set(10, 60, 0, 'air'); s.set(10, 61, 0, 'air'); return s; };
     const open = scene({ at: [10.5, 64, 0.5] });
-    assert.deepEqual(company.standing(open.bot, null, true), { dark: true, sheltered: false }, 'not set: the dark is the dark');
-    assert.deepEqual(company.standing(pocketed().bot, null, true), { dark: true, sheltered: false }, 'not set: in the pocket at night the routine runs for the dark');
-    assert.deepEqual(company.standing(pocketed().bot, null, false), { dark: false, sheltered: true }, 'by day, in a hole: out of it');
+    assert.deepEqual(company.standing(open.bot, null, true), { dark: true, sheltered: false, out: false }, 'not set: the dark is the dark');
+    assert.deepEqual(company.standing(pocketed().bot, null, true), { dark: true, sheltered: false, out: false }, 'not set: in the pocket at night the routine runs for the dark');
+    assert.deepEqual(company.standing(pocketed().bot, null, false), { dark: false, sheltered: true, out: false }, 'by day, in a hole: out of it');
     await withNight(() => {
-      assert.deepEqual(company.standing(open.bot, null, true), { dark: false, sheltered: false }, 'up beside the player: wait');
-      assert.deepEqual(company.standing(pocketed().bot, null, true), { dark: false, sheltered: true }, 'in a hole, the player 10 blocks off: out of it');
+      assert.deepEqual(company.standing(open.bot, null, true), { dark: false, sheltered: false, out: false }, 'up beside the player: wait');
+      assert.deepEqual(company.standing(pocketed().bot, null, true), { dark: false, sheltered: true, out: false }, 'in a hole, the player 10 blocks off: out of it');
       const far = pocketed(); far.bot.players = playerAt(10.5 + 24, 60);
-      assert.deepEqual(company.standing(far.bot, null, true), { dark: false, sheltered: false }, 'in a hole, the player 24 blocks off: stays in, waits');
+      assert.deepEqual(company.standing(far.bot, null, true), { dark: false, sheltered: false, out: false }, 'in a hole, the player 24 blocks off: stays in, waits');
       const alone = pocketed(); alone.bot.players = {};
-      assert.deepEqual(company.standing(alone.bot, null, true), { dark: true, sheltered: false }, 'alone: the routine has the night');
-      assert.deepEqual(company.standing(open.bot, null, false), { dark: false, sheltered: false }, 'by day nothing changes');
+      assert.deepEqual(company.standing(alone.bot, null, true), { dark: true, sheltered: false, out: false }, 'alone: the routine has the night');
+      assert.deepEqual(company.standing(open.bot, null, false), { dark: false, sheltered: false, out: false }, 'by day nothing changes');
     });
+  });
+
+  // ---------------------------------------------------------------- 8. out of the pocket, onto the ground
+  // The pocket as the leave leaves it: three under the grass, its lid gone, its four sides open at the feet and the head.
+  const opened = ({ at = [10.5, 60, 0.5], lid = false } = {}) => {
+    const s = scene({ at });
+    for (const [dx, dz] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) { s.set(10 + dx, 60, dz, 'air'); s.set(10 + dx, 61, dz, 'air'); }
+    if (!lid) { s.set(10, 62, 0, 'air'); s.set(10, 63, 0, 'air'); }
+    return s;
+  };
+  const refuge = () => ({ origin: { x: 10, y: 60, z: 0 }, dimension: 'overworld' });
+  const left = (over = {}) => ({ state: { leftPocket: { origin: { x: 10, y: 60, z: 0 }, rim: { x: 11, y: 64, z: 0 }, dimension: 'overworld', at: Date.now(), ...over } } });
+  const waitingFor = async fn => { process.env.JEV_IDLE = 'wait'; try { return await fn(); } finally { delete process.env.JEV_IDLE; } };
+  const idle = { kind: 'survive', request: 'Stay alive and prepare supplies between player requests' };
+
+  await check('the ground a pocket was dug from: beside its open shaft, not the foot of it, not under its roof; none under rock', async () => {
+    const s = opened();
+    const rim = company.rimOf(s.bot, refuge().origin);
+    assert.ok(rim, 'a rim');
+    assert.equal(rim.y, 64, 'on the grass');
+    assert.equal(Math.hypot(rim.x - 10, rim.z - 0), 1, 'beside the shaft');
+    assert.equal(company.openGround(s.bot, new Vec3(10, 60, 0)), false, 'the foot of the open shaft has the sky and no side');
+    assert.equal(company.openGround(s.bot, new Vec3(11, 60, 0)), false, 'an opened side is under the roof');
+    assert.equal(company.openGround(s.bot, new Vec3(14, 64, 3)), true, 'the lawn');
+    const shut = opened({ lid: true });
+    assert.deepEqual({ ...company.rimOf(shut.bot, refuge().origin) }, { x: 10, y: 64, z: 0 }, 'with the lid still on: the grass over it');
+    const roofed = opened();
+    for (let x = -24; x <= 24; x++) for (let z = -24; z <= 24; z++) roofed.set(x, 70, z, 'stone');
+    assert.equal(company.rimOf(roofed.bot, refuge().origin), null, 'under rock');
+  });
+
+  await check('standing in the pocket it has opened: at its foot, in a side, up its shaft; not on the grass, nor an hour on', async () => {
+    const at = (x, y, z, state = left()) => { const s = opened({ at: [x, y, z] }); return company.inLeftPocket(s.bot, state); };
+    assert.equal(at(10.5, 60, 0.5), true, 'the foot');
+    assert.equal(at(11.5, 60, 0.5), true, 'a side');
+    assert.equal(at(10.5, 62.2, 0.5), true, 'up the shaft');
+    assert.equal(at(11.5, 64, 0.5), false, 'the rim');
+    assert.equal(at(14.5, 64, 0.5), false, 'the lawn');
+    assert.equal(at(10.5, 60, 0.5, left({ at: Date.now() - company.LEFT_MS - 1000 })), false, 'long ago');
+    assert.equal(at(10.5, 60, 0.5, left({ dimension: 'the_nether' })), false, 'another dimension');
+    assert.equal(at(10.5, 60, 0.5, { state: {} }), false, 'none left');
+  });
+
+  await check('the waiting does not take an opened pocket for the ground: the routine runs until the bot is up, and is ended as the climb says so', async () => {
+    const foot = opened();
+    assert.equal(company.holedUp(foot.bot), false, 'four sides open: no hole to the old test');
+    assert.deepEqual(company.standing(foot.bot, { state: {} }, false), { dark: false, sheltered: false, out: false }, 'with nothing on record, as it was');
+    const down = company.standing(foot.bot, left(), false);
+    assert.deepEqual(down, { dark: false, sheltered: true, out: false }, 'by day, in the pocket it opened');
+    assert.equal(company.routine({ ...down, sinceSheltered: 0 }), 'run');
+    const up = opened({ at: [11.5, 64, 0.5] });
+    assert.deepEqual(company.standing(up.bot, left(), false), { dark: false, sheltered: false, out: false });
+    assert.equal(company.routine({ dark: false, sheltered: false, sinceSheltered: 500 }), 'finish', 'out some other way: its three seconds');
+    up.bot._outAt = Date.now();
+    const done = company.standing(up.bot, left(), false);
+    assert.equal(done.out, true);
+    assert.equal(company.routine({ ...done, sinceSheltered: 0 }), 'end', 'the climb is done: ended at once');
+    up.bot._outAt = Date.now() - 60000;
+    assert.equal(company.standing(up.bot, left(), false).out, false, 'a climb of a minute ago says nothing');
+    // At night: alone the dark is its own again; with a player about, the opened pocket is still to be left.
+    foot.bot.players = {};
+    assert.deepEqual(company.standing(foot.bot, left(), true), { dark: true, sheltered: false, out: false }, 'alone at night');
+    await withNight(() => {
+      const kept = opened(); kept.bot.players = playerAt(10.5 + 24, 60);
+      assert.deepEqual(company.standing(kept.bot, left(), true), { dark: false, sheltered: true, out: false }, 'a player 24 blocks off, the pocket already opened');
+    });
+  });
+
+  await check('after the leave, the climb: up to the rim, the pocket kept on record as left, the player faced', async () => {
+    await waitingFor(async () => {
+      const s = opened(), survival = { bot: s.bot, state: {} };
+      let saved = 0;
+      const done = await company.afterLeave(survival, task, idle, () => { saved++; }, refuge(), { navigate: s.navigate, goals });
+      assert.equal(done.up, true);
+      assert.equal(s.walks.length, 1, 'one walk');
+      assert.equal(s.bot.entity.position.y, 64, 'on the grass');
+      assert.equal(survival.state.leftPocket.rim.y, 64);
+      assert.equal(saved, 1);
+      assert.equal(done.seen, true, 'the player ten blocks off across the lawn');
+      assert.ok(s.looked.length, 'and looked at');
+      assert.ok(Date.now() - s.bot._outAt < 3000, 'the climb says it is done');
+      assert.equal(company.inLeftPocket(s.bot, survival), false);
+      // Nobody about: up all the same.
+      const lone = opened(); lone.bot.players = {};
+      const alone = await company.afterLeave({ bot: lone.bot, state: {} }, task, idle, () => {}, refuge(), { navigate: lone.navigate, goals });
+      assert.deepEqual(alone, { up: true });
+      // The waiting ends the routine in the moment it is given.
+      const cut = opened(); let checks = 0;
+      const ending = { check() { if (cut.bot._outAt && ++checks > 2) { const e = new Error('ended'); e.name = 'Cancelled'; throw e; } } };
+      await assert.rejects(company.afterLeave({ bot: cut.bot, state: {} }, ending, idle, () => {}, refuge(), { navigate: cut.navigate, goals }), { name: 'Cancelled' });
+    });
+  });
+
+  await check('the climb is for the bot waiting and for a pocket opened for a player close by; a call walks itself, a routine at its own day goes on', async () => {
+    const tried = async (goal, options, env = {}) => {
+      const s = opened(), survival = { bot: s.bot, state: {} };
+      Object.assign(process.env, env);
+      try { return { done: await company.afterLeave(survival, task, goal, () => {}, refuge(), { navigate: s.navigate, goals, ...options }), walks: s.walks.length, left: !!survival.state.leftPocket }; }
+      finally { for (const k of Object.keys(env)) delete process.env[k]; }
+    };
+    assert.deepEqual(await tried(idle, {}), { done: null, walks: 0, left: false }, 'the routine at its own day');
+    assert.deepEqual(await tried(call(), { drawnOut: 'the call' }), { done: null, walks: 0, left: false }, 'a call');
+    assert.deepEqual(await tried(call({ kind: 'obtain' }), {}, { JEV_IDLE: 'wait' }), { done: null, walks: 0, left: false }, 'work in hand while waiting is the mode');
+    const drawn = await tried(call({ kind: 'follow' }), { drawnOut: 'a player close by' });
+    assert.equal(drawn.done.up, true); assert.equal(drawn.left, true); assert.equal(drawn.walks, 1);
+    // A house is not climbed out of, and under rock there is nowhere to climb to.
+    const s = opened(); for (let x = -24; x <= 24; x++) for (let z = -24; z <= 24; z++) s.set(x, 70, z, 'stone');
+    const under = { bot: s.bot, state: {} };
+    assert.equal(await waitingFor(() => company.afterLeave(under, task, idle, () => {}, refuge(), { navigate: s.navigate, goals })), null);
+    assert.equal(under.state.leftPocket, undefined);
+    const house = opened();
+    assert.equal(await waitingFor(() => company.afterLeave({ bot: house.bot, state: {} }, task, idle, () => {}, { ...refuge(), kind: 'house' }, { navigate: house.navigate, goals })), null);
+  });
+
+  await check('a climb that fails leaves the pocket on record, so the routine is not ended at the foot of it; a cancel is passed up', async () => {
+    await waitingFor(async () => {
+      const s = opened(), survival = { bot: s.bot, state: {} };
+      const stuck = async () => { const e = new Error('no path'); e.name = 'NoRoute'; throw e; };
+      const done = await company.afterLeave(survival, task, idle, () => {}, refuge(), { navigate: stuck, goals });
+      assert.equal(done.up, false);
+      assert.equal(s.bot._outAt, undefined);
+      assert.equal(company.standing(s.bot, survival, false).sheltered, true, 'still to be got out of');
+      const cancelled = async () => { const e = new Error('stop'); e.name = 'Cancelled'; throw e; };
+      await assert.rejects(company.afterLeave({ bot: opened().bot, state: {} }, task, idle, () => {}, refuge(), { navigate: cancelled, goals }), { name: 'Cancelled' });
+    });
+  });
+
+  await check('in the step itself: a pocket opened for a player close by is climbed out of; one opened for a call is not', async () => {
+    await withNight(async () => {
+      const out = await inPocket(idle);
+      assert.equal(out.did, 'leave');
+      assert.ok(out.survival.state.leftPocket, 'kept on record as left');
+      assert.equal(out.bot.entity.position.y, 64, 'up on the grass');
+      assert.ok(out.said.some(l => /out of the pocket: up on the ground/.test(l)), out.said.join(' / ').slice(0, 300));
+    });
+    const called = await inPocket(call());
+    assert.equal(called.did, 'leave');
+    assert.equal(called.survival.state.leftPocket, undefined);
+    assert.equal(called.walks.length, 0, 'the call walks itself');
   });
 
   console.log(`\n${passed} checks passed`);

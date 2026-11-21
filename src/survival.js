@@ -12656,6 +12656,10 @@ class Survival {
       try { ranOk = await (options[choice] || foodWays[choice]).run(); }
       catch (err) { if (err.name === 'NoRoute') why = noRouteSays(err, `the ${choice.replaceAll('_', ' ')} way out`); else if (err.name !== 'SetAside') throw err; ranOk = false; }
       finally { delete this.state.leaveChosen; }
+      // Waiting for a player, or come out for one: the leave is followed up
+      // onto the ground (company.js afterLeave). The leave opens the pocket;
+      // where its way is not straight up it does not climb.
+      if (ranOk && choice === 'leave') await require('./company').afterLeave(this, task, goal, save, refuge, { drawnOut, navigate: this.actions.navigate, goals });
       if (!ranOk) {
         delete this.state.pocketPlan;
         if (choice !== 'stay') { setAside(this, 'pocket_option', choice, why || `chosen at ${new Date().toISOString().slice(11, 19)} and it did nothing from this pocket${this.state.leaveRefused ? ` (${this.state.leaveRefused.charAt(0).toLowerCase()}${this.state.leaveRefused.slice(1)})` : ''}`, 60000); delete this.state.leaveRefused; save(); }

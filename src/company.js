@@ -135,25 +135,139 @@ const OUT_MS = 3000;    // the routine's time to finish getting out, once the bo
 // The waiting between requests, each half second: what is done with the
 // bot's own routine (the idle loop). In the dark it runs, as it does in a
 // shelter or a hole by day, where it is the one that gets the bot out. Out
-// of both, one that is running is let finish for three seconds (the record
-// of a pocket goes as the leave starts, and a shaft that crosses a cavity is
-// no hole there: the third test, 2026-11-21, left the bot standing in one),
-// and then ended; none is started. Three seconds and no more: in solid
-// ground the hole lasts to the grass, and whatever time is given after it is
-// the routine's own day begun, the hunt the waiting is there to prevent.
+// of both, one that is running is let finish for three seconds and then
+// ended; none is started. Three seconds and no more: whatever time is given
+// after the hole is the routine's own day begun, the hunt the waiting is
+// there to prevent. Ended at once when the climb out says it is done (`out`,
+// from climbOut below): the three seconds are for a hole left some other way.
 // -> 'run' | 'finish' | 'end'
-function routine({ dark, sheltered, sinceSheltered }) {
+function routine({ dark, sheltered, sinceSheltered, out = false }) {
   if (dark || sheltered) return 'run';
-  return sinceSheltered < OUT_MS ? 'finish' : 'end';
+  return out || sinceSheltered >= OUT_MS ? 'end' : 'finish';
 }
 
 // What the waiting reads each half second (session.js), for routine():
 // whether the dark is the bot's to shelter from alone, and whether it stands
 // in the ground where it is not to wait. By day that is any shelter or hole;
 // at night, with JEV_NIGHT=company, one a player has come close to.
+// A pocket the bot has opened it is to be out of, unless the dark is its own
+// again (inLeftPocket); `out` is the climb saying it has finished (climbOut).
 function standing(bot, survival, dark, now = Date.now()) {
-  const kept = dark && staysUp(bot, now), drawn = dark && comesOut(bot);
-  return { dark: dark && !kept, sheltered: (!dark || drawn) && (holedUp(bot) || inShelter(bot, survival)) };
+  const kept = dark && staysUp(bot, now), drawn = dark && comesOut(bot), alone = dark && !kept;
+  const sheltered = ((!dark || drawn) && (holedUp(bot) || inShelter(bot, survival))) || (!alone && inLeftPocket(bot, survival, now));
+  return { dark: alone, sheltered, out: !sheltered && !!bot?._outAt && now - bot._outAt < 5000 };
+}
+
+// ---- Out of a pocket, onto the ground ---------------------------------------
+// The survival layer's leave opens a pocket and, where the way is not straight
+// up, stops there: its doors are the four sides at the feet and the head, and
+// the walk out is left to whatever the bot does next. Waiting for a player
+// there is nothing next. Seen with a second player on the server (2026-11-21):
+// the pocket three under the grass was opened for the player come close, eight
+// blocks dug in nine seconds, its record dropped; the bot stood at the bottom
+// of a hole open on four sides, which is no hole to holedUp; the routine's
+// next walk (to a chicken, forty blocks off) was stopped a second in; and the
+// bot stayed down there, in nobody's view, until it was called.
+//
+// So the leave is followed by the climb (afterLeave, called from the pocket's
+// turn in survival.js): up to the ground the pocket was dug from (rimOf), and,
+// with a player close, to where the two can see each other. The pocket is
+// kept on record as left (state.leftPocket) for as long as the bot stands in
+// it, so the waiting does not take an opened pocket for the ground.
+const LEFT_MS = 5 * 60000;    // a pocket left is remembered this long: the time the routine has to get out of one the climb failed in
+const RIM_UP = 8, RIM_OUT = 3;
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// Nothing but leaves over the bot's head there, eighteen blocks up.
+function skyOpen(bot, cell) {
+  for (let k = 2; k <= 18; k++) {
+    const b = bot.blockAt(cell.offset(0, k, 0));
+    if (b && b.boundingBox === 'block' && !/leaves/.test(b.name || '')) return false;
+  }
+  return true;
+}
+// Ground: a cell to stand in under open sky, two of its sides open under it
+// too. The foot of an open shaft has the sky and no side; a pocket's opened
+// sides have no sky.
+function openGround(bot, cell) {
+  if (!standable(bot, cell) || !skyOpen(bot, cell)) return false;
+  let sides = 0;
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const c = cell.offset(dx, 0, dz);
+    if (passable(bot.blockAt(c)) && passable(bot.blockAt(c.offset(0, 1, 0))) && skyOpen(bot, c)) sides++;
+  }
+  return sides >= 2;
+}
+// The ground a pocket was dug from: the lowest such cell within three blocks
+// of the pocket's column, the nearest of them, no more than eight blocks up
+// (or as far as the record says the shaft was dug from). None under rock.
+function rimOf(bot, origin, { top = null } = {}) {
+  try {
+    const o = new Vec3(origin.x, origin.y, origin.z), rise = Math.max(RIM_UP, Number.isFinite(top?.y) ? top.y - origin.y + 2 : 0);
+    for (let dy = 0; dy <= rise; dy++) {
+      let best = null;
+      for (let dx = -RIM_OUT; dx <= RIM_OUT; dx++) for (let dz = -RIM_OUT; dz <= RIM_OUT; dz++) {
+        const c = o.offset(dx, dy, dz), d = Math.hypot(dx, dz);
+        if ((!best || d < best.d) && openGround(bot, c)) best = { c, d };
+      }
+      if (best) return best.c;
+    }
+  } catch (_) {}
+  return null;
+}
+// Standing in the pocket it has opened: within a block of its column, under
+// the ground it was dug from.
+function inLeftPocket(bot, survival, now = Date.now()) {
+  try {
+    const left = survival?.state?.leftPocket;
+    if (!left?.origin || !left.rim || !bot?.entity?.position || left.dimension !== bot.game?.dimension || now - left.at > LEFT_MS) return false;
+    const feet = require('./terrain').feetCell(bot), o = left.origin;
+    return Math.abs(feet.x - o.x) <= 1 && Math.abs(feet.z - o.z) <= 1 && feet.y >= o.y && feet.y < left.rim.y;
+  } catch (_) { return false; }
+}
+function nearestPlayerEntity(bot, within = Infinity) {
+  const me = bot?.entity?.position;
+  let best = null;
+  for (const [name, player] of Object.entries(bot?.players || {})) {
+    const at = player?.entity?.position;
+    if (!me || !at || name === bot.username) continue;
+    const d = at.distanceTo(me);
+    if (d <= within && (!best || d < best.d)) best = { entity: player.entity, d };
+  }
+  return best?.entity || null;
+}
+// Up to the rim, then, with a player close, to where the two see each other.
+// A walk that fails is not the end of the bot's turn; air, safety and a
+// cancel are passed up as everywhere.
+async function climbOut(bot, task, { navigate, goals, rim, walkMs = 15000 } = {}) {
+  if (rim && typeof navigate === 'function') {
+    try { await navigate(bot, task, new goals.GoalBlock(rim.x, rim.y, rim.z), { timeoutMs: walkMs, stallMs: 4000 }); }
+    catch (err) { task?.check?.(); if (['NeedsAir', 'NeedsSafety', 'Cancelled'].includes(err?.name)) throw err; }
+  }
+  const player = nearestPlayerEntity(bot, COME_OUT);
+  const view = player ? await standInView(bot, task, player, { navigate, goals }) : null;
+  const up = !rim || require('./terrain').feetCell(bot).y >= rim.y;
+  if (up) bot._outAt = Date.now();
+  return { up, ...(view ? { seen: view.seen } : {}) };
+}
+// After the survival layer's leave of a pocket (survival.js). For the bot
+// waiting between requests (JEV_IDLE=wait), whose routine runs only to get it
+// out, and for a pocket opened for a player come close (JEV_NIGHT=company).
+// Not for a call, which walks to its player itself, nor for the routine left
+// to its own day, nor under rock, where there is no ground to climb to.
+async function afterLeave(survival, task, goal, save, refuge, { drawnOut = null, navigate, goals } = {}) {
+  const bot = survival?.bot;
+  const waiting = process.env.JEV_IDLE === 'wait' && goal?.kind === 'survive';
+  if (!bot || !refuge?.origin || refuge.kind === 'house' || !(waiting || drawnOut === 'a player close by')) return null;
+  const rim = rimOf(bot, refuge.origin, { top: refuge.top });
+  if (!rim) return null;
+  survival.state.leftPocket = { origin: { x: refuge.origin.x, y: refuge.origin.y, z: refuge.origin.z }, rim: { x: rim.x, y: rim.y, z: rim.z }, dimension: bot.game?.dimension, at: Date.now() };
+  save?.();
+  const done = await climbOut(bot, task, { navigate, goals, rim });
+  console.log(`[company] out of the pocket: ${done.up ? 'up on the ground' : 'not up yet'}${done.seen === undefined ? '' : done.seen ? ', in view of the player' : ', the player not in view'}`);
+  // The waiting ends the routine here (session.js); it is given the moment to.
+  if (done.up && waiting) for (let i = 0; i < 12; i++) { task?.check?.(); await pause(100); }
+  return done;
 }
 
 // At a start: a "come here" does not outlive its moment.
@@ -222,4 +336,4 @@ async function standInView(bot, task, target, { navigate, goals, walkMs = WALK_M
   return { seen: inView(bot, target), moved: true, cell };
 }
 
-module.exports = { calledOver, callerState, lapsed, here, inShelter, holedUp, routine, standing, nightMode, staysUp, comesOut, nearestPlayer, STAY_UP, COME_OUT, ALONE_MS, OUT_MS, inView, spotsInView, standInView, standable, EYE, REACH, RISE, CALL_HOLDS_MS, GONE_MS };
+module.exports = { calledOver, callerState, lapsed, here, inShelter, holedUp, routine, standing, rimOf, openGround, inLeftPocket, climbOut, afterLeave, LEFT_MS, nightMode, staysUp, comesOut, nearestPlayer, STAY_UP, COME_OUT, ALONE_MS, OUT_MS, inView, spotsInView, standInView, standable, EYE, REACH, RISE, CALL_HOLDS_MS, GONE_MS };
