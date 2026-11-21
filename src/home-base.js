@@ -1470,6 +1470,6 @@ function homeChores(bot, goal, { now = Date.now() } = {}) {
   return options;
 }
 
-module.exports = { woolSays, cutCobwebs, noSheepSays, searchForSheep, takeHomeBed, bedCarried, placeOriented, isBed, siteWork, levelSite, clearStray, repairPlot, HOME_REACH, BREAD_WHEAT, layout, inside, baseAnchor, siteFits, chooseBaseSite, establishHome, homeOf, homeDistance, goHome, plotStatus, bedStatus, penStatus,
+module.exports = { woolSays, cutCobwebs, noSheepSays, searchForSheep, takeHomeBed, bedCarried, placeOriented, isBed, claimedCells, siteWork, levelSite, clearStray, repairPlot, HOME_REACH, BREAD_WHEAT, layout, inside, baseAnchor, siteFits, chooseBaseSite, establishHome, homeOf, homeDistance, goHome, plotStatus, bedStatus, penStatus,
   woolCarried, woodSpecies, homeStage, homeComplete, homeStep, tillPlot, plantPlot, harvestPlot, placeBed, claimBed, buildPen, gatherWool, lureCows, breedCows, takeSteak, bake,
   homeFood, eatFromHome, homeChores };
