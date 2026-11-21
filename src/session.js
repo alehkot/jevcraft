@@ -535,6 +535,11 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     if (ended) return;
     const player = Object.values(bot.players).find(p => p.uuid === data.sender);
     if (!player || player.username === bot.username || typeof data.plainMessage !== 'string') return;
+    // A player spoke, so the next line is an answer and may repeat an earlier one (speech.js quietRepeats).
+    // Its own listener for this is registered after this one and ran too late: a second "Jev stop" inside
+    // two minutes, more than fifteen seconds after the last thing a player said, stopped the bot without a
+    // word (live server, 2026-11-20).
+    bot._lastPlayerChatAt = Date.now();
     const from = player.username;
     let request = data.plainMessage;
     let literal;
