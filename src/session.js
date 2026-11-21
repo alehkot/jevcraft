@@ -19,6 +19,7 @@ const { Task } = require('./skills');
 const { parseAddress, chatNames, clarificationReply, CLARIFY_MS } = require('./chat-address');
 const { createReactiveWait } = require('./reactive-wait');
 const { createHandoff } = require('./handoff');
+const { createGuide } = require('./guide');
 const { compatibilityPlugin } = require('./compatibility');
 const { requestedCommand, createCommandAccess } = require('./commands');
 const { classifyCommand } = require('./command-classifier');
@@ -245,7 +246,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   let observation;
 
   async function stop(status = 'cancelled') {
-    if (status === 'cancelled') { survival.state.paused = true; saveSurvival(); }
+    if (status === 'cancelled') { survival.state.paused = true; saveSurvival(); guideQueue = null; }
     if (!active) {
       if (status === 'cancelled') {
         const saved = store.read();
@@ -481,6 +482,12 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         return;
       }
     }
+    // What the guide asked for next, once the request before it is done; dropped if that one was blocked, stopped or needs an answer.
+    if (guideQueue?.rest.length && ready && (!active || active.idle) && !pendingRequests && !relaunching && !launchingDream) {
+      const last = store.read();
+      if (clarifying.get(guideQueue.from)?.until > now || ['blocked', 'cancelled'].includes(last?.status)) guideQueue = null;
+      else if (!last || last.status === 'complete') inject(guideQueue.sender, guideQueue.rest.shift());
+    }
     if (waitMode) {
       // JEV_IDLE=wait: nothing is done between requests but answering what would
       // hurt the bot where it stands; a standing dream is still launched, since
@@ -502,6 +509,25 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
 
   // JEV_COOPERATION=ask: one player's work is not replaced by another's request unasked (handoff.js).
   const handoff = process.env.JEV_COOPERATION === 'ask' ? createHandoff() : null;
+  // JEV_GUIDE_API_KEY: a language model reads what a player says first (guide.js). What it asks
+  // for comes back through this same handler as plain requests, marked so they are not read twice.
+  const guide = process.env.JEV_GUIDE_API_KEY ? createGuide({ file: path.join(stateDirectory, `${memoryIdentity}-guide.json`) }) : null;
+  const guided = new WeakSet();
+  let guideQueue = null;         // { sender, from, rest: [request, ...] }: what the guide asked for after the request in hand
+  const passOn = data => { guided.add(data); onPlayerChat(data); };
+  const inject = (sender, text) => passOn({ sender, plainMessage: `${bot.username} ${text}` });
+  const guideStatus = from => {
+    const me = bot.entity?.position, them = bot.players[from]?.entity?.position, t = bot.time?.timeOfDay;
+    const mine = memory.context(from);
+    return { health: bot.health, food: bot.food, dimension: bot.game?.dimension,
+      time: Number.isFinite(t) ? (t >= 12300 && t < 23500 ? 'night' : 'day') : undefined,
+      holding: bot.heldItem?.name, carrying: Object.fromEntries(bot.inventory.items().slice(0, 16).map(item => [item.name, item.count])),
+      doing: active && !active.idle ? { request: active.goal.request, for: active.goal.from } : active?.idle ? 'looking after itself' : 'waiting for a request',
+      blocksFromPlayer: me && them ? Math.round(me.distanceTo(them)) : 'out of sight',
+      dream: dreamStore.read()?.dream || null,
+      savedPlaces: (mine.places || []).map(place => place.label || place.name).filter(Boolean).slice(0, 12),
+      savedNotes: (mine.notes || []).map(note => note.note).filter(Boolean).slice(-8) };
+  };
   const onPlayerChat = data => {
     if (ended) return;
     const player = Object.values(bot.players).find(p => p.uuid === data.sender);
@@ -560,6 +586,22 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     // previous natural-language request is waiting for a model response.
     if (/^status( please)?[.!?]?$/i.test(normalized)) {
       bot.chat(statusMessage(bot, active, store.read())); return;
+    }
+    if (guide && !guided.has(data) && !literal && !answer && address.explicit && !control.test(address.text)) {
+      guideQueue = null;
+      bot.swingArm?.('right');
+      guide.consult({ from, text: address.text, botName: bot.username, status: guideStatus(from) }).then(out => {
+        if (ended) return;
+        if (!out) { passOn(data); return; }
+        observation?.sample('guide', { from, said: address.text, say: out.say, requests: out.requests, addedRule: out.addedRule, forgotRule: out.forgotRule });
+        console.log(`[guide] ${from}: ${JSON.stringify(address.text)} -> ${JSON.stringify(out)}`);
+        if (out.say) bot.chat(out.say);
+        if (out.requests.length) {
+          guideQueue = { sender: data.sender, from, rest: out.requests.slice(1) };
+          inject(data.sender, out.requests[0]);
+        }
+      }).catch(err => { console.error('[guide]', err); if (!ended) passOn(data); });
+      return;
     }
     // Acknowledge instantly. Everything below can wait on the model, and a
     // motionless bot reads as "it did not hear me" rather than "it is thinking".
