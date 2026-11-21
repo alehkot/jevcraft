@@ -167,8 +167,9 @@ function plannedCells(bot, now = Date.now()) {
   return cells;
 }
 // A block that is one of Jev's buildings as it stands: what the plan put in
-// its cell is there. Ground in a planned cell, a building given up half
-// done, a block put in the cell since, are not (claimedCells has them all).
+// its cell is there, in a building finished or given up alike. Ground where
+// the plan has another block, a cell not built yet, a block put in the cell
+// since, are not (claimedCells has them all).
 function jevBuilt(bot, block) {
   const p = block?.position, cell = p && plannedCells(bot).get(`${p.x},${p.y},${p.z}`);
   return !!cell && require('./build-blocks').matchesBuildBlock(block, cell);

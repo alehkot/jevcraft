@@ -180,8 +180,10 @@ class SurvivalMovements extends Movements {
   // Not a block of one of Jev's own buildings as it stands (home-base.js
   // jevBuilt): every block it places is its own (own-blocks.js noteLaid),
   // so the planks and cobblestone of a house it had finished were something
-  // a later walk could dig through; only the building in hand is reserved
-  // (_constructionProtection). Ground in a planned cell is not refused.
+  // a later walk could dig through. reservedForConstruction (build-sites.js)
+  // keeps the building in hand, the saved shelters' boxes and the home base,
+  // not a finished design. A cell holding other than its plan's block is not
+  // refused.
   // From rkhazh/jevcraft b2eebaf7's guard for registered structures, its
   // packet fence and permits left out.
   safeToBreak(block) {

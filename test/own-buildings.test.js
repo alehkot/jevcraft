@@ -1,8 +1,8 @@
 'use strict';
 // Jev's own buildings as they stand (the build registry's planned blocks,
 // there) are not dug through on a walk (movement.js safeToBreak), its own laid
-// blocks included; other ground, ground in a planned cell and its own laid
-// blocks elsewhere are as before.
+// blocks included; ground elsewhere, a cell holding other than its plan's
+// block and its own laid blocks elsewhere are as before.
 //
 //   node test/own-buildings.test.js
 const { test } = require('node:test');
@@ -33,8 +33,8 @@ function scene(planned) {
 test("a cell of Jev's own building is not dug through on a walk", () => {
   const { movements, at } = scene([[2, 'dirt'], [4, 'cobblestone'], [5, 'oak_planks']]);
   assert.equal(movements.safeToBreak(at(1)), true, 'ground');
-  assert.equal(movements.safeToBreak(at(2)), false, 'ground in a building cell');
+  assert.equal(movements.safeToBreak(at(2)), false, 'the dirt its plan has there');
   assert.equal(movements.safeToBreak(at(3)), true, 'its own laid block elsewhere');
   assert.equal(movements.safeToBreak(at(4)), false, 'its own laid block in its building');
-  assert.equal(movements.safeToBreak(at(5)), true, 'ground where the plan has planks not yet laid');
+  assert.equal(movements.safeToBreak(at(5)), true, 'dirt where its plan has planks not yet laid');
 });
