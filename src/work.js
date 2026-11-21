@@ -2435,10 +2435,10 @@ async function miningCandidates(bot, task, step, goal) {
   const free = b => { if (!built.leftAlone(bot, goal, b.position)) return true; if (passedOver.length < 8) passedOver.push(b.position); return false; };
   const local = workSites.forOutput(goal, step.drops);
   // Jev's own buildings are not a quarry either (movement.js safeToBreak).
-  const claimed = require('./home-base').claimedCells(bot);
+  const { jevBuilt } = require('./home-base');
   const options = { matching: ids, maxDistance: 48, count: 32,
     ...(local && { point: pos(local.position), maxDistance: workSites.WORK_RADIUS }),
-    useExtraInfo: b => !claimed.has(`${b.position.x},${b.position.y},${b.position.z}`) &&
+    useExtraInfo: b => !jevBuilt(bot, b) &&
       (!step.properties || Object.entries(step.properties).every(([key, value]) => String(b.getProperties()[key]) === String(value))) &&
       (step.minimumY === undefined || b.position.y >= step.minimumY) && !reservedForConstruction(goal, b.position) &&
       // Planks the world put there, not the bot's own (note 754e).

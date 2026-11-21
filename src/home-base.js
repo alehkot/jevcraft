@@ -156,6 +156,23 @@ function claimedCells(bot, now = Date.now()) {
   bot._claimedCells = { where, registry: bot.buildRegistry, at: now, cells };
   return cells;
 }
+// The planned cells of Jev's buildings by "x,y,z", kept as claimedCells is.
+function plannedCells(bot, now = Date.now()) {
+  const where = String(bot.game?.dimension || 'overworld').replace(/^minecraft:/, '').replace(/^the_/, '');
+  const cache = bot._plannedCells;
+  if (cache && cache.where === where && cache.registry === bot.buildRegistry && now - cache.at < 5000) return cache.cells;
+  const cells = new Map();
+  for (const entry of bot.buildRegistry?.all?.(where) || []) for (const cell of entry.blueprint?.blocks || []) cells.set(`${cell.x},${cell.y},${cell.z}`, cell);
+  bot._plannedCells = { where, registry: bot.buildRegistry, at: now, cells };
+  return cells;
+}
+// A block that is one of Jev's buildings as it stands: what the plan put in
+// its cell is there. Ground in a planned cell, a building given up half
+// done, a block put in the cell since, are not (claimedCells has them all).
+function jevBuilt(bot, block) {
+  const p = block?.position, cell = p && plannedCells(bot).get(`${p.x},${p.y},${p.z}`);
+  return !!cell && require('./build-blocks').matchesBuildBlock(block, cell);
+}
 function siteWork(bot, goal, site, { strict = true } = {}) {
   const { plot, footprint } = layout(site);
   const plotKeys = new Set(plot.map(p => `${p.x},${p.z}`));
@@ -1470,6 +1487,6 @@ function homeChores(bot, goal, { now = Date.now() } = {}) {
   return options;
 }
 
-module.exports = { woolSays, cutCobwebs, noSheepSays, searchForSheep, takeHomeBed, bedCarried, placeOriented, isBed, claimedCells, siteWork, levelSite, clearStray, repairPlot, HOME_REACH, BREAD_WHEAT, layout, inside, baseAnchor, siteFits, chooseBaseSite, establishHome, homeOf, homeDistance, goHome, plotStatus, bedStatus, penStatus,
+module.exports = { woolSays, cutCobwebs, noSheepSays, searchForSheep, takeHomeBed, bedCarried, placeOriented, isBed, claimedCells, jevBuilt, siteWork, levelSite, clearStray, repairPlot, HOME_REACH, BREAD_WHEAT, layout, inside, baseAnchor, siteFits, chooseBaseSite, establishHome, homeOf, homeDistance, goHome, plotStatus, bedStatus, penStatus,
   woolCarried, woodSpecies, homeStage, homeComplete, homeStep, tillPlot, plantPlot, harvestPlot, placeBed, claimBed, buildPen, gatherWool, lureCows, breedCows, takeSteak, bake,
   homeFood, eatFromHome, homeChores };

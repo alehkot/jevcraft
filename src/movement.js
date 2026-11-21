@@ -177,14 +177,15 @@ class SurvivalMovements extends Movements {
   // blazes 28 blocks off, the warped forest, each step off (note 697). A
   // house or a portal keeps its exclusion (exclusionBreak), and what is not
   // a building block (a chest, a bed, obsidian) is not dug this way.
-  // Not a cell of one of Jev's own buildings (builds.js): its own laid
-  // planks and cobblestone made the walls of a house it had finished
-  // something a later walk could dig through. The building in hand is
-  // reserved apart (_constructionProtection); unstuck and walled-in dig on
-  // their own, not here. From rkhazh/jevcraft b2eebaf7's guard for
-  // registered structures, its packet fence and permits left out.
+  // Not a block of one of Jev's own buildings as it stands (home-base.js
+  // jevBuilt): every block it places is its own (own-blocks.js noteLaid),
+  // so the planks and cobblestone of a house it had finished were something
+  // a later walk could dig through; only the building in hand is reserved
+  // (_constructionProtection). Ground in a planned cell is not refused.
+  // From rkhazh/jevcraft b2eebaf7's guard for registered structures, its
+  // packet fence and permits left out.
   safeToBreak(block) {
-    if (block?.position && require('./home-base').claimedCells(this.bot).has(`${block.position.x},${block.position.y},${block.position.z}`)) return false;
+    if (block?.position && require('./home-base').jevBuilt(this.bot, block)) return false;
     if (super.safeToBreak(block)) return true;
     if (!this.canDig || !block?.type || !block.position || !this.blocksCantBreak.has(block.type)) return false;
     ownLaid ||= { materials: require('./shelter').buildingMaterials, laidAt: require('./own-blocks').laidAt };
