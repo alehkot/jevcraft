@@ -516,6 +516,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   let guideQueue = null;         // { sender, from, rest: [request, ...] }: what the guide asked for after the request in hand
   const passOn = data => { guided.add(data); onPlayerChat(data); };
   const inject = (sender, text) => passOn({ sender, plainMessage: `${bot.username} ${text}` });
+  const clean = value => String(value || '').replace(/\s+/g, ' ').trim().slice(0, 120);
   const guideStatus = from => {
     const me = bot.entity?.position, them = bot.players[from]?.entity?.position, t = bot.time?.timeOfDay;
     const mine = memory.context(from);
@@ -523,6 +524,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       time: Number.isFinite(t) ? (t >= 12300 && t < 23500 ? 'night' : 'day') : undefined,
       holding: bot.heldItem?.name, carrying: Object.fromEntries(bot.inventory.items().slice(0, 16).map(item => [item.name, item.count])),
       doing: active && !active.idle ? { request: active.goal.request, for: active.goal.from } : active?.idle ? 'looking after itself' : 'waiting for a request',
+      // The request before, and how it ended: what "carry on" and "did you finish?" are about.
+      lastRequest: (saved => saved?.request ? { request: clean(saved.request), for: saved.from, ended: saved.status } : null)(store.read()),
       blocksFromPlayer: me && them ? Math.round(me.distanceTo(them)) : 'out of sight',
       dream: dreamStore.read()?.dream || null,
       savedPlaces: (mine.places || []).map(place => place.label || place.name).filter(Boolean).slice(0, 12),
