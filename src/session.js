@@ -505,7 +505,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       // it stood, the bot stayed sealed in its pocket until a player asked for
       // something, out of sight four blocks under the grass (2026-11-21). The
       // idle loop is let run on until the bot is out of the shelter and out of
-      // the ground, and twenty seconds more to finish the climb (company.js
+      // the ground, and three seconds more to finish the climb (company.js
       // inShelter, holedUp, routine). It leaves by its own judgment, and is
       // started for that when the bot comes back by day still in one.
       const company = require('./company'), sheltered = !dark && (company.holedUp(bot) || company.inShelter(bot, survival));

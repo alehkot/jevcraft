@@ -54,9 +54,9 @@ function callerState(bot, goal, now = Date.now()) {
   return now - goal.callerGoneAt >= GONE_MS ? 'left' : 'wait';
 }
 
-// Inside the shelter it has on record: the cell of its pocket, the floor of
-// its house. Read by the waiting between requests (session.js, JEV_IDLE=wait),
-// so the day is not waited out sealed in the night's pocket.
+// Inside a pocket it has on record. Read by the waiting between requests
+// (session.js, JEV_IDLE=wait), so the day is not waited out sealed in the
+// night's pocket.
 // Climbing out counts as inside: a shaft pocket is left up its own shaft,
 // and the first test of this (2026-11-21) ended the climb one block up, out
 // of the pocket's cell and three under the grass, to wait there. Read off
@@ -67,7 +67,8 @@ function inShelter(bot, survival) {
     if (!bot?.entity?.position) return false;
     const feet = require('./terrain').feetCell(bot), dimension = bot.game?.dimension;
     return (survival?.state?.shelters || []).some(refuge => {
-      if (!refuge?.origin || refuge.dimension !== dimension) return false;
+      // A house is a place to wait in: the routine is not run for as long as the bot stands in one.
+      if (!refuge?.origin || refuge.dimension !== dimension || refuge.kind === 'house') return false;
       const o = refuge.origin, top = refuge.top;
       if (refuge.shaft && top && feet.x === o.x && feet.z === o.z && feet.y >= o.y && feet.y < top.y) return true;
       return require('./shelter').inside(bot, refuge);
@@ -89,15 +90,17 @@ function holedUp(bot) {
   } catch (_) { return false; }
 }
 
-const OUT_MS = 20000;   // the routine's time to finish getting out, once the bot is out of its shelter and of any hole
+const OUT_MS = 3000;    // the routine's time to finish getting out, once the bot is out of its shelter and of any hole
 
 // The waiting between requests, each half second: what is done with the
 // bot's own routine (the idle loop). In the dark it runs, as it does in a
 // shelter or a hole by day, where it is the one that gets the bot out. Out
-// of both, one that is running is let finish for twenty seconds (the record
+// of both, one that is running is let finish for three seconds (the record
 // of a pocket goes as the leave starts, and a shaft that crosses a cavity is
 // no hole there: the third test, 2026-11-21, left the bot standing in one),
-// and then ended; none is started.
+// and then ended; none is started. Three seconds and no more: in solid
+// ground the hole lasts to the grass, and whatever time is given after it is
+// the routine's own day begun, the hunt the waiting is there to prevent.
 // -> 'run' | 'finish' | 'end'
 function routine({ dark, sheltered, sinceSheltered }) {
   if (dark || sheltered) return 'run';

@@ -294,6 +294,10 @@ const call = (over = {}) => ({ kind: 'come', request: 'Jev come here', from: 'Ca
     assert.equal(company.inShelter(s.bot, createSurvival(s.bot, { state: { shelters: [] }, client: null })), false, 'no shelter on record');
     assert.equal(company.inShelter(s.bot, null), false);
     assert.equal(company.inShelter(s.bot, { state: { get shelters() { throw new Error('unreadable'); } } }), false);
+    survival.state.shelters[0].kind = 'house';
+    assert.equal(company.inShelter(s.bot, survival), false, 'a house is a place to wait in');
+    delete survival.state.shelters[0].kind;
+    assert.equal(company.inShelter(s.bot, survival), true);
     s.bot.game.dimension = 'the_nether';
     assert.equal(company.inShelter(s.bot, survival), false, 'another dimension');
   });
@@ -319,7 +323,7 @@ const call = (over = {}) => ({ kind: 'come', request: 'Jev come here', from: 'Ca
     assert.equal(company.holedUp(null), false);
   });
 
-  await check('the bot\'s own routine while it waits: runs in the dark and in a shelter, finishes for twenty seconds once out, then ends', async () => {
+  await check('the bot\'s own routine while it waits: runs in the dark and in a shelter, finishes for three seconds once out, then ends', async () => {
     const r = company.routine;
     assert.equal(r({ dark: true, sheltered: false, sinceSheltered: 1e9 }), 'run', 'night in the open');
     assert.equal(r({ dark: false, sheltered: true, sinceSheltered: 0 }), 'run', 'sunrise in the pocket, or back by day in one');
@@ -327,6 +331,7 @@ const call = (over = {}) => ({ kind: 'come', request: 'Jev come here', from: 'Ca
     assert.equal(r({ dark: false, sheltered: false, sinceSheltered: company.OUT_MS - 1 }), 'finish');
     assert.equal(r({ dark: false, sheltered: false, sinceSheltered: company.OUT_MS }), 'end', 'out: the waiting begins');
     assert.equal(r({ dark: false, sheltered: false, sinceSheltered: 1e12 }), 'end', 'never sheltered: sunrise after a night stayed up, as before');
+    assert.ok(company.OUT_MS <= 5000, 'no time for the routine to start its own day');
   });
 
   console.log(`\n${passed} checks passed`);
