@@ -163,7 +163,17 @@ async function recoverNavigation(bot, task, deadline, stopWhen) {
       if (currentCell.x !== cell.x || currentCell.z !== cell.z ||
         (swimming ? current.y < start.y - 0.5 || current.y > start.y + 1 : currentCell.y !== cell.y)) return false;
       if (distance() <= 0.15 && (swimming || bot.entity.onGround)) return true;
-      await bot.lookAt(target.offset(0, 1.62, 0), true);
+      // A look that comes back late does not set the keys again after the
+      // task was stopped or the deadline passed (rkhazh/jevcraft 726e324c).
+      let lookTimer;
+      try {
+        const watched = new Promise((resolve, reject) => { lookTimer = setInterval(() => {
+          try { task.check(); if (Date.now() >= until) resolve(false); } catch (err) { reject(err); }
+        }, 50); });
+        if (!await Promise.race([Promise.resolve(bot.lookAt(target.offset(0, 1.62, 0), true)).then(() => true), watched])) return false;
+      } finally { clearInterval(lookTimer); }
+      task.check();
+      if (Date.now() >= until) return false;
       bot.setControlState('sneak', !swimming);
       bot.setControlState('jump', swimming && current.y < start.y - 0.05);
       bot.setControlState('forward', distance() > 0.1);
@@ -1012,7 +1022,12 @@ async function navigateAttempt(bot, task, goal, { timeoutMs, stallMs, stopWhen, 
     } catch (_) { held = false; }
     if (held) {
       bot.setControlState?.('sneak', true);
-      setTimeout(() => { try { if (!bot._controller?.sneak) bot.setControlState?.('sneak', false); } catch (_) { /* gone */ } }, EDGE_STOP_MS);
+      // Let go only by this walk's own stop: not once a newer walk has the body, the task is over, or the body
+      // hangs over the fall it was crouched for (rkhazh/jevcraft 726e324c).
+      setTimeout(() => { try {
+        if ((walk != null && bot._walkSeq !== walk) || task.cancelled || bot._controller?.sneak || require('./motion').fallUnder(bot)) return;
+        bot.setControlState?.('sneak', false);
+      } catch (_) { /* gone */ } }, EDGE_STOP_MS);
     } else if (edgeCrouch) bot.setControlState?.('sneak', false);
   }
 }

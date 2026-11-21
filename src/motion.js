@@ -79,11 +79,26 @@ function fallUnder(bot) {
   const p = bot.entity?.position;
   if (!p || typeof bot.blockAt !== 'function') return null;
   const terrain = require('./terrain');
-  const f = p.floored();
-  if (at(bot, f.x, f.y - 1, f.z)?.boundingBox === 'block') return null;
-  const fall = terrain.fallFrom(terrain.atOf(bot), { x: f.x, y: f.y - 1, z: f.z });
+  const f = p.floored(), floor = span(p).floor;
+  if (centerContact(bot, p)) return null;
+  const fall = terrain.fallFrom(terrain.atOf(bot), { x: f.x, y: floor, z: f.z });
   const hurts = fall.into === 'ground' ? Math.max(0, fall.n - 3) : fall.into === 'unknown' && fall.n >= 16 ? Infinity : 0;
   return fall.into === 'lava' || hurts >= (bot.health ?? 20) / 2 ? fall : null;
+}
+// Something under the body's middle it stands on: the top of a collision
+// shape within a hair of the feet, in the floor's cell or the one below (a
+// fence's shape rises above its cell). Read from the cell under the floored
+// feet alone, a bottom slab or a stair's low step over air was a fall, and
+// a walk was not begun from a slab roof or a staircase over a drop. From
+// rkhazh/jevcraft 726e324c.
+function centerContact(bot, p = bot.entity?.position) {
+  if (!p || typeof bot.blockAt !== 'function') return false;
+  const x = Math.floor(p.x), z = Math.floor(p.z), floor = span(p).floor;
+  for (const y of [floor, floor - 1]) {
+    const b = at(bot, x, y, z);
+    if (b?.shapes?.some(s => p.x >= x + s[0] && p.x < x + s[3] && p.z >= z + s[2] && p.z < z + s[5] && Math.abs(y + s[4] - p.y) <= 0.025)) return true;
+  }
+  return false;
 }
 // Crouched with the body's middle over a fall into lava, or one that
 // costs half the health or more, held up by the edge of a block beside:
@@ -333,4 +348,4 @@ async function move(bot, task, { label, keys = ['forward'], sneak = true, why, l
   }
 }
 
-module.exports = { move, within, burningAhead, bodyBurning, fallUnder, footingFirst, MOVEMENT, MAX_MS };
+module.exports = { move, within, burningAhead, bodyBurning, fallUnder, centerContact, footingFirst, MOVEMENT, MAX_MS };
