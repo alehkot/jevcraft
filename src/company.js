@@ -248,9 +248,21 @@ async function climbOut(bot, task, { navigate, goals, rim, walkMs = 15000 } = {}
   // Not from the ground: a pocket built on the grass is walked out of by its
   // doorway, and the leave has done that.
   const onGround = () => { try { return openGround(bot, require('./terrain').feetCell(bot)); } catch (_) { return false; } };
-  if (rim && typeof navigate === 'function' && !onGround()) {
-    try { await navigate(bot, task, new goals.GoalBlock(rim.x, rim.y, rim.z), { timeoutMs: walkMs, stallMs: 4000 }); }
-    catch (err) { task?.check?.(); if (['NeedsAir', 'NeedsSafety', 'Cancelled'].includes(err?.name)) throw err; }
+  // Twice, the second to anywhere beside the rim: the leave's own climb ends a
+  // block short as often as not, and a walk asked for where one has just
+  // ended short is refused once (third run with a player, 2026-11-21: the
+  // bot stood a block under the grass, in view, for forty seconds).
+  if (rim && typeof navigate === 'function') {
+    for (const goal of [new goals.GoalBlock(rim.x, rim.y, rim.z), new goals.GoalNear(rim.x, rim.y, rim.z, 1)]) {
+      if (onGround()) break;
+      try { await navigate(bot, task, goal, { timeoutMs: walkMs, stallMs: 4000 }); }
+      catch (err) {
+        task?.check?.();
+        if (['NeedsAir', 'NeedsSafety', 'Cancelled'].includes(err?.name)) throw err;
+        console.log(`[company] the walk up to the rim did not get there: ${err?.name || 'Error'}: ${String(err?.message || err).slice(0, 160)}`);
+        for (let i = 0; i < 6; i++) { task?.check?.(); await pause(100); }
+      }
+    }
   }
   const player = nearestPlayerEntity(bot, COME_OUT);
   const view = player ? await standInView(bot, task, player, { navigate, goals }) : null;
