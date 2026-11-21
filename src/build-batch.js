@@ -1,6 +1,6 @@
 'use strict';
 const { Vec3 } = require('vec3');
-const { buildCellComplete, buildFootprint } = require('./build-blocks');
+const { bedFloor, buildCellComplete, buildFootprint, isBed } = require('./build-blocks');
 const { isDoor } = require('./doors');
 const Heap = require('mineflayer-pathfinder/lib/heap');
 function remainingBuildBatch(bot, batch) {
@@ -30,6 +30,13 @@ function orderBuildCells(bot, missing) {
   if (!bot.blockAt) return sorted;
   const key = p => `${p.x},${p.y},${p.z}`, pending = new Map(sorted.map(p => [key(p), p])), ordered = [], planned = new Map();
   const rank = new Map(sorted.map((p, i) => [key(p), i])), ready = new Heap(), queued = new Set();
+  // The floor under a bed's head is diagonal to the foot. Recheck the
+  // foot as soon as that floor enters the order, even in a one-item batch.
+  const bedByHeadSupport = new Map();
+  for (const cell of sorted.filter(p => isBed(p.material) && p.properties?.part === 'foot')) {
+    const [, head] = buildFootprint(cell);
+    bedByHeadSupport.set(key({ ...head, y: head.y - 1 }), cell);
+  }
   const faces = [new Vec3(0, -1, 0), new Vec3(0, 1, 0), new Vec3(-1, 0, 0), new Vec3(1, 0, 0), new Vec3(0, 0, -1), new Vec3(0, 0, 1)];
   // Put a usable anchor before its dependent trim even when the anchor is
   // higher. Otherwise shrinking an inventory batch could exclude the beam
@@ -37,6 +44,16 @@ function orderBuildCells(bot, missing) {
   const enqueue = cell => {
     const k = key(cell);
     if (queued.has(k)) return;
+    if (isBed(cell.material) && cell.properties?.part === 'foot') {
+      const floorsReady = buildFootprint(cell).every(part => {
+        const below = new Vec3(part.x, part.y - 1, part.z), floorKey = key(below);
+        if (pending.has(floorKey)) return false;
+        const floor = planned.get(floorKey);
+        return floor ? !floor.properties : bedFloor(bot.blockAt(below));
+      });
+      if (floorsReady) { ready.push({ cell, f: rank.get(k) }); queued.add(k); }
+      return;
+    }
     const half = isDoor(cell.material) ? null : cell.properties?.half || cell.properties?.type;
     const supported = faces.some(face => {
       if (isDoor(cell.material) && face.y !== -1) return false;
@@ -59,6 +76,8 @@ function orderBuildCells(bot, missing) {
     const { cell } = ready.pop(), k = key(cell);
     pending.delete(k); ordered.push(cell);
     for (const part of buildFootprint(cell)) planned.set(key(part), part);
+    const bed = bedByHeadSupport.get(k);
+    if (bed) enqueue(bed);
     // Only adjacent dependents can become ready. Repeated full scans can stall
     // network ticks on a long connected roof whose anchors run in reverse order.
     for (const part of buildFootprint(cell)) for (const face of faces) {
@@ -68,9 +87,9 @@ function orderBuildCells(bot, missing) {
   }
   return [...ordered, ...pending.values()];
 }
-function createBuildBatch(bot, missing, makePlan, stock) {
+function createBuildBatch(bot, missing, makePlan, stock, limit = 512) {
   const sorted = orderBuildCells(bot, missing);
-  let count = Math.min(512, sorted.length);
+  let count = Math.min(limit, sorted.length);
   while (count > 0) {
     const cells = sorted.slice(0, count), outputs = materialCounts(cells);
     const plan = makePlan(outputs);

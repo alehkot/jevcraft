@@ -31,7 +31,8 @@ function itemCandidates(registry, request, { limit = 48, blocksOnly = false } = 
 }
 
 function itemChoices(items) {
-  return { ...Object.fromEntries(items.map(item => [item.name, item.name === 'short_grass'
+  return { ...Object.fromEntries(items.map(item => [item.name, item.name === 'white_bed'
+    ? 'White Bed: the default bed when no color is requested.' : item.name === 'short_grass'
     ? 'Short Grass: the grass plant/vegetation; collected with shears.' : item.name === 'grass_block'
       ? 'Grass Block: dirt topped with grass; collecting the intact turf block requires Silk Touch.'
       : `${item.displayName} (${item.name})`])), none: 'No offered item matches the requested item or material.' };

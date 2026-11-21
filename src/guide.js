@@ -31,7 +31,7 @@ The engine understands these requests (short imperative English, without the bot
 - "get me <N> <item>": gathers, mines, smelts and crafts whatever is needed and brings it. Examples: "get me 16 oak logs", "get me a stone pickaxe", "get me 8 cooked beef", "get me full iron armor and a shield"
 - "craft <N> <item>"
 - "find a <biome, creature or structure>"
-- "build a small <material> house", "build a cottage", "build a tower"
+- "build a starter house for two people", "build a starter house for three people", "build a small <material> house", "build a cottage", "build a tower". "Help me build a house" is one actual build request. Keep the requested number of people or beds and any requested material. If the player leaves the wood open, let the builder use local wood.
 - "remember this as <place name>", "go to <place name>", "go home"
 - "remember that <fact or preference>", "what do you remember"
 - "your dream is to <one request>" (a job for when nothing else is asked), "set your dream aside", "chase your dream"

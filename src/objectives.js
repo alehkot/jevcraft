@@ -82,6 +82,7 @@ async function interpret(client, request, from, username, context = {}) {
       delivery: ['intake_delivery'],
       target: ['intake_target', { from, players: context.players || [] }],
       material: ['intake_material'],
+      starter_house: /\b(house|home|hut|cabin|shelter|cottage)\b/i.test(address.text) && ['intake_starter_house'],
     },
   });
   const a = response.answers;
@@ -133,7 +134,9 @@ async function interpret(client, request, from, username, context = {}) {
     if (![from, ...(context.players || [])].includes(target)) throw new Error('Unknown movement target');
     spec.target = target;
   }
-  if (kind === 'build' && context.continueBuilds) {
+  const starterBeds = ['house', 'build'].includes(kind) && { two: 2, three: 3 }[a.starter_house?.choice];
+  if (starterBeds) spec.kind = 'build';
+  if (spec.kind === 'build' && context.continueBuilds) {
     // Code offers only structures that actually stand nearby; Jev decides
     // whether this request continues one, and where a new one should go.
     const continuation = await context.continueBuilds(request, context.builds || []);
@@ -150,7 +153,8 @@ async function interpret(client, request, from, username, context = {}) {
     if (continuation.placement === 'beside_target' && continuation.target) spec.buildAnchor = beside(continuation.target);
     else if (continuation.mode === 'edit') spec.buildAnchor = beside(continuation.target);
   }
-  if (kind === 'build' && !spec.buildAnchor && spec.buildContinuation?.placement === 'here' && context.speakerPosition) {
+  if (starterBeds && !spec.continueBuild && spec.buildContinuation?.mode !== 'edit') spec.starterBeds = starterBeds;
+  if (spec.kind === 'build' && !spec.buildAnchor && (spec.starterBeds || spec.buildContinuation?.placement === 'here') && context.speakerPosition) {
     spec.buildAnchor = { ...context.speakerPosition };
   }
   if (kind === 'find') {
@@ -164,30 +168,36 @@ async function interpret(client, request, from, username, context = {}) {
     if (!resolution.items.length) return clarify('I could not resolve the whole item list. Please name the items or armor material so I can keep every part of your request.', { reason: 'incomplete_bundle' });
     return { ...spec, kind: 'bundle', tasks: resolution.items.map(item => ({ ...item, from, status: 'pending' })), itemResolution: resolution };
   }
-  if (['obtain', 'craft'].includes(kind) || (kind === 'house' && (a.material?.choice === 'other' || context.memory?.notes?.length || context.memory?.preferences?.length))) {
+  const houseMaterial = Boolean(spec.starterBeds) || kind === 'house';
+  const materialChoice = a.material?.choice;
+  const rememberedMaterial = context.memory?.notes?.length || context.memory?.preferences?.length;
+  if (['obtain', 'craft'].includes(kind) || (houseMaterial && (materialChoice === 'other' || (materialChoice !== 'local_wood' && rememberedMaterial)))) {
     // A confident pick from the word-overlap candidates settles the item in
     // the request's own round trip. Anything less walks the full catalog.
-    const picked = kind !== 'house' && candidateChoices && a.item;
+    const picked = !houseMaterial && candidateChoices && a.item;
     const direct = picked && picked.choice !== 'none' && Object.hasOwn(candidateChoices, picked.choice) && picked.confidence >= CONFIDENCE.item;
     const resolution = direct
       ? { item: picked.choice, path: ['request_candidates', picked.choice], direct: true, latencyMs: 0,
         judgments: [{ path: [], options: candidateChoices, answer: picked, usage: null, direct: true }] }
-      : await resolveItem(client, registry, request, { blocksOnly: kind === 'house', noted,
-        context: { inventory: context.inventory || {}, nearbyBlocks: context.nearbyBlocks || [], memory: context.memory, ...(kind === 'house' && { purpose: 'Primary structural material for a house. A preferred wood species means its planks, not its log or a decorative item.' }) } });
+      : await resolveItem(client, registry, request, { blocksOnly: !!houseMaterial, noted,
+        context: { inventory: context.inventory || {}, nearbyBlocks: context.nearbyBlocks || [], memory: context.memory, ...(houseMaterial && { purpose: 'Primary structural material for a house. A preferred wood species means its planks, not its log or a decorative item.' }) } });
     spec.itemResolution = resolution;
     if (resolution.ambiguous) {
       const [first, second] = resolution.ambiguous.map(name => name.replaceAll('_', ' '));
       return clarify(`Did you mean ${first} or ${second}?`, { reason: 'ambiguous_item', options: resolution.ambiguous });
     }
     if (!resolution.item) return clarify('I could not match the requested item. Use its Minecraft item name so I can work out the recipe.', { reason: 'no_item' });
-    if (kind === 'house') spec.material = resolution.item;
+    if (houseMaterial) spec.material = resolution.item;
     else {
       if (![...numbers, 'unspecified'].includes(a.quantity?.choice)) throw new Error('Invalid item quantity');
       spec.item = resolution.item; spec.count = a.quantity.choice === 'unspecified' ? resolution.item.endsWith('_concrete') ? 32 : 1 : Number(a.quantity.choice);
       if (!['speaker', 'bot', 'unspecified'].includes(a.delivery?.choice)) throw new Error('Invalid item recipient');
       spec.deliver = a.delivery.choice === 'speaker';
     }
-  } else if (kind === 'house') spec.material = a.material?.choice || 'oak_planks';
+  } else if (houseMaterial) {
+    if (a.material?.choice && a.material.choice !== 'local_wood') spec.material = a.material.choice;
+    else if (!spec.starterBeds) spec.material = 'oak_planks';
+  }
   return spec;
 }
 

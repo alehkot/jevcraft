@@ -1122,7 +1122,7 @@ async function gatherWool(bot, task, goal, save, home, actions) {
     catch (err) { task.check(); if (['NeedsAir', 'NeedsSafety', 'Cancelled'].includes(err.name)) throw err; }
   }
   const { setAside, isSetAside } = require('./progress');
-  const sheep = Object.values(bot.entities).filter(e => e.name === 'sheep' && e.isValid !== false && !isBaby(bot, e) && e.position.distanceTo(bot.entity.position) < 48 &&
+  const sheep = Object.values(bot.entities).filter(e => e.name === 'sheep' && e.isValid !== false && !isBaby(bot, e) && !shearing.sheared(bot, e) && e.position.distanceTo(bot.entity.position) < 48 &&
     !isSetAside(goal, 'wool_sheep', e.uuid || e.id))
     .sort((a, b) => a.position.distanceTo(bot.entity.position) - b.position.distanceTo(bot.entity.position))[0];
   goal.step = { action: 'gather_wool', target: sheep ? plain(sheep.position.floored()) : null, carried: before }; save();

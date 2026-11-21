@@ -9,6 +9,8 @@ The same bot takes requests in game chat. Setup is under [Playing with Jev](../R
 | `Jev give me full diamond armor and a bed` | Plan all items together, sharing materials. |
 | `Jev find a cherry biome` | Explore. |
 | `Jev build a small cherry mansion` | Design and build. |
+| `Jev help me build a house` | Build a small starter house for two, using nearby wood. |
+| `Jev build a simple house for three people` | Build a single room with a door, roof, windows and three beds. |
 | `Jev remember this as home` / `Jev go home` | Named places. |
 | `Jev status` / `stop` / `resume` | Control the current task. |
 
@@ -27,5 +29,7 @@ A chat request always comes first; the dream picks up again when the request is 
 ## Building and Creative mode
 
 In Survival, Jev builds from templates (cottage, mansion, tower) that it configures, or picks from about 30 ready-made designs, and gathers the materials first.
+
+For a starter house, ask near the spot where you want to live. Jev gathers materials in small batches and builds the shell before it goes looking for sheep. You can help by dropping matching logs or planks, a bed of any colour, or three wool of one colour beside Jev. Each bed takes three wool and three planks. Use `Jev status` to check progress and `Jev resume` to continue an interrupted build.
 
 In Creative mode the bot has every block. There you can connect a generative LLM as the designer: set `OPENROUTER_API_KEY` and `BUILD_DESIGNER=openrouter` (or `auto`), and choose the model with `OPENROUTER_BUILD_MODEL` (default `anthropic/claude-opus-5.5`). The LLM draws a schematic from the request and a survey of the terrain. Code checks that it is valid (up to 25 × 16 × 25 blocks, at most 16 materials), and Jev judges whether it matches the request before any block is placed. Jev never builds over a structure it did not place. Without a key, or with `BUILD_DESIGNER=jev`, it uses the templates.

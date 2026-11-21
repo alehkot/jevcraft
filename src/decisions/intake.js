@@ -21,7 +21,7 @@ const TYPES = {
   dream: 'Give, ask about, pause, resume or take away the bot\'s DREAM, the long goal it chases when nothing else needs it: "your dream is to beat the game", "dream of building a village", "what is your dream", "chase your dream", "set your dream aside", "forget your dream". A dream can also be one thing to do when the bot is free, said as "your dream is to build a castle by the lake" or "your dream is to get me a stack of diamonds". A plain request to build one thing or get one item, without the word dream, is not this.',
   memory: 'Save, recall, or forget a personal fact, preference, named place, or past request, or ask what the bot has found exploring. Remember this as home; I prefer cherry wood; what did I ask last time; where is our base; what have you found; where is the nearest village; go home/return to a named saved place or a found village; make another one like last time. Questions about past tasks are memory, not current status. A fresh ordinary request naming a Minecraft resource remains obtain/craft/find. Memory never grants server-command permission.',
   operator_command: 'Ask for a Minecraft command effect: change time, weather, difficulty, or player game mode (Creative, Survival, Adventure, Spectator); teleport; summon; change rules, effects, enchantments, experience, scores, permissions, or other server command settings. "Put me in Creative" changes game mode. Polite action questions are requests. Never use commands merely as a means to build, craft, collect, or follow. Stop this bot task is stop. Informational questions, quotes and negated commands are other.',
-  house: 'Build a simple small house or shelter, optionally naming its primary material, with no custom architecture.',
+  house: 'Build or help a player build a simple small house or shelter, optionally naming its occupants, bed count and primary material.',
   build: 'Design and build a custom structure: a mansion, castle, tower, bridge, statue, detailed house, or a building with specified rooms, floors, shape or style. This calls the building designer. Inventory items such as beds and chests are craft.',
   obtain: 'Get, gather, collect, bring or give a Minecraft item or block, of any kind.',
   craft: 'Make or craft an inventory item such as a tool, chest, stairs, planks, or other recipe output.',
@@ -89,7 +89,7 @@ request({
   gate: { threshold: 0.6, below: 'caller', why: 'unsure of the pick among the word-overlap candidates, the full catalog walk decides instead' },
   build: ({ candidates }) => choice({
     task: 'Assuming an obtain or craft request for ONE type of output, which listed catalog item is the requested output? These candidates were found by word overlap with the request and may include irrelevant items. Select the requested output, not a tool or ingredient needed to obtain it.',
-    guidance: 'Match the requested species, color and item kind exactly. Current explicit choices override memory. For an unspecified wood variant, use relevant explicit memory notes first, then memory.preferences as a soft default, then oak. Bare grass means the grass plant unless grass block/turf is specified. Choose none if the requested item is not listed or the request names several outputs.',
+    guidance: 'Match the requested species, color and item kind exactly. A bed without a requested color means white_bed. Current explicit choices override memory. For an unspecified wood variant, use relevant explicit memory notes first, then memory.preferences as a soft default, then oak. Bare grass means the grass plant unless grass block/turf is specified. Choose none if the requested item is not listed or the request names several outputs.',
   }, candidates),
 });
 request({
@@ -118,9 +118,17 @@ request({
 });
 request({
   id: 'intake_material', question: 'What should a small house be built of?', trigger: 'Asked speculatively with every message; read for house.', primitive: 'choice', stakes: 'medium',
-  build: () => choice('Assuming the request is a small house, which primary construction material should be used? Current explicit materials take priority. When unspecified, use relevant explicit memory notes, then learned wood preferences in memory.preferences. Use oak_planks only if there is no relevant preference.', {
-    oak_planks: 'Oak planks: explicitly requested, preferred, or the default when there is no relevant memory.',
+  build: () => choice('Assuming the request is a small house, which primary construction material should be used? Current explicit materials take priority, then relevant memory. Use local_wood when the wood species is open.', {
+    local_wood: 'Ordinary wood with no species requested or preferred. Use a tree available here.', oak_planks: 'Oak planks specifically requested or preferred.',
     cobblestone: 'Cobblestone.', dirt: 'Dirt.', other: 'Another specified or remembered preferred building material (including cherry or other wood species); resolve it from the full catalog.',
+  }),
+});
+request({
+  id: 'intake_starter_house', question: 'Does the player want a new simple house for two or three people?', trigger: 'Asked alongside intake for a house or shelter request.', primitive: 'choice', stakes: 'medium',
+  build: () => choice('For a request to build a new, simple single-storey house, count the people who will sleep there. Helping build one means actually building it. A plain house defaults to two beds. Respect explicit details about architecture, an existing build, different capacities or omitting beds.', {
+    two: 'A new simple house for one or two players, or an ordinary house with capacity left open. Includes a door, roof and two beds.',
+    three: 'A new simple house for three players or with three beds, including a request for room for two or three.',
+    other: 'Anything else, including advice only, an edit or repair, an animal shelter, a bed item request or a custom design that this house would not fulfill.',
   }),
 });
 

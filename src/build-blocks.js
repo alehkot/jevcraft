@@ -71,6 +71,13 @@ function bedPairMatches(foot, head) {
   return a.part === 'foot' && b.part === 'head' && Object.hasOwn(bedDirections, a.facing) && a.facing === b.facing;
 }
 
+// Schematic beds are drawn on full blocks. A slab has a "block" bounding box
+// too, so check the actual collision shape when reading the world.
+function bedFloor(block) {
+  return block?.boundingBox === 'block' && block.shapes?.some(
+    ([x, y, z, X, Y, Z]) => x === 0 && y === 0 && z === 0 && X === 1 && Y === 1 && Z === 1);
+}
+
 function buildCellComplete(bot, cell) {
   // Objective diagnostics inspect every schematic cell, including companions.
   // A head is complete only when its owning foot and both orientations agree.
@@ -79,7 +86,7 @@ function buildCellComplete(bot, cell) {
     return buildCellComplete(bot, { ...cell, x: cell.x - dx, z: cell.z - dz, companion: false, properties: { ...cell.properties, part: 'foot' } });
   }
   const parts = buildFootprint(cell), observed = parts.map(p => bot.blockAt(new Vec3(p.x, p.y, p.z)));
-  if (isBed(cell.material)) return parts.length === 2 && parts.every((p, i) => matchesBuildBlock(observed[i], p)) && bedPairMatches(...observed);
+  if (isBed(cell.material) && parts.length === 2) return parts.every((p, i) => matchesBuildBlock(observed[i], p)) && bedPairMatches(...observed);
   if (parts.every((p, i) => matchesBuildBlock(observed[i], p)) && (parts.length === 1 || doorPairMatches(...observed))) return true;
   return parts.every(p => enclosedCell(bot, p));
 }
@@ -131,4 +138,4 @@ function placementGoal(bot, point, cell = {}) {
   return goal;
 }
 
-module.exports = { isBed, bedPairMatches, regionProperties, matchesBuildBlock, placementGoal, buildFootprint, buildCellComplete, enclosedCell, blockOwnership, matchesOwnership };
+module.exports = { isBed, bedFloor, bedPairMatches, regionProperties, matchesBuildBlock, placementGoal, buildFootprint, buildCellComplete, enclosedCell, blockOwnership, matchesOwnership };

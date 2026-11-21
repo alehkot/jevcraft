@@ -62,7 +62,7 @@ const { batchPlan, remainingOutputs } = require('./batch-plan');
 const { visitPlace } = require('./memory');
 const { selectBundleBatch, batchOutputs } = require('./bundle-batch');
 const { remainingBuildBatch, materialCounts, createBuildBatch } = require('./build-batch');
-const { matchesBuildBlock, placementGoal, buildCellComplete, buildFootprint, blockOwnership } = require('./build-blocks');
+const { isBed, bedFloor, matchesBuildBlock, placementGoal, buildCellComplete, buildFootprint, blockOwnership } = require('./build-blocks');
 const { isDoor, doorPairMatches } = require('./doors');
 const interactableBlocks = new Set(require('mineflayer-pathfinder/lib/interactable.json'));
 const { chooseConstructionWork, approachConstruction } = require('./construction-access');
@@ -1934,6 +1934,13 @@ async function place(bot, task, p, material, { face, properties, stay = false, r
       bot.entity.position.offset(0, 1.62, 0).distanceTo(p.offset(0.5, 0.5, 0.5)) > 4.5) throw new Error(`Placing at ${p} would move me off this ledge`);
   }
   if (isDoor(material) && !air(bot.blockAt(p.offset(0, 1, 0)))) throw new Error(`A door needs room for its top half at ${p}`);
+  if (isBed(material) && properties?.part === 'foot') {
+    const parts = buildFootprint(cell), head = pos(parts[1]);
+    if (!air(bot.blockAt(head))) throw new Error(`${material} needs room for its companion block at ${head}`);
+    const body = occupant(bot, head);
+    if (body) throw bodyError(`Placement obstructed: ${occupiedSays(body, head)}`, body, head);
+    if (!parts.every(part => bedFloor(bot.blockAt(pos(part).offset(0, -1, 0))))) throw new Error(`A bed needs support below both halves at ${p}`);
+  }
   // Ground cover is replaced by a placed block, the way the game does it:
   // leaf litter on the chest cell held up the whole base.
   // A flower or anything else that breaks at a touch and stops nothing
@@ -5010,6 +5017,16 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
       : `Picking ${entry.name} back up where I left it.`);
     return false;
   }
+  if (goal.starterBeds && !goal.design) {
+    const design = require('./starter-house').designStarterHouse(bot, goal);
+    if (!design) {
+      await explore(bot, task, goal, save, 'trees for the starter house', { surfaceOnly: true });
+      return false;
+    }
+    goal.design = design;
+    save();
+    bot.chat(`I'll build a ${design.source.size[0]} by 5 house for ${goal.starterBeds}. I'll build the shell first, then furnish it. You can drop logs or wool beside me to help.`);
+  }
   if (!goal.design) {
     const mode = process.env.BUILD_DESIGNER || 'auto';
     if (!['auto', 'jev', 'openrouter'].includes(mode)) throw new Blocked('BUILD_DESIGNER must be auto, jev or openrouter');
@@ -5123,7 +5140,13 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     const here = bot.entity.position.floored();
     const proposed = !goal.buildAnchor && !at && schematic.site
       ? { x: here.x + schematic.site[0], y: here.y + schematic.site[1], z: here.z + schematic.site[2] } : null;
-    goal.blueprint = selectSchematicSite(bot, schematic, { anchor: goal.buildAnchor, prefer: proposed, owned, protect, at, baseY: proposed?.y });
+    if (goal.starterBeds && goal.buildAnchor && !bot.blockAt(pos(goal.buildAnchor))) {
+      const target = pos(goal.buildAnchor);
+      await navigate(bot, task, new goals.GoalNear(target.x, target.y, target.z, 4)); return false;
+    }
+    const nearbyRadius = goal.starterBeds && (!goal.buildContinuation || goal.buildContinuation.placement === 'anywhere') ? 24 : undefined;
+    goal.blueprint = selectSchematicSite(bot, schematic, { anchor: goal.buildAnchor, prefer: proposed, owned, protect, at, baseY: proposed?.y,
+      allowPreserved: !goal.starterBeds, nearbyRadius });
     if (!goal.blueprint && proposed) goal.blueprint = selectSchematicSite(bot, schematic, { owned, protect });
     // A dream's anchor is where the village would like the next part,
     // not where a player pointed. When nothing fits there, anywhere near will do.
@@ -5167,10 +5190,11 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
   if (blueprint.terrain && !blueprint.terrain.prepared) {
     await prepareBuildTerrain(bot, task, goal, save); return false;
   }
+  if (goal.starterBeds && require('./starter-house').acceptPlacedBeds(bot, goal)) save();
   if (verifyHouse(bot, blueprint).ok && !schematicScaffolding(bot, goal).length) return true;
   const missing = blueprint.blocks.filter(p => !p.companion && !buildCellComplete(bot, p));
   const blockedParts = missing.flatMap(p => buildFootprint(p).slice(1).filter(part => !air(bot.blockAt(pos(part))) &&
-    (!isDoor(bot.blockAt(pos(p))?.name) || !matchesBuildBlock(bot.blockAt(pos(part)), part))));
+    (bot.blockAt(pos(p))?.name !== p.material || !matchesBuildBlock(bot.blockAt(pos(part)), part))));
   const obstructions = [...new Map([...blueprint.empty.filter(p => !air(bot.blockAt(pos(p)))), ...blockedParts, ...schematicScaffolding(bot, goal)]
     .map(p => [`${p.x},${p.y},${p.z}`, p])).values()];
   const changed = [...missing.flatMap(buildFootprint), ...obstructions].find(p => {
@@ -5191,11 +5215,17 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
   }
   // Retain one working lot instead of independently reselecting a material on
   // every block. Recipe inputs shared by the lot are gathered together.
+  const shell = goal.starterBeds && missing.filter(cell => !isBed(cell.material));
+  const furnishing = goal.starterBeds && missing.length > 0 && !shell.length;
+  // Furnish one bed at a time. A donated bed or three wool of a new colour
+  // can go straight into the next spot, including after a saved game resumes.
+  const pending = furnishing ? [missing[0]] : shell?.length ? shell : missing;
+  if (furnishing && require('./starter-house').useAvailableBed(bot, goal, pending[0])) save();
   if (!goal.buildBatch || !remainingBuildBatch(bot, goal.buildBatch).length) {
     delete goal.buildBatch;
     if (missing.length) {
       const stock = planningInventory(bot);
-      goal.buildBatch = createBuildBatch(bot, missing, outputs => catalogPlan(bot, outputs, undefined, stock, goal), stock);
+      goal.buildBatch = createBuildBatch(bot, pending, outputs => catalogPlan(bot, outputs, undefined, stock, goal), stock, goal.starterBeds ? 16 : undefined);
       save();
     }
   }
@@ -5209,6 +5239,12 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
       const plan = catalogPlan(bot, outputs, undefined, stock, goal);
       if (plan.length) {
         goal.buildPhase = 'gather';
+        // White wool also has a string recipe. In a fresh world, look for
+        // sheep using the existing Survival search and shearing routines.
+        if (furnishing && plan[0].action === 'hunt_mob' && plan[0].produces?.string) {
+          await gatherWool(bot, task, goal, save, null, homeActions());
+          return false;
+        }
         goal.holdWorkstation = plan[0].action === 'craft' && plan[1]?.action === 'craft';
         await executePlannedAcquisition(bot, task, goal, save, client, onStep, plan, { outputs, purpose: 'materials for the next construction batch' });
         return false;
@@ -5217,10 +5253,11 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     }
   }
   if (!missing.length) goal.buildPhase = 'cleanup';
-  const layer = Math.min(...missing.map(p => p.y));
+  const layer = Math.min(...pending.map(p => p.y));
   const availablePlacements = (batch ? remainingBuildBatch(bot, batch) : []).filter(p => countOf(bot, p.material) &&
     (air(bot.blockAt(pos(p))) || bot.blockAt(pos(p))?.diggable) &&
-    (!isDoor(p.material) || !air(bot.blockAt(pos(p))) || air(bot.blockAt(pos(p).offset(0, 1, 0)))) &&
+    (!air(bot.blockAt(pos(p))) || buildFootprint(p).slice(1).every(part => air(bot.blockAt(pos(part))))) &&
+    (!isBed(p.material) || buildFootprint(p).every(part => bedFloor(bot.blockAt(pos(part).offset(0, -1, 0))))) &&
     faces.some(f => bot.blockAt(pos(p).plus(f))?.boundingBox === 'block'))
     .map(p => ({ position: p, operation: air(bot.blockAt(pos(p))) ? 'place' : 'dig', material: p.material, properties: p.properties }));
   const placements = availablePlacements.filter(p => p.position.y === layer);
@@ -5299,12 +5336,14 @@ async function executeConstructionWork(bot, task, goal, save, work) {
     try { await place(bot, task, p, work.material, { face, properties: work.properties }); }
     finally {
       bot.removeListener('blockPlaced', observe);
-      // A door's second block is created by the server, not a second placement.
+      // The server creates a door's upper half or a bed's head from one item.
       // Capture both acknowledgements even when stop arrives on blockPlaced.
       if (placed && footprint.length > 1) {
         const deadline = Date.now() + 250;
-        while (!doorPairMatches(bot.blockAt(p), bot.blockAt(p.offset(0, 1, 0))) && Date.now() < deadline) await sleep(25);
-        if (doorPairMatches(bot.blockAt(p), bot.blockAt(p.offset(0, 1, 0)))) {
+        const complete = () => isBed(work.material) ? buildCellComplete(bot, footprint[0]) :
+          doorPairMatches(bot.blockAt(p), bot.blockAt(p.offset(0, 1, 0)));
+        while (!complete() && Date.now() < deadline) await sleep(25);
+        if (complete()) {
           goal.buildOwned ||= {};
           for (const part of footprint) goal.buildOwned[`${part.x},${part.y},${part.z}`] = blockOwnership(bot.blockAt(pos(part)));
         }

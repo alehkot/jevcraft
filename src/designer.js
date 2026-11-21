@@ -368,7 +368,7 @@ const SITE = { step: 8, plinth: 600, preserved: 0.12, rings: 3, spacing: 3, exca
 // original four-by-four spread around the bot; with one it centres the
 // footprint on that spot and widens in rings, so a blocked exact placement
 // still lands beside what the player pointed at rather than across the valley.
-function sitePositions(bot, width, depth, anchor, at) {
+function sitePositions(bot, width, depth, anchor, at, nearbyRadius) {
   // An edit is not looking for somewhere to go: it belongs exactly where the
   // building it redraws already stands.
   if (at) return [new Vec3(at.x, at.y, at.z)];
@@ -379,13 +379,14 @@ function sitePositions(bot, width, depth, anchor, at) {
   }
   const o = new Vec3(Math.floor(anchor.x), Math.floor(anchor.y), Math.floor(anchor.z));
   const corner = o.offset(-Math.floor(width / 2), 0, -Math.floor(depth / 2)), positions = [];
-  for (let ring = 0; ring <= SITE.rings; ring++) {
+  const rings = nearbyRadius ? Math.ceil(nearbyRadius / SITE.spacing) : SITE.rings;
+  for (let ring = 0; ring <= rings; ring++) {
     for (let dx = -ring; dx <= ring; dx++) for (let dz = -ring; dz <= ring; dz++) {
       if (Math.max(Math.abs(dx), Math.abs(dz)) !== ring) continue;
       positions.push(corner.offset(dx * SITE.spacing, 0, dz * SITE.spacing));
     }
   }
-  return positions.slice(0, 24);
+  return nearbyRadius ? positions : positions.slice(0, 24);
 }
 
 /**
@@ -398,7 +399,7 @@ function sitePositions(bot, width, depth, anchor, at) {
  * player's: a small number of them are preserved and built around rather than
  * demolished, and too many of them rule the site out.
  */
-function selectSchematicSite(bot, schematic, { anchor, prefer, owned = new Set(), protect = new Set(), at, baseY: floor } = {}) {
+function selectSchematicSite(bot, schematic, { anchor, prefer, owned = new Set(), protect = new Set(), at, baseY: floor, allowPreserved = true, nearbyRadius } = {}) {
   anchor = anchor || prefer;
   const o = bot.entity.position.floored(), [width, height, depth] = schematic.source.size;
   const isSurface = surfaceObserver(bot);
@@ -412,13 +413,22 @@ function selectSchematicSite(bot, schematic, { anchor, prefer, owned = new Set()
   const standable = p => naturalGround(bot.blockAt(p)) || ours(p);
   const clearable = p => replaceable(bot.blockAt(p)) || ours(p);
   const scored = [];
-  for (const candidate of sitePositions(bot, width, depth, anchor, at)) {
+  // Neighbouring candidates overlap. On a hillside a wider search can try
+  // hundreds of sites, but each vertical column needs surveying only once.
+  const heights = new Map();
+  for (const candidate of sitePositions(bot, width, depth, anchor, at, nearbyRadius)) {
     const ground = new Map();
     for (let x = 0; x < width; x++) for (let z = 0; z < depth; z++) {
-      for (let y = candidate.y + SITE.step; y >= candidate.y - SITE.step; y--) {
-        const p = new Vec3(candidate.x + x, y, candidate.z + z);
-        if (standable(p) && clearable(p.offset(0, 1, 0)) && (ours(p) || isSurface(p.offset(0, 1, 0)))) { ground.set(`${x},${z}`, y); break; }
+      const wx = candidate.x + x, wz = candidate.z + z, column = `${wx},${wz}`;
+      if (!heights.has(column)) {
+        let height = null;
+        for (let y = candidate.y + SITE.step; y >= candidate.y - SITE.step; y--) {
+          const p = new Vec3(wx, y, wz), above = p.offset(0, 1, 0);
+          if (standable(p) && clearable(above) && (ours(p) || isSurface(above))) { height = y; break; }
+        }
+        heights.set(column, height);
       }
+      if (heights.get(column) !== null) ground.set(`${x},${z}`, heights.get(column));
     }
     if (!at && ground.size !== width * depth) continue;
     if (at) { ground.clear(); for (let x = 0; x < width; x++) for (let z = 0; z < depth; z++) ground.set(`${x},${z}`, at.y); }
@@ -451,9 +461,11 @@ function selectSchematicSite(bot, schematic, { anchor, prefer, owned = new Set()
     // demolishing them, and walk away from a site that is mostly someone's house.
     const occupied = p => p.y > ground.get(`${p.x - origin.x},${p.z - origin.z}`) && !clearable(new Vec3(p.x, p.y, p.z));
     const preserved = [...blocks, ...empty].filter(occupied).map(p => ({ x: p.x, y: p.y, z: p.z }));
+    if (!allowPreserved && [...blocks, ...empty].some(p => protect.has(key(p)))) continue;
     if (preserved.length > (blocks.length + empty.length) * SITE.preserved) continue;
     if (preserved.length) {
       const skip = new Set(preserved.map(key));
+      if (!allowPreserved || blocks.some(p => isBed(p.material) && (skip.has(key(p)) || skip.has(key({ ...p, y: p.y - 1 }))))) continue;
       blocks = blocks.filter(p => !skip.has(key(p)));
       empty = empty.filter(p => !skip.has(key(p)));
     }
@@ -485,7 +497,7 @@ function selectSchematicSite(bot, schematic, { anchor, prefer, owned = new Set()
     // Prefer a site that disturbs least: no preserved player blocks, then the
     // shallowest foundation, then closest to what the player asked for.
     scored.push({ site, cost: preserved.length * 100 + plinth + (anchor ? origin.distanceTo(new Vec3(anchor.x, anchor.y, anchor.z)) : 0) });
-    if (!preserved.length && plinth === 0) break;
+    if (!preserved.length && (plinth === 0 || nearbyRadius && plinth <= width)) break;
   }
   if (scored.length) return scored.sort((a, b) => a.cost - b.cost)[0].site;
   const earthworks = where => require('./build-terrain').planTerrainSite(bot, schematic, { naturalGround, replaceable, at: where });
