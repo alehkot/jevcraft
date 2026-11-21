@@ -1,6 +1,6 @@
 'use strict';
 const { Vec3 } = require('vec3');
-const { bedFloor, buildCellComplete, buildFootprint, isBed } = require('./build-blocks');
+const { bedFloor, buildCellComplete, buildFootprint, isBed, placedHalf } = require('./build-blocks');
 const { isDoor } = require('./doors');
 const Heap = require('mineflayer-pathfinder/lib/heap');
 function remainingBuildBatch(bot, batch) {
@@ -54,7 +54,7 @@ function orderBuildCells(bot, missing) {
       if (floorsReady) { ready.push({ cell, f: rank.get(k) }); queued.add(k); }
       return;
     }
-    const half = isDoor(cell.material) ? null : cell.properties?.half || cell.properties?.type;
+    const half = placedHalf(cell.properties);
     const supported = faces.some(face => {
       if (isDoor(cell.material) && face.y !== -1) return false;
       if (half && face.y && face.y !== (half === 'bottom' ? -1 : 1)) return false;

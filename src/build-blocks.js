@@ -9,9 +9,10 @@ const directions = [new Vec3(0, -1, 0), new Vec3(0, 1, 0), new Vec3(0, 0, -1), n
 
 // Furnishings a design may place (rkhazh/jevcraft df911c12): a table as it
 // comes; a furnace, smoker, blast furnace, barrel, stonecutter or loom with
-// its front to a side, which it turns to the player placing it (a stair turns
-// its back); a single chest the same, never beside another of its kind, which
-// it would join. Copper chests weather into other blocks and are left out.
+// its front to a side, which it turns to the player placing it (a stair's
+// facing is the way the player looks); a single chest the same, never beside
+// another of its kind, which it would join. Copper chests weather into other
+// blocks and are left out.
 const plainFurnishings = new Set(['crafting_table', 'cartography_table', 'smithing_table', 'fletching_table', 'enchanting_table']);
 const facingFurnishings = new Set(['furnace', 'blast_furnace', 'smoker', 'barrel', 'stonecutter', 'loom']);
 const singleChest = name => name === 'chest' || name === 'trapped_chest';
@@ -20,6 +21,10 @@ const furnishingPlacement = name => plainFurnishings.has(name) ? 'plain' : facin
 const placementFacing = (material, facing) => ['facing', 'single_container'].includes(furnishingPlacement(material)) ? opposite[facing] : facing;
 // A barrel faces up or down too, by the pitch it is placed at: looking level, it faces a side.
 const placementPitch = (material, aimPitch) => material === 'barrel' ? 0 : aimPitch;
+// The half a cell is placed against, top or bottom: a stair's half, a slab's
+// type. A chest's type (single) is none: read as a top half, the floor under
+// a chest was no face to place it on.
+const placedHalf = properties => [properties?.half, properties?.type].find(v => v === 'top' || v === 'bottom');
 function assertPlacementFootprint(bot, p, material) {
   if (!singleChest(material)) return;
   for (const [dx, dz] of Object.values(bedDirections)) {
@@ -142,7 +147,7 @@ function matchesOwnership(block, owned) {
 function placementGoal(bot, point, cell = {}) {
   const p = new Vec3(point.x, point.y, point.z), state = cell.properties || {};
   if (isDoor(cell.material) || isBed(cell.material)) return new goals.GoalPlaceBlock(p, bot.world, { range: 4.25, facing: opposite[state.facing], faces: [new Vec3(0, -1, 0)] });
-  const half = state.half || state.type;
+  const half = placedHalf(state);
   // GoalPlaceBlock's facing means the face toward the player, opposite the
   // player's horizontal look direction used by Minecraft for stairs.
   const goal = new goals.GoalPlaceBlock(p, bot.world, { range: 4.25, facing: opposite[placementFacing(cell.material, state.facing)] });
@@ -169,4 +174,4 @@ function placementGoal(bot, point, cell = {}) {
   return goal;
 }
 
-module.exports = { furnishingPlacement, placementFacing, placementPitch, assertPlacementFootprint, isBed, bedFloor, bedPairMatches, regionProperties, matchesBuildBlock, placementGoal, buildFootprint, buildCellComplete, enclosedCell, blockOwnership, matchesOwnership };
+module.exports = { furnishingPlacement, placementFacing, placementPitch, placedHalf, assertPlacementFootprint, isBed, bedFloor, bedPairMatches, regionProperties, matchesBuildBlock, placementGoal, buildFootprint, buildCellComplete, enclosedCell, blockOwnership, matchesOwnership };
