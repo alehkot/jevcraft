@@ -175,11 +175,45 @@ async function findBlocksYielding(bot, options, check = () => {}) {
   return typeof bot.findBlocksAsync === 'function' ? bot.findBlocksAsync(options, check) : bot.findBlocks(options);
 }
 
+// JEV_PERCEPTION=player: ore is found where it can be seen, as a player
+// finds it, not read through the rock from the chunks' palettes: a face of
+// it turned to the eyes within SIGHT blocks with nothing solid between the
+// eyes and that face. What was seen is kept by the searches' own memory
+// (work.js rememberResources). The idea is alexrmsouza/jevcraft 0e2f597c's
+// perception.js, none of its code.
+// ponytail: no light, no field of view, glass and leaves stop the sight
+// like stone; the fork's perception facade if those come to matter.
+const SIGHT = 32;
+const perceiving = () => String(process.env.JEV_PERCEPTION || '').trim().toLowerCase() === 'player';
+const SIDES = [[0, 1, 0], [0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]];
+function seen(bot, block) {
+  const eye = bot.entity.position.offset(0, bot.entity.eyeHeight ?? 1.62, 0), p = block.position;
+  if (eye.distanceTo(p.offset(0.5, 0.5, 0.5)) > SIGHT + 1) return false;
+  for (const [dx, dy, dz] of SIDES) {
+    // The middle of the face, a hair outside it: a ray that reaches it met nothing on the way.
+    const face = p.offset(0.5 + dx * 0.501, 0.5 + dy * 0.501, 0.5 + dz * 0.501);
+    if (dx * (eye.x - face.x) + dy * (eye.y - face.y) + dz * (eye.z - face.z) <= 0) continue;
+    const dir = face.minus(eye), d = dir.norm();
+    if (d > SIGHT) continue;
+    if (d < 1e-6 || !bot.world.raycast(eye, dir.scaled(1 / d), d)) return true;
+  }
+  return false;
+}
+function sighted(bot, options) {
+  if (options._sighted || !perceiving() || !bot.entity?.position || typeof bot.world?.raycast !== 'function' || !bot.registry?.blocksArray) return options;
+  const ores = bot._oreIds ||= new Set(bot.registry.blocksArray.filter(b => /_ore$|^ancient_debris$/.test(b.name)).map(b => b.id));
+  const ids = Array.isArray(options.matching) ? options.matching : [options.matching];
+  if (!ids.some(id => ores.has(id))) return options;
+  const extra = options.useExtraInfo;
+  return { ...options, _sighted: true, useExtraInfo: b => (typeof extra !== 'function' || extra(b)) && (!ores.has(b.type) || seen(bot, b)) };
+}
+
 function installBlockSearch(bot) {
   if (typeof bot.blockAt === 'function' && !bot._worldBlockAt) bot._worldBlockAt = bot.blockAt;
   if (bot.findBlocksAsync) return;
   const original = bot.findBlocks;
   bot.findBlocks = options => {
+    options = sighted(bot, options);
     if (!supported(bot, options)) return original(options);
     const search = scan(bot, options);
     let result; do { result = search.next(); } while (!result.done);
@@ -187,6 +221,7 @@ function installBlockSearch(bot) {
   };
   bot.findBlocksAsync = async (options, check = () => {}) => {
     check();
+    options = sighted(bot, options);
     if (!supported(bot, options)) return bot.findBlocks(options);
     const search = scan(bot, options), world = bot.world, dimension = bot.game.dimension;
     let deadline = performance.now() + 8;
@@ -203,4 +238,4 @@ function installBlockSearch(bot) {
   };
 }
 
-module.exports = { installBlockSearch, worldCells, findBlocksYielding };
+module.exports = { installBlockSearch, worldCells, findBlocksYielding, seen };
