@@ -226,6 +226,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   const survival = createSurvival(bot, { state: survivalStore.read() || (memoryIdentity === identity ? store.read()?.survival : undefined), client: routed });
   // JEV_IDLE=wait: between requests, wait where it stands and only defend itself.
   const waitMode = process.env.JEV_IDLE === 'wait';
+  console.log(`[company] at night: ${require('./company').nightMode() ? `up while a player is within ${require('./company').STAY_UP} blocks, sheltering when alone (JEV_NIGHT=company)` : 'sheltering from dusk to dawn (JEV_NIGHT is not set)'}`);
   const reactiveWait = waitMode ? createReactiveWait({ bot, survival, save: () => saveSurvival(),
     isReady: () => ready && !ended, isBusy: () => Boolean(active) || relaunching || launchingDream }) : null;
   if (!survivalStore.read() && store.read()?.status === 'cancelled') survival.state.paused = true;
@@ -508,9 +509,12 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       // the ground, and three seconds more to finish the climb (company.js
       // inShelter, holedUp, routine). It leaves by its own judgment, and is
       // started for that when the bot comes back by day still in one.
-      const company = require('./company'), sheltered = !dark && (company.holedUp(bot) || company.inShelter(bot, survival));
-      if (sheltered) lastSheltered = now;
-      const own = company.routine({ dark, sheltered, sinceSheltered: now - lastSheltered });
+      // JEV_NIGHT=company: with a player near the dark is waited out like the
+      // day, and a pocket a player has come close to is left like one at
+      // sunrise (company.js standing).
+      const company = require('./company'), stands = company.standing(bot, survival, dark, now);
+      if (stands.sheltered) lastSheltered = now;
+      const own = company.routine({ ...stands, sinceSheltered: now - lastSheltered });
       if (active?.idle && own === 'end' && !relaunching) stop('interrupted').catch(console.error);
       else if (ready && !active && !relaunching && !launchingDream && !pendingRequests) {
         const standing = survival.state.paused ? null : dreamStore.read();

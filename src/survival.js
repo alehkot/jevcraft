@@ -12571,9 +12571,12 @@ class Survival {
       // (the stay was answered five times in two minutes with "come here"
       // waiting, 2026-11-21). With a mob at the wall or within sixteen
       // blocks, or sealed to heal or against a threat, it is asked as before.
-      const calledOut = require('./company').calledOver(goal, bot) && options.leave && !watcher && !about.length &&
+      // The same for a player come close at night, whatever is in hand
+      // (JEV_NIGHT=company, company.js comesOut).
+      const drawnOut = require('./company').calledOver(goal, bot) ? 'the call' : night && require('./company').comesOut(bot) ? 'a player close by' : null;
+      const calledOut = drawnOut && options.leave && !watcher && !about.length &&
         !(sealHold?.kinds || []).some(kind => kind !== 'surface_night') ? 'leave' : null;
-      if (calledOut) console.log('[company] the night\'s pocket is opened for the call');
+      if (calledOut) console.log(`[company] the night's pocket is opened for ${drawnOut}`);
       let choice = calledOut || held || (this.state.bedNookPlan?.until > Date.now() && options.sleep_in_nook ? 'sleep_in_nook' : null)
         // Not under rock: daylight does not come down to it, and a wait for
         // dawn there waits for nothing the pocket can use. 25588 (20:02:29 to
@@ -12796,7 +12799,8 @@ class Survival {
     // Called over by a player (company.js): the night's shelter, and the walk
     // home to bed, wait for the call. The reflexes do not: threats, air and
     // food are answered as before.
-    const called = require('./company').calledOver(goal, bot);
+    // Nor is it sought with a player near (JEV_NIGHT=company, company.js staysUp).
+    const called = require('./company').calledOver(goal, bot) || require('./company').staysUp(bot);
     const nightNow = shelterNeeded(bot) && !nightFree && !called;
     const homeWalk = homeBed && nightNow && homeBed.foot.distanceTo(bot.entity.position) > 6 && (underground || !routeBlocked) &&
       !sleepWaiting(this) && !isSetAside(this, 'surface_home', 'here');
@@ -14037,8 +14041,9 @@ function claim(bot, goal = {}, survival = null) {
   // sleepDebt() without its first-look write of sleptAtAge.
   const debt = Number.isFinite(worldAge(bot)) && Number.isFinite(state.sleptAtAge) && worldAge(bot) - state.sleptAtAge > SLEEP_DEBT_TICKS;
   const nightFree = nightFreeBelow(bot, goal, state, { underground, debt, now });
-  // Not while a player's "come here" is in hand (company.js), as the step reads it.
-  const called = require('./company').calledOver(goal, bot);
+  // Not while a player's "come here" is in hand, nor with a player near
+  // (JEV_NIGHT=company), as the step reads it (company.js).
+  const called = require('./company').calledOver(goal, bot) || require('./company').staysUp(bot);
   const needsShelter = shelterNeeded(bot) && !nightFree && nightPlan?.plan !== 'stay_up' && nightPlan?.plan !== 'hunt' && !(state.nightRecover?.until > now) && !called;
   if (!needsShelter && state.recovery?.status === 'pending' && !(state.recovery.dimension && state.recovery.dimension !== bot.game?.dimension)) return make('recover_items', 'routine', { dropsAt: state.recovery.position || null });
   const expeditionFood = ((goal.preparingExpedition && goal.kind !== 'win') || goal.preparingEnd || goal.preparingNether) && bot.game?.difficulty !== 'peaceful';

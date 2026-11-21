@@ -334,6 +334,77 @@ const call = (over = {}) => ({ kind: 'come', request: 'Jev come here', from: 'Ca
     assert.ok(company.OUT_MS <= 5000, 'no time for the routine to start its own day');
   });
 
+  // ---------------------------------------------------------------- 7. the night with a player (JEV_NIGHT=company)
+  const withNight = async fn => { process.env.JEV_NIGHT = 'company'; try { return await fn(); } finally { delete process.env.JEV_NIGHT; } };
+  const playerAt = (x, y = 64, z = 0.5) => ({ Caller: { entity: { position: new Vec3(x, y, z), id: 2, type: 'player' } } });
+
+  await check('unset, a player near changes nothing; set, one within 32 blocks keeps the bot up, and for 20 seconds after', async () => {
+    const { bot } = scene({ at: [10.5, 64, 0.5] });   // the player 10 blocks off
+    assert.equal(company.nightMode(), false);
+    assert.equal(company.staysUp(bot), false, 'not set');
+    assert.equal(company.comesOut(bot), false, 'not set');
+    await withNight(() => {
+      const t0 = 5_000_000;
+      assert.equal(company.staysUp(bot, t0), true);
+      assert.equal(company.comesOut(bot), true, '10 blocks');
+      bot.players = playerAt(10.5 + 24);
+      assert.equal(company.staysUp(bot, t0), true, '24 blocks: up');
+      assert.equal(company.comesOut(bot), false, '24 blocks: a pocket stays shut');
+      bot.players = playerAt(10.5 + 40);
+      assert.equal(company.staysUp(bot, t0 + company.ALONE_MS - 1), true, 'gone a moment');
+      assert.equal(company.staysUp(bot, t0 + company.ALONE_MS), false, 'alone');
+      bot.players = {};
+      assert.equal(company.staysUp(bot, t0 + 10 * company.ALONE_MS), false, 'nobody in the game');
+      bot.players = { Jev: { entity: { position: bot.entity.position.clone() } } };
+      assert.equal(company.staysUp(bot, t0 + 10 * company.ALONE_MS), false, 'its own name is no company');
+      assert.ok(company.COME_OUT < company.STAY_UP, 'the two distances are apart');
+    });
+  });
+
+  await check('at night with a player near the shelter does not claim the turn, whatever is in hand; alone it does', async () => {
+    await withNight(() => {
+      for (const goal of [{ kind: 'survive', request: 'Stay alive' }, call({ kind: 'obtain', request: 'Jev get me 8 planks' }), call({ kind: 'follow', request: 'Jev follow me' })]) {
+        assert.notEqual(claimAt(16000, goal)?.action, 'secure_shelter', `${goal.kind}, the player 10 blocks off`);
+        assert.equal(claimAt(16000, goal, { players: playerAt(10.5 + 40) })?.action, 'secure_shelter', `${goal.kind}, the player 40 blocks off`);
+        assert.equal(claimAt(16000, goal, { players: {} })?.action, 'secure_shelter', `${goal.kind}, nobody`);
+      }
+      const zombie = { 7: { id: 7, name: 'zombie', type: 'hostile', kind: 'Hostile mobs', displayName: 'Zombie', position: new Vec3(12.5, 64, 0.5), velocity: new Vec3(0, 0, 0), height: 1.95, width: 0.6, isValid: true, metadata: [] } };
+      assert.equal(claimAt(16000, { kind: 'survive', request: 'Stay alive' }, { entities: zombie })?.action, 'escape_threat', 'a mob at arm\'s length is answered all the same');
+    });
+    assert.equal(claimAt(16000, { kind: 'survive', request: 'Stay alive' })?.action, 'secure_shelter', 'not set: as before');
+  });
+
+  await check('sealed in for the night, a player comes close: the pocket is opened, by rule; further off, or not set, it is asked as before', async () => {
+    const idle = { kind: 'survive', request: 'Stay alive' };
+    await withNight(async () => {
+      const out = await inPocket(idle);
+      assert.equal(out.did, 'leave', out.said.slice(0, 3).join(' / '));
+      assert.ok(out.said.some(l => /a player close by/.test(l)));
+      assert.equal((await inPocket(call({ kind: 'follow', request: 'Jev follow me' }))).did, 'leave', 'with work in hand too');
+      assert.equal((await inPocket(idle, { players: playerAt(10.5 + 24) })).did, 'asked', 'the player 24 blocks off');
+      const zombie = { 7: { id: 7, name: 'zombie', type: 'hostile', kind: 'Hostile mobs', displayName: 'Zombie', position: new Vec3(14.5, 64, 0.5), velocity: new Vec3(0, 0, 0), height: 1.95, width: 0.6, isValid: true, metadata: [] } };
+      assert.equal((await inPocket(idle, { entities: zombie })).did, 'asked', 'a zombie four blocks from the lid');
+    });
+    assert.equal((await inPocket(idle)).did, 'asked', 'not set');
+  });
+
+  await check('what the waiting reads: the dark with a player near is waited out like the day; a pocket a player comes close to is left', async () => {
+    const pocketed = () => { const s = scene({ at: [10.5, 60, 0.5] }); s.set(10, 60, 0, 'air'); s.set(10, 61, 0, 'air'); return s; };
+    const open = scene({ at: [10.5, 64, 0.5] });
+    assert.deepEqual(company.standing(open.bot, null, true), { dark: true, sheltered: false }, 'not set: the dark is the dark');
+    assert.deepEqual(company.standing(pocketed().bot, null, true), { dark: true, sheltered: false }, 'not set: in the pocket at night the routine runs for the dark');
+    assert.deepEqual(company.standing(pocketed().bot, null, false), { dark: false, sheltered: true }, 'by day, in a hole: out of it');
+    await withNight(() => {
+      assert.deepEqual(company.standing(open.bot, null, true), { dark: false, sheltered: false }, 'up beside the player: wait');
+      assert.deepEqual(company.standing(pocketed().bot, null, true), { dark: false, sheltered: true }, 'in a hole, the player 10 blocks off: out of it');
+      const far = pocketed(); far.bot.players = playerAt(10.5 + 24, 60);
+      assert.deepEqual(company.standing(far.bot, null, true), { dark: false, sheltered: false }, 'in a hole, the player 24 blocks off: stays in, waits');
+      const alone = pocketed(); alone.bot.players = {};
+      assert.deepEqual(company.standing(alone.bot, null, true), { dark: true, sheltered: false }, 'alone: the routine has the night');
+      assert.deepEqual(company.standing(open.bot, null, false), { dark: false, sheltered: false }, 'by day nothing changes');
+    });
+  });
+
   console.log(`\n${passed} checks passed`);
   process.exit(0);   // the decision layer's unanswered questions keep their timers
 })().catch(err => { console.error(err); process.exit(1); });

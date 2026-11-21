@@ -33,12 +33,52 @@
 //
 // - By day it is out of the night's shelter and out of the ground (inShelter,
 //   holedUp, routine, session.js).
+//
+// And one of the night, switched by JEV_NIGHT=company (asked for 2026-11-21:
+// called over at night the bot came, and dug in again beside the player; a
+// player joining at night found it gone to ground within seconds):
+//
+// - With a player it stays up. The night's shelter is not sought while a
+//   player is within STAY_UP blocks, nor for ALONE_MS after (staysUp, read in
+//   survival.js beside the call, and by the waiting). A pocket sealed for the
+//   night alone is opened when a player comes within COME_OUT blocks and no
+//   mob is within sixteen (comesOut). The two distances are apart so that a
+//   player walking the edge of one does not have the bot in and out of the
+//   ground. Alone it shelters as ever, and with a player or without, threats,
+//   air and food are answered as ever: it runs or fights, and may die of it.
+//   Nothing is followed that was not asked to be.
 const { Vec3 } = require('vec3');
 
 const EYE = 1.62;
 const REACH = 4;            // blocks round the player a spot is looked for in
 const RISE = 2;             // and above or below their feet
 const WALK_MS = 12000;      // the one walk to it
+
+const STAY_UP = 32;                // a player this near keeps the bot up at night
+const COME_OUT = 16;               // and this near brings it out of a pocket sealed for the night
+const ALONE_MS = 20000;            // out of STAY_UP this long, it is alone
+
+const nightMode = () => String(process.env.JEV_NIGHT || '').trim().toLowerCase() === 'company';
+// Blocks to the nearest player in view, the bot's own name aside; Infinity with none.
+function nearestPlayer(bot) {
+  const me = bot?.entity?.position;
+  if (!me) return Infinity;
+  let best = Infinity;
+  for (const [name, player] of Object.entries(bot.players || {})) {
+    const at = player?.entity?.position;
+    if (!at || name === bot.username) continue;
+    best = Math.min(best, at.distanceTo(me));
+  }
+  return best;
+}
+// JEV_NIGHT=company: a player is near, or was a moment ago.
+function staysUp(bot, now = Date.now()) {
+  if (!nightMode() || !bot) return false;
+  if (nearestPlayer(bot) <= STAY_UP) { bot._playerNearAt = now; return true; }
+  return now - (bot._playerNearAt || 0) < ALONE_MS;
+}
+// JEV_NIGHT=company: a player is close enough to come out of the ground for.
+const comesOut = bot => nightMode() && nearestPlayer(bot) <= COME_OUT;
 
 const CALL_HOLDS_MS = 5 * 60000;   // how long a call keeps the night's shelter waiting, and is taken up again at a start
 const GONE_MS = 20000;             // out of the game this long, the player has left
@@ -107,6 +147,15 @@ function routine({ dark, sheltered, sinceSheltered }) {
   return sinceSheltered < OUT_MS ? 'finish' : 'end';
 }
 
+// What the waiting reads each half second (session.js), for routine():
+// whether the dark is the bot's to shelter from alone, and whether it stands
+// in the ground where it is not to wait. By day that is any shelter or hole;
+// at night, with JEV_NIGHT=company, one a player has come close to.
+function standing(bot, survival, dark, now = Date.now()) {
+  const kept = dark && staysUp(bot, now), drawn = dark && comesOut(bot);
+  return { dark: dark && !kept, sheltered: (!dark || drawn) && (holedUp(bot) || inShelter(bot, survival)) };
+}
+
 // At a start: a "come here" does not outlive its moment.
 function lapsed(goal, bot, now = Date.now()) {
   if (goal?.kind !== 'come') return false;
@@ -173,4 +222,4 @@ async function standInView(bot, task, target, { navigate, goals, walkMs = WALK_M
   return { seen: inView(bot, target), moved: true, cell };
 }
 
-module.exports = { calledOver, callerState, lapsed, here, inShelter, holedUp, routine, OUT_MS, inView, spotsInView, standInView, standable, EYE, REACH, RISE, CALL_HOLDS_MS, GONE_MS };
+module.exports = { calledOver, callerState, lapsed, here, inShelter, holedUp, routine, standing, nightMode, staysUp, comesOut, nearestPlayer, STAY_UP, COME_OUT, ALONE_MS, OUT_MS, inView, spotsInView, standInView, standable, EYE, REACH, RISE, CALL_HOLDS_MS, GONE_MS };
