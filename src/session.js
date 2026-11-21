@@ -18,6 +18,7 @@ const { runGoal, runIdle, createSurvival } = require('./work');
 const { Task } = require('./skills');
 const { parseAddress, chatNames, clarificationReply, CLARIFY_MS } = require('./chat-address');
 const { createReactiveWait } = require('./reactive-wait');
+const { createHandoff } = require('./handoff');
 const { compatibilityPlugin } = require('./compatibility');
 const { requestedCommand, createCommandAccess } = require('./commands');
 const { classifyCommand } = require('./command-classifier');
@@ -492,7 +493,9 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     } else if (ready && !active && !relaunching && !launchingDream && !pendingRequests && !survival.state.paused && !survival.state.idleBlocked) launchIdle();
   }, 500);
 
-  bot._client.on('playerChat', data => {
+  // JEV_COOPERATION=ask: one player's work is not replaced by another's request unasked (handoff.js).
+  const handoff = process.env.JEV_COOPERATION === 'ask' ? createHandoff() : null;
+  const onPlayerChat = data => {
     if (ended) return;
     const player = Object.values(bot.players).find(p => p.uuid === data.sender);
     if (!player || player.username === bot.username || typeof data.plainMessage !== 'string') return;
@@ -502,6 +505,13 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     try { literal = requestedCommand(request, bot.username); }
     catch (err) { console.error(err); bot.chat('I could not use that command. Please check what you asked me to do.'); return; }
     let address = parseAddress(request, bot.username);
+    // The answer to "may I switch?": yes lets the held request through as it was said.
+    const handed = handoff?.answer(from, address.text);
+    if (handed) {
+      if (handed.verdict === 'yes') { bot.chat(`Thanks. Switching to ${handed.question.asker}'s request.`); onPlayerChat(handed.question.payload); }
+      else bot.chat(`Okay, I'll stay on your task. Sorry, ${handed.question.asker}.`);
+      return;
+    }
     // Acknowledgements from other bots must never start new work. New goals
     // require an explicit name; short controls remain convenient when unprefixed.
     const me = String(bot.username || config.username || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -685,6 +695,12 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       // parked as impossible, and the build had to be dug out with resume.
       const impossible = unworkable(bot, spec);
       if (impossible) { bot.chat(`${friendlyProblem(impossible)}${active && !active.idle ? " I'll carry on with what I was doing." : ''}`); return; }
+      const holder = handoff && !handoff.approved(from, request) && handoff.holder({ active, from, online: name => Object.keys(bot.players).some(p => p.toLowerCase() === String(name).toLowerCase()) });
+      if (holder) {
+        handoff.ask({ holder, asker: from, request, payload: data });
+        bot.chat(`I'm working on something for ${holder}. ${holder}, may I switch to ${from}'s request? Say "${bot.username} yes" or "${bot.username} no".`);
+        return;
+      }
       await stop('replaced');
       if (revision !== generation || ended) return;
       const goal = { ...spec, ledgerRun: run.id, version: 1, status: 'pending', createdAt: new Date().toISOString(),
@@ -709,7 +725,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         "I'll get a Nether portal working, then go through to check it.");
       launch(goal); launched = true;
     }).catch(err => { console.error(err); if (!ended && revision === generation) bot.chat(intakeProblem(err)); }).finally(() => { if (!launched) ledger.fold(run.id); pendingRequests--; });
-  });
+  };
+  bot._client.on('playerChat', onPlayerChat);
 
   bot.once('spawn', async () => {
     try {
