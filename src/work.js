@@ -1860,7 +1860,7 @@ const replacedCover = name => GROUND_COVER.has(name) && !NOT_REPLACED.has(name);
 // table in an open cell two blocks off on the far side of the pocket's
 // wall, and "I can't reach the crafting table I placed" every three
 // seconds for two minutes.
-const openForStation = (bot, q) => {
+const openForStation = (bot, q, { visibility = true } = {}) => {
   const at = bot.blockAt(q);
   if (!(air(at) || (GROUND_COVER.has(at?.name) && at.name !== 'water' && !FLAMES.has(at.name)))) return false;
   const under = bot.blockAt(q.offset(0, -1, 0));
@@ -1883,8 +1883,8 @@ const openForStation = (bot, q) => {
 // its cell fifteen times, 25593 0.018, 25595 at 09:28Z 0.015.
 const STATION_CELL_REST_MS = 10 * 60000;
 const stationKey = q => `${q.x},${q.y},${q.z}`;
-function stationCellOk(bot, goal, q) {
-  return openForStation(bot, q) && !hitboxIntrudes(bot, q, 0) && !(goal && isSetAside(goal, 'station_cell', stationKey(q)));
+function stationCellOk(bot, goal, q, options) {
+  return openForStation(bot, q, options) && !hitboxIntrudes(bot, q, 0) && !(goal && isSetAside(goal, 'station_cell', stationKey(q)));
 }
 // A cell the game refused a workstation in rests, said, and the next is tried.
 function restStationCell(goal, q, name, err) {
@@ -3390,6 +3390,34 @@ async function workstation(bot, task, name, goal) {
     }
     p = q;
     rememberWorkstation(bot, goal, name, q);
+  }
+  // None in the 5x5 round the feet: an open, supported cell up to 8 off and
+  // 2 up or down, nearest first, walked to on foot with nothing dug or
+  // towered (workstation-access.js placeWorkstation), within the same three
+  // placements. A station scope that starts a few blocks off, or a stand in
+  // a doorway, had none in reach (rkhazh/jevcraft 45f4d5a3).
+  if (!p && tries < 3) {
+    const sites = [], eligible = q => tries < 3 && air(bot.blockAt(q)) && stationCellOk(bot, goal, q, { visibility: false });
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -8; dx <= 8; dx++) for (let dz = -8; dz <= 8; dz++) {
+      if (dx * dx + dz * dz > 64) continue;
+      const q = o.offset(dx, dy, dz);
+      if (eligible(q)) sites.push(q);
+    }
+    sites.sort((a, b) => a.distanceTo(bot.entity.position) - b.distanceTo(bot.entity.position));
+    if (sites.length) await require('./workstation-access').placeWorkstation(bot, task, name, sites, eligible, async (q, face) => {
+      task.check();
+      if (!stationCellOk(bot, goal, q)) return false;
+      tries++;
+      try { await place(bot, task, q, name, { face, stay: true }); }
+      catch (err) {
+        task.check(); if (STATION_FATAL.has(err.name) || err instanceof Blocked) throw err;
+        restStationCell(goal, q, name, err); refused = err;
+        console.log(`[station] ${name} refused at ${q}: ${err.message}; the cell rests ${STATION_CELL_REST_MS / 60000} minutes`);
+        return false;
+      }
+      p = q; rememberWorkstation(bot, goal, name, q);
+      return true;
+    });
   }
   if (!p && refused) throw refused;
   // Walled in (the bottom of a one-block shaft): a notch is cut in the wall
