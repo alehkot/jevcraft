@@ -1865,7 +1865,8 @@ const openForStation = (bot, q, { visibility = true } = {}) => {
   if (!(air(at) || (GROUND_COVER.has(at?.name) && at.name !== 'water' && !FLAMES.has(at.name)))) return false;
   const under = bot.blockAt(q.offset(0, -1, 0));
   if (!(under?.boundingBox === 'block' && under.name !== 'snow')) return false;
-  if (typeof bot.world?.raycast !== 'function') return true;
+  // Not asked of a site to walk to (the ring in workstation): asked again there.
+  if (!visibility || typeof bot.world?.raycast !== 'function') return true;
   const eye = bot.entity.position.offset(0, bot.entity.eyeHeight || 1.62, 0), centre = q.offset(0.5, 0.5, 0.5);
   const dir = centre.minus(eye), d = dir.norm();
   if (d < 0.5) return true;

@@ -12,7 +12,7 @@ const registry = require('prismarine-registry')('26.1');
 const Chunk = require('prismarine-chunk')(registry);
 const World = require('prismarine-world')(registry);
 const Block = require('prismarine-block')(registry);
-const { workstation } = require('../src/work');
+const { workstation, stationCellOk } = require('../src/work');
 
 // A one-wide stone bridge along z over a drop, torches on it either side of
 // the bot: no stencil cell is open, the bridge 3 or more off is.
@@ -52,4 +52,12 @@ test('a refused cell rests and the next is tried', async () => {
   const station = await workstation(bot, task, 'furnace', goal);
   assert.equal(station.name, 'furnace');
   assert.deepEqual(placed.map(String), [String(new Vec3(0, 64, -3))]);
+});
+
+test('a cell out of sight now is still one to walk to', () => {
+  const { bot } = bridge();
+  bot.world.setBlockStateId(new Vec3(0, 64, 2), registry.blocksByName.stone.defaultState);
+  const q = new Vec3(0, 64, 3);
+  assert.equal(stationCellOk(bot, null, q), false, 'placed only where it is seen');
+  assert.equal(stationCellOk(bot, null, q, { visibility: false }), true, 'a site to walk to');
 });
