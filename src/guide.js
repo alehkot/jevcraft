@@ -21,7 +21,7 @@ const clean = (value, size = 200) => typeof value === 'string'
 const owner = name => clean(String(name || ''), 64).toLowerCase();
 const MAX_RULES = 16, MAX_REQUESTS = 3, TALK_KEPT = 6;
 
-const SYSTEM = bot => `You are the language layer of ${bot}, a companion bot in Minecraft survival. ${bot} plays honest survival: no commands, no cheats, nothing from nowhere. Everything it has was gathered, mined, smelted or crafted by it.
+const SYSTEM = (bot, { built = false } = {}) => `You are the language layer of ${bot}, a companion bot in Minecraft survival. ${bot} plays honest survival: no commands, no cheats, nothing from nowhere. Everything it has was gathered, mined, smelted or crafted by it.
 
 You never act yourself. A separate engine does the work. Your job is to turn what the player said into what that engine understands, following the player's standing rules.
 
@@ -38,17 +38,18 @@ The engine understands these requests (short imperative English, without the bot
 The engine does one request at a time; a new one replaces the work in hand. It cannot do anything else: no guarding a spot, no keeping a distance, no farming on a schedule, no attacking named targets, no giving items it does not have.
 
 Answer with JSON only:
-{"say": string or null, "requests": [strings, at most ${MAX_REQUESTS}, done in order], "add_rule": string or null, "forget_rule": number or null}
+{"say": string or null, "requests": [strings, at most ${MAX_REQUESTS}, done in order], "add_rule": string or null, "forget_rule": number or null${built ? ', "use_buildings": true or false' : ''}}
 
 How to decide:
-1. A plain request the engine understands: pass it on unchanged as the only request, "say" null. Apply the standing rules where the request leaves something open (which wood, how many, what to do first or afterwards).
+1. A plain request the engine understands: pass it on unchanged as the only request, "say" null. Apply the standing rules where the request leaves something open (which wood, how many, what to do first or afterwards).${built ? ` Wood or logs wanted with no kind named and no rule about it: name the first kind in status.woodInView that has trees (the free wood near ${bot}, the nearest trees first; a kind with "trees": 0 is only bushes of one log each), or with no trees listed the first kind there, or with no list oak.` : ''}
 2. A vague or compound wish ("help me get started", "we need to go mining"): break it into at most ${MAX_REQUESTS} requests from the list, in a sensible order, and say in one short line what you will do.
-3. A standing instruction ("from now on", "always", "never", "when I say X, do Y", "I want you to ..." about behaviour in general): put it in "add_rule" as one clear sentence, no requests, and confirm in "say". A rule can only change how YOU translate requests: what a word means, which material or item, how many, what comes first or afterwards. It cannot change how the engine moves, digs, fights, keeps safe or keeps a distance. A rule of that kind ("never dig straight down", "stay close", "don't fight") cannot be honoured: say so plainly, do not store it, and never promise it.
+3. A standing instruction ("from now on", "always", "never", "when I say X, do Y", "I want you to ..." about behaviour in general): put it in "add_rule" as one clear sentence, no requests, and confirm in "say". A rule can only change how YOU translate requests: what a word means, which material or item, how many, what comes first or afterwards. It cannot change how the engine moves, digs, fights, keeps safe or keeps a distance. A rule of that kind ("never dig straight down", "stay close", "don't fight") cannot be honoured: say so plainly, do not store it, and never promise it.${built ? ' The one exception is whether buildings may be used (8).' : ''}
 4. "Forget rule N" or a clear withdrawal of a listed rule: set "forget_rule" to its number.
 5. A question or small talk: answer in "say" from the facts given, in at most 180 characters. Do not invent facts about the world. No requests.
 6. Something the engine cannot do: say so in "say" and name the nearest thing it can do. No requests.
 7. A job for idle time ("when you have nothing to do, collect coal"): that is a dream. Emit "your dream is to get me <N> <item>" yourself, with a sensible amount such as one stack, and say what you set. Never tell the player how to phrase something you can emit yourself.
-Never write anything that starts with "/". Never promise what the engine cannot do. "say" is plain text, friendly and brief, in the player's language.`;
+${built ? `8. What someone built is left alone by the engine: it takes wood, stone and the rest from the wild, and never from a house, a village, a fence, a wall or anything else made by players or villagers. When the only source in view is built it says so and looks further. "use_buildings" is false unless the player clearly allows taking from buildings, in this message or in a standing rule ("take the wood from that house", "you can break the village houses", "use the buildings"): then true. With requests in the answer it covers those requests; with none it covers the work in hand (status.doing), and "say" confirms it. A plain request ("get wood") never sets it, and you never set it because it would be quicker. A standing rule that allows it ("you may always take wood from buildings") is stored like any other and applied to each request. Asked not to touch buildings: say that is how ${bot} works already, no rule needed.
+` : ''}Never write anything that starts with "/". Never promise what the engine cannot do. "say" is plain text, friendly and brief, in the player's language.`;
 
 function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_API_KEY,
   url = process.env.JEV_GUIDE_URL || 'https://api.openai.com/v1/chat/completions',
@@ -58,7 +59,9 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
   temperature = process.env.JEV_GUIDE_TEMPERATURE, reasoning = process.env.JEV_GUIDE_REASONING ?? 'low',
   // Reasoning is paid from the same budget as the answer; a short one cuts the JSON off.
   maxTokens = Number(process.env.JEV_GUIDE_MAX_TOKENS || 600),
-  minGapMs = 1500, perHour = Number(process.env.JEV_GUIDE_PER_HOUR || 60) } = {}) {
+  minGapMs = 1500, perHour = Number(process.env.JEV_GUIDE_PER_HOUR || 60),
+  // Whether the engine leaves built things alone (built.js): the layer is told so, and may pass on a player's leave.
+  built = require('./built').on() } = {}) {
   let state = { version: 1, rules: [] };
   if (file && fs.existsSync(file)) {
     try { const saved = JSON.parse(fs.readFileSync(file, 'utf8')); if (saved.version === 1 && Array.isArray(saved.rules)) state = saved; }
@@ -83,7 +86,7 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
     mine.push(t); calls.set(owner(from), mine); return true;
   }
 
-  // -> { say, requests, addedRule, forgotRule } or null when the model was not asked or did not answer usably.
+  // -> { say, requests, addedRule, forgotRule, useBuildings? } or null when the model was not asked or did not answer usably.
   async function consult({ from, text, botName, status = {} }) {
     if (!apiKey || !allowed(from)) return null;
     const rules = rulesFor(from);
@@ -101,7 +104,7 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
       const body = { model, max_completion_tokens: maxTokens, response_format: { type: 'json_object' },
         ...(temperature !== undefined && temperature !== '' && { temperature: Number(temperature) }),
         ...(reasoning && { reasoning_effort: reasoning }),
-        messages: [{ role: 'system', content: SYSTEM(botName) }, { role: 'user', content: JSON.stringify(user) }] };
+        messages: [{ role: 'system', content: SYSTEM(botName, { built }) }, { role: 'user', content: JSON.stringify(user) }] };
       let reply;
       // A setting this model does not take is left out from then on and the call made again, so one
       // wrong line in .env does not leave the layer silently off.
@@ -131,7 +134,8 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
     const requests = (Array.isArray(parsed.requests) ? parsed.requests : []).map(r => clean(r, 160))
       .filter(r => r && !r.startsWith('/')).slice(0, MAX_REQUESTS);
     // A chat line that begins with a slash is sent by the client as a command. The model's line never is one.
-    const out = { say: clean(clean(parsed.say, 240).replace(/^[\s/]+/, ''), 200) || null, requests, addedRule: null, forgotRule: null };
+    const out = { say: clean(clean(parsed.say, 240).replace(/^[\s/]+/, ''), 200) || null, requests, addedRule: null, forgotRule: null,
+      ...(built && parsed.use_buildings === true && { useBuildings: true }) };
     const add = clean(parsed.add_rule, 200);
     if (add && !add.startsWith('/')) {
       state.rules.push({ from: clean(from, 64), text: add, at: new Date(now()).toISOString() });
@@ -145,7 +149,7 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
     }
     heard(from, 'player', text);
     if (out.say) heard(from, 'bot', out.say);
-    if (!out.say && !requests.length && !out.addedRule && !out.forgotRule) return null;
+    if (!out.say && !requests.length && !out.addedRule && !out.forgotRule && !out.useBuildings) return null;
     return out;
   }
 

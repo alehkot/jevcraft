@@ -97,7 +97,9 @@ function rememberSource(goal, source, step) {
 function committedSource(bot, goal, step, { now = Date.now() } = {}) {
   const saved = goal.workingSource;
   if (!saved || saved.drops !== step.drops) return null;
-  const source = { ...saved, blocks: saved.blocks.map(pos).filter(p => !isSetAside(goal, 'reach', p, now)) };
+  // A source chosen before the rule that built things are left alone, or
+  // before the bot laid nothing of it itself, is not kept (built.js).
+  const source = { ...saved, blocks: saved.blocks.map(pos).filter(p => !isSetAside(goal, 'reach', p, now) && !require('./built').leftAlone(bot, goal, p)) };
   if (!nearestRemaining(bot, source)) { delete goal.workingSource; return null; }
   return source;
 }

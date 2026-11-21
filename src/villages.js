@@ -31,6 +31,8 @@ const plain = p => ({ x: p.x, y: p.y, z: p.z });
 const dimension = bot => String(bot.game?.dimension || 'overworld').replace(/^minecraft:/, '').replace(/^the_/, '');
 const isBed = block => /_bed$/.test(block?.name || '');
 const bedsCarried = bot => bot.inventory.items().filter(i => /_bed$/.test(i.name)).reduce((n, i) => n + (i.count || 1), 0);
+// Built things are left alone and this goal has no leave to use them (built.js).
+const leavesBuilt = goal => { const built = require('./built'); return built.on() && !built.allowed(goal); };
 
 function findAll(bot, names, { radius = VILLAGE_RADIUS, count = 64, point } = {}) {
   const ids = names.map(n => bot.registry.blocksByName[n]?.id).filter(id => id !== undefined);
@@ -123,6 +125,9 @@ function knownVillages(bot, goal, reach = Infinity) {
 // blocks is a walk, a sheep is a search. Offered ahead of the wool hunt;
 // a village that could not be reached three times waits twenty minutes.
 function villageBedRung(bot, goal, { now = Date.now() } = {}) {
+  // A villager's bed is part of the house (built.js): not taken where built
+  // things are left alone, unless the player said the buildings may be used.
+  if (leavesBuilt(goal)) return null;
   if (isSetAside(goal, 'village_bed', 'any', now)) return null;
   const near = knownVillages(bot, goal, BED_REACH).find(({ village }) => village.beds > 0);
   if (near) return { phase: 'bed', action: 'village_bed', village: near.village, distance: near.distance };
@@ -154,6 +159,7 @@ async function collectDrops(bot, task, actions, near, names, until, limit = 12) 
 // to the sheep.
 async function takeVillageBed(bot, task, goal, save, village, actions) {
   task.check(); checkAir(bot);
+  if (leavesBuilt(goal)) { delete goal.villageBed; setAside(goal, 'village_bed', 'any', 'a bed in a house is left alone', RETRY_MS); save(); throw new Error('A bed in a house is left alone'); }
   const attempt = goal.villageBed ||= { attempts: 0 };
   attempt.attempts++;
   if (attempt.attempts > 3) { delete goal.villageBed; setAside(goal, 'village_bed', 'any', 'not reached in three tries', RETRY_MS); save(); throw new Error('The village bed was not reached in three tries; back to the sheep for now'); }
@@ -206,8 +212,9 @@ function villageFood(bot, goal) {
   const centre = village.bell || village;
   const loaded = !!bot.blockAt?.(pos(centre));
   const crops = loaded ? ripeCrops(bot, centre).length : 0;
-  const hay = loaded ? findAll(bot, ['hay_block'], { radius: VILLAGE_RADIUS, count: 64, point: pos(centre) }).length : village.hay || 0;
-  if (loaded) village.hay = hay;
+  // The bales are the village's own stack (built.js): counted as food only where they may be taken.
+  const hay = leavesBuilt(goal) ? 0 : loaded ? findAll(bot, ['hay_block'], { radius: VILLAGE_RADIUS, count: 64, point: pos(centre) }).length : village.hay || 0;
+  if (loaded && !leavesBuilt(goal)) village.hay = hay;
   if (!crops && !hay) return null;
   return { village, distance, ripeCrops: crops, hayBales: hay, loaded };
 }
@@ -246,7 +253,7 @@ async function eatFromVillage(bot, task, goal, save, village, actions) {
   // One bale is nine wheat, three loaves: enough. The second is only for a
   // drop that got away.
   const enough = () => countOf(bot, 'wheat') + countOf(bot, 'hay_block') * 9 >= 3;
-  if (!enough()) {
+  if (!enough() && !leavesBuilt(goal)) {
     const bales = findAll(bot, ['hay_block'], { radius: VILLAGE_RADIUS, count: 8, point: pos(centre) })
       .sort((a, b) => a.distanceTo(bot.entity.position) - b.distanceTo(bot.entity.position)).slice(0, 2);
     for (const bale of bales) {

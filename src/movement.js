@@ -807,6 +807,14 @@ function configureMovements(bot) {
   for (const block of bot.registry.blocksArray) {
     if (!soft.test(block.name)) movement.blocksCantBreak.add(block.id);
   }
+  // A house's post is a log too. Where built things are left alone
+  // (built.js), a log with a building's made blocks round it is not dug
+  // through on a walk: the way goes round, or through the door.
+  bot._builtProtection = block => {
+    if (!block?.position || !/_log$|_wood$/.test(block.name || '')) return 0;
+    try { return require('./built').leftAlone(bot, bot._goal, block.position) ? 100 : 0; } catch (_) { return 0; }
+  };
+  movement.exclusionAreasBreak.push(bot._builtProtection);
   bot.pathfinder.setMovements(movement);
   updateDigCapabilities(bot);
   return movement;

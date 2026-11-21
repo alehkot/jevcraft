@@ -12,6 +12,7 @@ const { MINEABLE, TOOL_TIERS } = require('./plan');
 const { houseBlueprint, verifyHouse } = require('./objectives');
 const { deliver } = require('./delivery');
 const { reservedForConstruction, portalSiteClear, selectPortalSite, portalSiteDig, portalSupports } = require('./build-sites');
+const built = require('./built');
 const { updateDigCapabilities } = require('./movement');
 const { resourceTunnelStep, tunnelStep, staircaseResting, safeExcavation } = require('./tunneling');
 const { maintainVitals, checkAir, needsAir, chooseFood, digWithAirGuard, safeFood } = require('./vitals');
@@ -1407,7 +1408,7 @@ async function upkeepOffers(bot, task, goal, save) {
     } catch (_) { return ''; } })();
     if (depth >= 8) return ` The bot is about ${depth} blocks under the surface: choosing this now means that climb now (roughly ${require('./surface').climbMinutes(depth)} minutes with a pickaxe), and back down${lastUp ? `.${lastUp}` : budget ? '.' : `; with no wood when a pickaxe wears out down here, the climb is by hand: ${require('./hand-dig').handPaceSays(bot)} where the column overhead is open, about ${require('./hand-dig').handPace(bot).minutesUp(depth)} minutes by stairs from here.`}`;
     let treeNear = null;
-    try { treeNear = typeof bot.findBlocks === 'function' ? find(bot, bot.registry.blocksArray.filter(b => /_log$|_stem$/.test(b.name)).map(b => b.name), 48, 1)[0] : null; } catch (_) { treeNear = null; }
+    try { treeNear = typeof bot.findBlocks === 'function' ? findFree(bot, goal, bot.registry.blocksArray.filter(b => /_log$|_stem$/.test(b.name)).map(b => b.name), 48, 1)[0] : null; } catch (_) { treeNear = null; }
     return treeNear ? ` A tree is ${Math.round(treeNear.distanceTo(bot.entity.position))} blocks away.` : ' No tree is in view from here.';
   };
   if (goal.kind === 'win' && woodDue(bot, goal)) options.wood_reserve = { get description() {
@@ -2015,6 +2016,23 @@ function find(bot, names, distance = 48, count = 32) {
   const ids = names.map(n => bot.registry.blocksByName[n]?.id).filter(n => n !== undefined);
   return ids.length ? bot.findBlocks({ matching: ids, maxDistance: distance, count }) : [];
 }
+// The same, of what is free to take: a block that is part of something built
+// (built.js) is passed over, and the search goes on to the nearest `count`
+// that are not, where the nearest `count` of all would each be a house's
+// post. `noteAs`: with none free found, those passed over are kept with the
+// goal under that resource's name (the line in chat, the last resort).
+function findFree(bot, goal, names, distance = 48, count = 32, { noteAs = null } = {}) {
+  if (!built.on() || built.allowed(goal)) return find(bot, names, distance, count);
+  const ids = names.map(n => bot.registry.blocksByName[n]?.id).filter(n => n !== undefined);
+  if (!ids.length) return [];
+  const passedOver = [];
+  const found = bot.findBlocks({ matching: ids, maxDistance: distance, count,
+    useExtraInfo: b => { if (!built.leftAlone(bot, goal, b.position)) return true; if (passedOver.length < 8) passedOver.push(b.position); return false; } })
+    // A search that does not ask the test (a test's world) is asked it here.
+    .filter(p => !built.leftAlone(bot, goal, p));
+  if (noteAs && !found.length && passedOver.length) built.noteSkipped(bot, goal, noteAs, passedOver);
+  return found;
+}
 
 // A turned search (see persist) keeps only its heading, so the origin is
 // filled in here whenever it is missing: without one, every search for food
@@ -2206,6 +2224,9 @@ async function explore(bot, task, goal, save, resource, { surfaceOnly = isSurfac
   try {
     const search = searchFor(goal, resource, bot.entity.position.floored());
     const stalledSurface = search.walksWithoutProgress >= 3;
+    // The search has long come to nothing and a built source was seen: taken
+    // after all, said in chat, and the step is planned again (built.js).
+    if (built.lastResort(bot, goal, resource, search, { names: [MINEABLE[resource]?.drops].filter(Boolean) })) { save(); return; }
     if (search.attempts >= 128) throw new Blocked(`Could not find reachable ${resource} after 128 exploration steps without collecting it`);
     search.attempts++;
     search.leg ||= 0;
@@ -2237,13 +2258,21 @@ async function explore(bot, task, goal, save, resource, { surfaceOnly = isSurfac
     // Any wood is wood: a search for oak walked a hundred and twenty-eight
     // legs past spruce and birch in trial 9 and reached dusk with no tools
     // (2026-09-24). The log step takes whatever wood is in view (logInView).
-    const resourceNames = LOG.test(resource) ? Object.keys(bot.registry.blocksByName).filter(n => LOG.test(n))
+    // But a request that named its wood is searched for by that wood alone: the step that mines it does not turn to
+    // another kind (mine: logInView is for a request that left the wood open), so the nearest log of any kind was a
+    // walk to wood the step then passed over. On a copy of the live world (2026-11-21, 'get me 16 birch logs' beside a
+    // village, oak there only as bushes of one log), the bot cut the one birch in reach, then walked between oak
+    // bushes for three minutes with eleven logs owed ('nothing gained on the rung'), birches 20 and 35 blocks off.
+    const namedWood = LOG.test(resource) && goal?.kind !== 'win' && String(goal?.item || '').startsWith(`${resource.replace(/_log$/, '')}_`);
+    const resourceNames = LOG.test(resource) && !namedWood ? Object.keys(bot.registry.blocksByName).filter(n => LOG.test(n))
       : [...new Set([...Object.entries(MINEABLE).filter(([name, data]) => name === resource || data.drops === resource).map(([name]) => name),
       ...(bot.registry.blocksByName[resource] ? [resource] : []), ...sourceBlocks(bot.registry, resource)])];
-    const observed = [...new Map([...find(bot, resourceNames, 128, 8), ...knownResourceLocations(bot, goal, resourceNames)]
+    const observed = [...new Map([...findFree(bot, goal, resourceNames, 128, 8, { noteAs: resource }), ...knownResourceLocations(bot, goal, resourceNames)]
       .map(p => [`${p}`, p])).values()].filter(p => !reservedForConstruction(goal, p) && safeFromHostiles(bot, p) &&
-      !isSetAside(goal, 'reach', p) && (!surface || !bot.blockAt(p) || surface.isSurface(p)))
+      !isSetAside(goal, 'reach', p) && !built.leftAlone(bot, goal, p) && (!surface || !bot.blockAt(p) || surface.isSurface(p)))
       .sort((a, b) => a.distanceTo(bot.entity.position) - b.distanceTo(bot.entity.position));
+    // Nothing free in view and the search goes elsewhere: why, said once.
+    if (!observed.length && built.hint(bot, goal, resource)) save();
     // Cobwebs (string) hang in mineshafts: with none in view, a remembered
     // mineshaft is where to look, and the walk or the tunnel down to it is
     // what brings them into view.
@@ -2379,6 +2408,10 @@ async function miningCandidates(bot, task, step, goal) {
   const names = step.sources || Object.entries(MINEABLE).filter(([, info]) => info.drops === step.drops).map(([name]) => name);
   if (step.drops === 'flint') names.push('gravel');
   const ids = names.map(name => bot.registry.blocksByName[name]?.id).filter(id => id !== undefined);
+  // What someone built is left alone (built.js), asked last, of a block that
+  // could otherwise be had; those passed over are kept with the goal.
+  const passedOver = [];
+  const free = b => { if (!built.leftAlone(bot, goal, b.position)) return true; if (passedOver.length < 8) passedOver.push(b.position); return false; };
   const options = { matching: ids, maxDistance: 48, count: 32,
     useExtraInfo: b => (!step.properties || Object.entries(step.properties).every(([key, value]) => String(b.getProperties()[key]) === String(value))) &&
       (step.minimumY === undefined || b.position.y >= step.minimumY) && !reservedForConstruction(goal, b.position) &&
@@ -2399,11 +2432,12 @@ async function miningCandidates(bot, task, step, goal) {
       (foliageMiningCandidate(bot, b.position) || faces.some(f => {
         const neighbor = bot.blockAt(b.position.plus(f));
         return air(neighbor) || neighbor?.name === 'water';
-      }) && dryMiningPositions(bot, b.position, 1).length > 0),
+      }) && dryMiningPositions(bot, b.position, 1).length > 0) && free(b),
   };
   const candidates = bot.findBlocksAsync
     ? await bot.findBlocksAsync(options, () => { task.check(); checkAir(bot); }) : bot.findBlocks(options);
   task.check(); checkAir(bot);
+  if (passedOver.length) built.noteSkipped(bot, goal, step.block || step.drops, passedOver);
   rememberResources(bot, goal, candidates);
   return candidates.filter(p => {
     return safeFromHostiles(bot, p) && !isSetAside(goal, 'reach', p);
@@ -2555,9 +2589,11 @@ const NETHER_STEM = /^(crimson|warped)_stem$/;
 // recipe; the one being walked to is the target.
 const LOG_KIND_MS = 5 * 60000;
 const swapTo = (step, name) => name === step.block ? step : { ...step, block: name, sources: [name], drops: name, produces: { [name]: step.count || 1 }, insteadOf: step.block };
-function logInView(bot, step) {
+function logInView(bot, step, goal = bot._goal) {
   const family = LOG.test(step.block || '') ? LOG : NETHER_STEM.test(step.block || '') ? NETHER_STEM : null;
   if (!family || typeof bot.findBlocks !== 'function') return step;
+  // A house's posts are not the wood in view (built.js).
+  const find = (bot, names, distance, count) => findFree(bot, goal, names, distance, count);
   // In view and not set aside as out of reach (note 2530): one oak across a river, each of its logs set aside 'No reachable
   // dry standing position', held the step to oak while a jungle stood beside the bot. full-107 (25589, 2026-10-29
   // 17:2xZ) walked 113 blocks for wood past it; the user: 'Look at these trees'.
@@ -2603,7 +2639,7 @@ async function moreOfSource(bot, task, goal, save, step, source, cap) {
 
 async function mine(bot, task, step, goal, save, selected) {
   // Not for a request that named its wood (a spruce build wants spruce).
-  if (goal?.kind === 'win' || !goal?.item) step = logInView(bot, step);
+  if (goal?.kind === 'win' || !goal?.item) step = logInView(bot, step, goal);
   if (step.insteadOf && goal) { goal.step = step; save(); }
   const surfaceOnly = isSurfaceResource(step.block);
   if (surfaceOnly && !surfaceReturnComplete(bot, goal)) {
@@ -2653,7 +2689,7 @@ async function woodWhileUp(bot, task, goal, save, { cut = mineAtSource } = {}) {
   const owed = L.woodOwed(bot, goal);
   if (!owed.short) return;
   const names = Object.keys(bot.registry?.blocksByName || {}).filter(n => LOG.test(n));
-  const logsNear = () => find(bot, names, WOOD_UP.radius, 32).filter(p => !isSetAside(goal, 'reach', p));
+  const logsNear = () => findFree(bot, goal, names, WOOD_UP.radius, 32).filter(p => !isSetAside(goal, 'reach', p));
   const near = logsNear();
   if (!near.length) return;
   const here = bot.entity.position;
@@ -3039,6 +3075,12 @@ function oreToTunnel(found, feet, depth, count = Infinity) {
   return found.find(p => p.y <= depth + ORE_BAND) || null;
 }
 async function mineAtSource(bot, task, step, goal, save, selected) {
+  // A block chosen before the rule, or by a search that does not ask it,
+  // is left where it stands and rests an hour (built.js).
+  if (selected && built.leftAlone(bot, goal, selected)) {
+    setAside(goal, 'reach', selected, 'part of something built, left alone', 3600000); save?.();
+    throw new Error(`The ${String(bot.blockAt(selected)?.name || step.block || 'block').replaceAll('_', ' ')} at ${selected} is part of something built: left alone`);
+  }
   let candidates = selected ? [selected] : await miningCandidates(bot, task, step, goal);
   // Those with a dry stand walked to now first, nearest first; then those a passage reaches; under water last (note
   // 2291). full-9 (2026-10-27 15:4xZ), on the surface for flint, chose the gravel of a river bed at y 61 and a cave's at
@@ -4203,7 +4245,7 @@ async function smelt(bot, task, step, goal, save = () => {}) {
         const ore = find(bot, WAIT_ORES, cooking() >= 60000 ? 32 : 16, 16).find(ok);
         if (ore) return ore;
         const logs = bot.inventory.items().filter(i => /_log$/.test(i.name)).reduce((n, i) => n + i.count, 0);
-        return logs < 16 ? find(bot, LOGS, 16, 16).filter(p => p.y <= bot.entity.position.y + 3).find(ok) : null;
+        return logs < 16 ? findFree(bot, goal, LOGS, 16, 16).filter(p => p.y <= bot.entity.position.y + 3).find(ok) : null;
       };
       // What is still in this furnace's input, not all the batch untaken (note 2483, Fable's audit): the side furnaces
       // (note 2471) hold the rest, and a batch cooked through still read as its whole count, 'wait 40 s' beside a job
@@ -4526,8 +4568,11 @@ function catalogPlan(bot, item, count, stock, goal = {}) {
     const ownPlank = b => /_planks$/.test(b.name) && (() => { try { return !!require('./own-blocks').laidAt(bot, b.position, goal) || reservedForConstruction(goal || {}, b.position); } catch (_) { return true; } })();
     // exposed (note 795): a block with no air on a face is refused by state
     // before mineflayer builds it; 0.5 to 2.1 s live a call underground.
+    // Nor what someone built (built.js): a village's plank walls made "planks near" of a crafting table asked beside
+    // one, and the plan mined four of them out of a house where it would have cut a birch (a copy of the live world,
+    // 2026-11-21).
     const positions = bot.findBlocks({ matching: ids, maxDistance: 32, count: 48, exposed: true,
-      useExtraInfo: b => faces.some(f => air(bot.blockAt(b.position.plus(f)))) && !ownPlank(b) });
+      useExtraInfo: b => faces.some(f => air(bot.blockAt(b.position.plus(f)))) && !ownPlank(b) && !built.leftAlone(bot, goal, b.position) });
     rememberResources(bot, goal, positions);
     const nearby = positions.map(p => bot.blockAt(p)?.name).filter(Boolean);
     bot._catalogObservation = { at: Date.now(), position: { ...bot.entity.position }, nearby };
@@ -8349,7 +8394,7 @@ function idleOptions(bot, goal) {
   if (missing.length) options.stone_tools = { description: `Make ${missing.map(t => t.replaceAll('_', ' ')).join(', ')}: faster digging and a real weapon, from cobblestone and sticks.${leaves(missing.map(item => ({ item, count: 1 })))}`, item: missing[0], count: 1 };
   const logs = Object.keys(stock).filter(n => n.endsWith('_log')).reduce((n, k) => n + stock[k], 0);
   if (logs < 16) {
-    const nearby = find(bot, bot.registry.blocksArray.filter(b => /_log$/.test(b.name)).map(b => b.name), 32, 8);
+    const nearby = findFree(bot, goal, bot.registry.blocksArray.filter(b => /_log$/.test(b.name)).map(b => b.name), 32, 8);
     const species = nearby.length ? bot.blockAt(nearby[0])?.name : null;
     if (species) options.stock_wood = { description: `Stock up to 16 logs from the ${species.replaceAll('_', ' ')} trees nearby (${logs} carried); wood is needed for tools, fuel and repairs.`, item: species, count: 16 - logs };
   }

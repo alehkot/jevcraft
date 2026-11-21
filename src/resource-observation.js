@@ -28,6 +28,8 @@ function knownResourceLocations(bot, goal, names) {
     const p = new Vec3(entry.position.x, entry.position.y, entry.position.z), actual = bot.blockAt(p);
     if (Date.now() - entry.seenAt > 1800000 || actual && actual.name !== entry.name) { delete goal.resourceMemory[key]; continue; }
     if (!names.includes(entry.name) || p.distanceTo(bot.entity.position) > 512 || isSetAside(goal, 'reach', p)) continue;
+    // Remembered, but part of something built: neither planned with nor walked to while that is left alone (built.js).
+    if (require('./built').leftAlone(bot, goal, p)) continue;
     result.push(p);
   }
   return result.sort((a, b) => a.distanceTo(bot.entity.position) - b.distanceTo(bot.entity.position));
@@ -67,8 +69,9 @@ function observeRecipeAlternatives(bot, plan, goal = {}) {
     let observation = observations[item];
     if (!observation || Date.now() - observation.at > 5000 || bot.entity.position.distanceTo(observation.position) > 8) {
       const matching = names.map(name => bot.registry.blocksByName[name]?.id).filter(id => id !== undefined);
+      // What is near to plan with is what may be taken: a village's oak posts are not oak near (built.js).
       const found = bot.findBlocks({ matching, maxDistance: 64, count: 16,
-        useExtraInfo: block => faces.some(face => air(bot.blockAt(block.position.plus(face)))) });
+        useExtraInfo: block => faces.some(face => air(bot.blockAt(block.position.plus(face)))) && !require('./built').leftAlone(bot, goal, block.position) });
       rememberResources(bot, goal, found);
       observation = observations[item] = { at: Date.now(), position: bot.entity.position.clone(),
         names: [...new Set(found.map(p => bot.blockAt(p)?.name).filter(Boolean))] };

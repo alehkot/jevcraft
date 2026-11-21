@@ -486,7 +486,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     if (guideQueue?.rest.length && ready && (!active || active.idle) && !pendingRequests && !relaunching && !launchingDream) {
       const last = store.read();
       if (clarifying.get(guideQueue.from)?.until > now || ['blocked', 'cancelled'].includes(last?.status)) guideQueue = null;
-      else if (!last || last.status === 'complete') inject(guideQueue.sender, guideQueue.rest.shift());
+      else if (!last || last.status === 'complete') inject(guideQueue.sender, guideQueue.rest.shift(), { useBuildings: guideQueue.useBuildings });
     }
     if (waitMode) {
       // JEV_IDLE=wait: nothing is done between requests but answering what would
@@ -513,9 +513,20 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   // for comes back through this same handler as plain requests, marked so they are not read twice.
   const guide = process.env.JEV_GUIDE_API_KEY ? createGuide({ file: path.join(stateDirectory, `${memoryIdentity}-guide.json`) }) : null;
   const guided = new WeakSet();
-  let guideQueue = null;         // { sender, from, rest: [request, ...] }: what the guide asked for after the request in hand
+  let guideQueue = null;         // { sender, from, rest: [request, ...], useBuildings }: what the guide asked for after the request in hand
   const passOn = data => { guided.add(data); onPlayerChat(data); };
-  const inject = (sender, text) => passOn({ sender, plainMessage: `${bot.username} ${text}` });
+  // `useBuildings`: the player's leave to take from what is built (built.js), carried by the request itself so that
+  // one held for a "may I switch?" or waiting its turn in the queue keeps it.
+  const inject = (sender, text, { useBuildings = false } = {}) => passOn({ sender, plainMessage: `${bot.username} ${text}`, ...(useBuildings && { useBuildings: true }) });
+  // The work in hand may use them, said by a player while it runs. -> the line for chat.
+  const useBuildingsNow = from => {
+    const goal = active && !active.idle ? active.goal : null;
+    if (!goal) return 'Nothing in hand to use them for. Ask for the thing and say the buildings may be used.';
+    if (require('./built').allowed(goal)) return "I'm already using them for this.";
+    require('./built').permit(bot, goal, from); saveGoal(goal);
+    console.log(`[built] ${from} allowed the buildings for: ${goal.request}`);
+    return "All right, I'll take it from the buildings for this job.";
+  };
   const clean = value => String(value || '').replace(/\s+/g, ' ').trim().slice(0, 120);
   const guideStatus = from => {
     const me = bot.entity?.position, them = bot.players[from]?.entity?.position, t = bot.time?.timeOfDay;
@@ -523,11 +534,13 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     return { health: bot.health, food: bot.food, dimension: bot.game?.dimension,
       time: Number.isFinite(t) ? (t >= 12300 && t < 23500 ? 'night' : 'day') : undefined,
       holding: bot.heldItem?.name, carrying: Object.fromEntries(bot.inventory.items().slice(0, 16).map(item => [item.name, item.count])),
-      doing: active && !active.idle ? { request: active.goal.request, for: active.goal.from } : active?.idle ? 'looking after itself' : 'waiting for a request',
+      doing: active && !active.idle ? { request: active.goal.request, for: active.goal.from, ...(require('./built').allowed(active.goal) && { mayUseBuildings: true }) } : active?.idle ? 'looking after itself' : 'waiting for a request',
       // The request before, and how it ended: what "carry on" and "did you finish?" are about.
       lastRequest: (saved => saved?.request ? { request: clean(saved.request), for: saved.from, ended: saved.status } : null)(store.read()),
       blocksFromPlayer: me && them ? Math.round(me.distanceTo(them)) : 'out of sight',
       dream: dreamStore.read()?.dream || null,
+      // Which wood stands free near the bot, for a wish for wood that names none (built.js woodInView).
+      ...(require('./built').on() && (wood => wood.length ? { woodInView: wood } : {})((() => { try { return require('./built').woodInView(bot, active?.goal); } catch (_) { return []; } })())),
       savedPlaces: (mine.places || []).map(place => place.label || place.name).filter(Boolean).slice(0, 12),
       savedNotes: (mine.notes || []).map(note => note.note).filter(Boolean).slice(-8) };
   };
@@ -595,6 +608,11 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     if (/^status( please)?[.!?]?$/i.test(normalized)) {
       bot.chat(statusMessage(bot, active, store.read())); return;
     }
+    // "Jev use the buildings": the answer to the line built.js says when the only source in view is built.
+    // Read here, so it works with the language layer off or out of reach.
+    if (require('./built').on() && address.explicit && !literal && !answer && /^(yes,? )?(you (may|can) )?use the buildings?[.!]?$/i.test(normalized)) {
+      bot.chat(useBuildingsNow(from)); return;
+    }
     if (guide && !guided.has(data) && !literal && !answer && address.explicit && !control.test(address.text)) {
       guideQueue = null;
       bot.swingArm?.('right');
@@ -604,9 +622,15 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         observation?.sample('guide', { from, said: address.text, say: out.say, requests: out.requests, addedRule: out.addedRule, forgotRule: out.forgotRule });
         console.log(`[guide] ${from}: ${JSON.stringify(address.text)} -> ${JSON.stringify(out)}`);
         if (out.say) bot.chat(out.say);
+        const useBuildings = !!out.useBuildings && require('./built').on();
         if (out.requests.length) {
-          guideQueue = { sender: data.sender, from, rest: out.requests.slice(1) };
-          inject(data.sender, out.requests[0]);
+          guideQueue = { sender: data.sender, from, rest: out.requests.slice(1), useBuildings };
+          inject(data.sender, out.requests[0], { useBuildings });
+        } else if (useBuildings && !out.addedRule) {
+          // No request with it: the leave is for the work in hand (a standing rule just stored is for the
+          // requests to come). The guide's own line has been said; ours only where it says something else.
+          const line = useBuildingsNow(from);
+          if (!out.say || !/^All right/.test(line)) bot.chat(line);
         }
       }).catch(err => { console.error('[guide]', err); if (!ended) passOn(data); });
       return;
@@ -740,8 +764,16 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
           confirm: ['uncertain_interaction', 'dream_unsure'].includes(reason), which: ['no_item', 'no_discovery_target', 'ambiguous_item', 'incomplete_bundle'].includes(reason) });
         bot.chat(spec.message); return;
       }
-      if (spec.kind === 'stop') { invalidateRequests(); await stop(); bot.chat('Stopped.'); return; }
+      if (spec.kind === 'stop') {
+        invalidateRequests(); await stop();
+        // Stopped after the bot said it would take from the buildings after all: that is a no, kept with the
+        // goal for a later "resume" (built.js refuse).
+        const stopped = store.read();
+        if (stopped && require('./built').refuse(stopped)) { saveGoal(stopped); console.log(`[built] ${from} stopped the last resort for: ${stopped.request}`); }
+        bot.chat('Stopped.'); return;
+      }
       if (spec.kind === 'resume') {
+        if (data.useBuildings) { const saved = store.read(); if (saved && !active) { require('./built').permit(bot, saved, from); saveGoal(saved); } }
         await resume(revision); return;
       }
       // In Creative with the generative designer, a plain house is drawn like
@@ -761,6 +793,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       await stop('replaced');
       if (revision !== generation || ended) return;
       const goal = { ...spec, ledgerRun: run.id, version: 1, status: 'pending', createdAt: new Date().toISOString(),
+        ...(data.useBuildings && require('./built').on() && { allowBuilt: { by: from, at: new Date().toISOString() } }),
         suspendedTasks: suspendPrevious(store.read()),
         requesterPosition: bot.players[from]?.entity ? { ...bot.players[from].entity.position } : null,
         initialInventory: bot.inventory.items().map(i => ({ name: i.name, count: i.count })) };
