@@ -229,6 +229,10 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   console.log(`[company] at night: ${require('./company').nightMode() ? `up while a player is within ${require('./company').STAY_UP} blocks, sheltering when alone (JEV_NIGHT=company)` : 'sheltering from dusk to dawn (JEV_NIGHT is not set)'}`);
   const reactiveWait = waitMode ? createReactiveWait({ bot, survival, save: () => saveSurvival(),
     isReady: () => ready && !ended, isBusy: () => Boolean(active) || relaunching || launchingDream }) : null;
+  // To bed when the players go (bedtime.js): the waiting bot's own move, like the reactive wait, and ended by whatever that would answer.
+  const bedtime = waitMode ? require('./bedtime').createBedtime({ bot, save: () => saveSurvival(),
+    isReady: () => ready && !ended, isBusy: () => Boolean(active) || relaunching || launchingDream,
+    trouble: () => !!require('./reactive-wait').emergency(bot) }) : null;
   if (!survivalStore.read() && store.read()?.status === 'cancelled') survival.state.paused = true;
   const saveSurvival = () => { if (!ended) { survival.state.version = 1; survivalStore.save(survival.state); } };
   const saveGoal = goal => { if (!ended) { memory.recordGoal(goal, bot); world.harvest(goal); store.save(goal); } };
@@ -249,17 +253,18 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   let observation;
 
   async function stop(status = 'cancelled') {
-    if (status === 'cancelled') { survival.state.paused = true; saveSurvival(); guideQueue = null; }
+    if (status === 'cancelled') { survival.state.paused = true; saveSurvival(); guideQueue = null; require('./company').letGo(bot); }
     if (!active) {
       if (status === 'cancelled') {
         const saved = store.read();
         if (saved && ['pending', 'running', 'recovering'].includes(saved.status)) { saved.status = 'cancelled'; saveGoal(saved); }
       }
-      await reactiveWait?.cancel();
+      await reactiveWait?.cancel(); await bedtime?.cancel();
       return;
     }
     active.task.cancel();
-    if (!active.idle) { active.goal.status = status; workStore.save(active.goal); }
+    // A walk back after monsters (launchBack) that is stopped or replaced is over, not kept for a later "resume".
+    if (!active.idle) { active.goal.status = active.goal.back ? 'complete' : status; workStore.save(active.goal); }
     bot.pathfinder.setGoal(null);
     bot.clearControlStates();
     bot.stopDigging();
@@ -268,11 +273,14 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   }
 
   function launch(goal) {
-    reactiveWait?.cancel().catch(() => {});
+    reactiveWait?.cancel().catch(() => {}); bedtime?.cancel().catch(() => {});
+    // A request ends the scare a walk back was owed for (company.js): the player has said what comes next.
+    if (!goal.back) require('./company').letGo(bot);
     world.hydrate(goal);
     memory.bind(goal);
     goal.memoryContext = memory.context(goal.from);
-    survival.state.paused = false; delete survival.state.idleBlocked; delete survival.state.deathBlocked; saveSurvival();
+    // A walk back after monsters is not a player's word: a bot told to stop is as stopped after it as before.
+    if (!goal.back) { survival.state.paused = false; delete survival.state.idleBlocked; delete survival.state.deathBlocked; saveSurvival(); }
     // The goal's calls are charged to its run: the dream's when the dream
     // launched it, otherwise the request's own, picked back up by id.
     if (goal.dream) goal.ledgerRun = dreamRun(dreamStore.read()) ?? goal.ledgerRun;
@@ -308,13 +316,21 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         session.relaunch = true;
         return;
       }
-      if (err.name !== 'Cancelled') {
+      // A walk back after monsters that failed is the bot's own errand: nothing is said, nothing is left to resume, and
+      // it is tried again later while the scare holds (company.js backDue).
+      if (err.name !== 'Cancelled' && goal.back) {
+        goal.status = 'complete'; goal.backFailed = err.message; saveGoal(goal);
+        observation?.sample('error', { message: err.message, back: true }, goal);
+        console.log(`[company] the walk back to ${goal.target} failed: ${err.message}`);
+      } else if (err.name !== 'Cancelled') {
         goal.status = 'blocked'; goal.lastError = err.message; saveGoal(goal);
         observation?.sample('error', { message: err.message }, goal);
         console.error(err); bot.chat(`${friendlyProblem(err)} ${recoveryHint(err)}`);
       }
     }).finally(() => {
       if (active === session) active = null;
+      // Arrived: the scare is over. The player walking off again is not followed.
+      if (goal.back && goal.status === 'complete' && !goal.backFailed && !session.relaunch) require('./company').letGo(bot);
       if (session.relaunch) {
         relaunching = true;
         setTimeout(() => { relaunching = false; if (!ended && !active) launch(goal); }, 1500);
@@ -403,7 +419,23 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     } finally { launchingDream = false; }
   }
 
+  // Back to the player the waiting bot stood with, once the monsters it gave ground to are gone (company.js
+  // backDue): an ordinary "come", made by rule and not through the request interpreter, said once a scare.
+  function launchBack(scare) {
+    const seen = bot.players[scare.with]?.entity?.position;
+    scare.tries++; scare.triedAt = Date.now();
+    const goal = { kind: 'come', back: true, request: 'come back after the monsters', from: scare.with, target: scare.with,
+      version: 1, status: 'pending', createdAt: new Date().toISOString(), suspendedTasks: suspendPrevious(store.read()),
+      requesterPosition: seen ? { ...seen } : { ...scare.position },
+      initialInventory: bot.inventory.items().map(i => ({ name: i.name, count: i.count })) };
+    saveGoal(goal);
+    console.log(`[company] back to ${scare.with} after the monsters: try ${scare.tries}, ${seen ? `${Math.round(seen.distanceTo(bot.entity.position))} blocks off` : 'out of view, to where they were last seen'}`);
+    if (!scare.said) { scare.said = true; bot.chat(`Coming back to you, ${scare.with}.`); }
+    launch(goal);
+  }
+
   function launchIdle() {
+    bedtime?.cancel().catch(() => {});
     const retained = store.read();
     const standing = dreamStore.read();
     if (standing?.dream && !launchingDream && shouldLaunchDream(standing, retained, { ready: readyForDream(), resting: isSetAside(survival, 'dream_launch', standing.dream) })) { launchDream(standing); return; }
@@ -440,7 +472,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   }
 
   async function resume(revision = generation, options) {
-    await reactiveWait?.cancel();
+    await reactiveWait?.cancel(); await bedtime?.cancel();
     if (active?.idle) await stop('interrupted');
     // The dream is what the bot does with nobody's work waiting. A player's
     // stopped or replaced request under it comes first; the dream picks up
@@ -518,9 +550,29 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       if (active?.idle && own === 'end' && !relaunching) stop('interrupted').catch(console.error);
       else if (ready && !active && !relaunching && !launchingDream && !pendingRequests) {
         const standing = survival.state.paused ? null : dreamStore.read();
+        // The waiting bot's two own moves, by rule: to bed when every player is in one (bedtime.js), and back to its
+        // player after monsters (company.js backDue). What would hurt it where it stands comes before both. A bot
+        // told to stop makes them too, and is as stopped after: it was the monsters that moved it, and a "stop" said
+        // during the walk back ends that walk (stop() lets the scare go).
+        // Neither rule may end the waiting itself: what goes wrong in one is logged, and the bot waits as before.
+        let hurting = false, abed = false, back = null;
+        try {
+          company.withPlayer(bot, now);
+          hurting = !!require('./reactive-wait').emergency(bot);
+          abed = bedtime.busy();
+          if (!hurting && !abed)
+            back = company.backDue(bot, { now, dark,
+              // After it: a monster in its sight within 16 blocks. About the player: one within 8 blocks and three
+              // blocks of their height (a zombie in a cave under the house is not about them).
+              chased: () => require('./danger').threats(bot, 16).some(t => t.visible),
+              hostileNear: (at, blocks) => require('./danger').hostileEntities(bot, 64).some(e => e.position.distanceTo(at) <= blocks && Math.abs(e.position.y - at.y) <= 3) });
+        } catch (err) { console.error('[company] the waiting bot\'s own moves:', err); }
+        const toBed = () => { try { return bedtime.tick(); } catch (err) { console.error('[bedtime]', err); return false; } };
         if (standing?.dream && shouldLaunchDream(standing, store.read(), { ready: readyForDream(), resting: isSetAside(survival, 'dream_launch', standing.dream) })) launchDream(standing);
+        else if (abed) { if (hurting) bedtime.cancel().catch(err => console.error('[bedtime]', err)); }
+        else if (back) { try { launchBack(back); } catch (err) { console.error('[company] the walk back was not begun:', err); } }
         else if (own === 'run' && !survival.state.paused && !survival.state.idleBlocked) launchIdle();
-        else reactiveWait.tick().catch(err => console.error('[reactive wait]', err));
+        else if (hurting || !toBed()) reactiveWait.tick().catch(err => console.error('[reactive wait]', err));
       }
     } else if (ready && !active && !relaunching && !launchingDream && !pendingRequests && !survival.state.paused && !survival.state.idleBlocked) launchIdle();
   }, 500);
@@ -863,6 +915,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       ready = true;
       console.log(JSON.stringify({ sessionReady: true, username: bot.username }));
       const saved = store.read();
+      // A walk back after monsters from before this start is over: the scare it answered went with that run.
+      if (saved?.back && saved.status !== 'complete') { saved.status = 'complete'; store.save(saved); }
       // A "come here" is not taken up again when its player is not in the
       // game, or it was said minutes ago (company.js lapsed).
       if (saved && ['running', 'recovering'].includes(saved.status) && require('./company').lapsed(saved, bot)) {

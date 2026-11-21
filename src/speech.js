@@ -210,6 +210,8 @@ function activity(step = {}) {
 function completion(goal) {
   // A come or a follow whose player left the game (company.js callerState).
   if (goal.callerLeft) return `${goal.target || goal.from} has left the game, so I've stopped ${goal.kind === 'follow' ? 'following' : 'coming over'}.`;
+  // Back with its player after monsters (company.js backDue): said when it set out, not again on arriving.
+  if (goal.back) return '';
   const chest = [goal, ...(goal.tasks || [])].flatMap(g => g.deliveryEvidence || []).filter(e => e.method === 'chest');
   if (chest.length) {
     const places = [...new Set(chest.map(e => `${e.position.x}, ${e.position.y}, ${e.position.z}`))];

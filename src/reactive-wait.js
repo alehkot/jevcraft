@@ -91,4 +91,4 @@ function createReactiveWait({ bot, survival, save = () => {}, isReady = () => tr
   };
 }
 
-module.exports = { createReactiveWait };
+module.exports = { createReactiveWait, emergency };

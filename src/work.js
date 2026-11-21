@@ -5472,6 +5472,12 @@ async function movementStep(bot, task, goal, save) {
   }
   if (!target) throw new Blocked(`Cannot see ${goal.target || goal.from}. Come within view so I can find a route.`);
   goal.requesterPosition = { ...target.position };
+  // To bed with the players (bedtime.js): the one followed lies in a bed, and so does every other player in the game.
+  if (goal.kind === 'follow' && require('./bedtime').due(bot)) {
+    goal.step = { action: 'bedtime', target: goal.target || goal.from }; save();
+    await require('./bedtime').toBed(bot, task, { navigate, goals, trouble: () => !!require('./danger').immediateThreat(bot), save });
+    return false;
+  }
   goal.step = { action: goal.kind, target: goal.target || goal.from, position: { ...target.position } }; save();
   const distance = bot.entity.position.distanceTo(target.position);
   // Called over, the bot ends where the two can see each other, not three
@@ -10891,7 +10897,7 @@ async function runGoal(bot, task, goal, store, { maxSteps = Infinity, onStep = (
         if (goal.kind === 'house') survival.rememberHouse(goal.blueprint);
         bot.buildRegistry?.remember(goal, { dimension: dimension(bot), status: 'complete' });
         goal.status = 'complete'; goal.completedAt = new Date().toISOString(); save();
-        bot.chat(completion(goal));
+        const done = completion(goal); if (done) bot.chat(done);
         return { ok: true, goal };
       }
       const unchanged = before === JSON.stringify(inventory(bot)) && location.distanceTo(bot.entity.position) < 1 &&

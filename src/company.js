@@ -388,4 +388,76 @@ async function standInView(bot, task, target, { navigate, goals, walkMs = WALK_M
   return { seen: inView(bot, target), moved: true, cell };
 }
 
-module.exports = { calledOver, callerState, lapsed, here, inShelter, holedUp, routine, standing, darkNow, drawnOut, pocketFirst, CLIMB_MS, rimOf, openGround, inLeftPocket, climbOut, afterLeave, LEFT_MS, nightMode, staysUp, comesOut, nearestPlayer, STAY_UP, COME_OUT, ALONE_MS, OUT_MS, inView, spotsInView, standInView, standable, EYE, REACH, RISE, CALL_HOLDS_MS, GONE_MS };
+// Back to its player after monsters (asked for by the server's owner, 2026-11-21: a companion
+// that tries to be near its player again once the monsters are gone). A waiting bot answers a
+// mob in reach by giving ground (reactive-wait.js, survival.js runAway), and stood wherever the
+// run ended, twenty or eighty blocks off, until it was called. Now it walks back by itself: a
+// "come" to the player it was waiting with, begun once it has given no ground for a few seconds
+// and no monster is about the player.
+//
+// Only that. It is no rule to stay near a player: a bot that did not run stays where it was
+// left, one at work on a request goes on with the request, and the walk back is given up when a
+// player asks for something else, says stop, or leaves the game. By night it is made only to a
+// player in view, like any call (calledOver); out of view the night's shelter comes first, and
+// the walk is made in the morning if the scare is no older than a quarter of an hour.
+const WITH_MS = 30000;              // a player seen within STAY_UP blocks this lately is the one the bot waits with
+const BACK_QUIET_MS = 3000;         // no ground given for this long before it turns back
+const BACK_OFF = 6;                 // blocks from the player within which it is back with them
+const NEAR_PLAYER = 8;              // a monster this near the player: not yet
+const BACK_HOLDS_MS = 15 * 60000;   // a scare older than this is let go
+const BACK_TRIES = 3;               // walks back a scare
+const BACK_RETRY_MS = 20000;        // between two of them
+const spot = p => ({ x: p.x, y: p.y, z: p.z });
+
+// Each half second of the waiting (session.js): the nearest player within STAY_UP blocks is the
+// one the bot waits with, and where the player of a scare was last seen is kept for the walk.
+function withPlayer(bot, now = Date.now()) {
+  const me = bot?.entity?.position;
+  if (!me) return null;
+  let best = null;
+  for (const [name, player] of Object.entries(bot.players || {})) {
+    const at = player?.entity?.position;
+    if (!at || name === bot.username) continue;
+    const d = at.distanceTo(me);
+    if (d <= STAY_UP && (!best || d < best.d)) best = { name, at, d };
+  }
+  if (best) bot._company = { name: best.name, position: spot(best.at), at: now };
+  const seen = bot._scare && bot.players?.[bot._scare.with]?.entity?.position;
+  if (seen) bot._scare.position = spot(seen);
+  return bot._company || null;
+}
+// The bot gave ground to monsters (survival.js runAway). Waiting with a player, that is a scare
+// to come back from; more ground given within it is the same scare. At work on a request, or
+// with nobody near, it is nothing.
+function gaveGround(bot, now = Date.now()) {
+  if (!bot) return null;
+  const scare = bot._scare;
+  if (scare && now - scare.at <= BACK_HOLDS_MS) { scare.last = now; return scare; }
+  delete bot._scare;
+  const with_ = bot._company;
+  if (!with_ || now - with_.at > WITH_MS) return null;
+  return (bot._scare = { with: with_.name, position: { ...with_.position }, at: now, last: now, tries: 0, triedAt: 0 });
+}
+// A request, a stop: the scare is over, and so is the company kept for the next one.
+function letGo(bot) { if (bot) { delete bot._scare; delete bot._company; } }
+// Whether to walk back now: the scare, or null. chased() says whether a monster is still after
+// the bot; hostileNear(position, blocks) whether one is that near a place; dark is the night
+// (darkNow).
+function backDue(bot, { now = Date.now(), dark = darkNow(bot), chased = () => false, hostileNear = () => false } = {}) {
+  const scare = bot?._scare, me = bot?.entity?.position;
+  if (!scare || !me) return null;
+  if (now - scare.at > BACK_HOLDS_MS || scare.tries >= BACK_TRIES || !here(bot, scare.with)) { delete bot._scare; return null; }
+  if (now - scare.last < BACK_QUIET_MS) return null;
+  const at = bot.players?.[scare.with]?.entity?.position;
+  // Back with them already: its own feet brought it, or the player came over.
+  if (at && at.distanceTo(me) <= BACK_OFF) { delete bot._scare; return null; }
+  if (!at && (dark || !scare.position)) return null;
+  if (now - scare.triedAt < BACK_RETRY_MS) return null;
+  // Not with a monster still after it (a husk left alive ran a waiting bot 76 blocks in 45 seconds, and the walk back
+  // was begun at 56 with the husk three blocks behind: 2026-11-21), and not to a player with one about them.
+  if (chased() || (at && hostileNear(at, NEAR_PLAYER))) return null;
+  return scare;
+}
+
+module.exports = { calledOver, callerState, lapsed, here, inShelter, holedUp, routine, standing, darkNow, drawnOut, pocketFirst, CLIMB_MS, rimOf, openGround, inLeftPocket, climbOut, afterLeave, LEFT_MS, nightMode, staysUp, comesOut, nearestPlayer, STAY_UP, COME_OUT, ALONE_MS, OUT_MS, inView, spotsInView, standInView, standable, EYE, REACH, RISE, CALL_HOLDS_MS, GONE_MS,
+  withPlayer, gaveGround, letGo, backDue, WITH_MS, BACK_QUIET_MS, BACK_OFF, NEAR_PLAYER, BACK_HOLDS_MS, BACK_TRIES, BACK_RETRY_MS };

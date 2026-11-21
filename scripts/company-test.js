@@ -645,6 +645,284 @@ const call = (over = {}) => ({ kind: 'come', request: 'Jev come here', from: 'Ca
     assert.equal(own.survival.state.leftPocket, undefined);
   });
 
+  // ---------------------------------------------------------------- back to its player after monsters
+  const T0 = 1_000_000;
+  await check('ground given while waiting with a player is a scare to come back from; alone, or with the company long past, it is nothing', async () => {
+    const { bot } = scene({ at: [6.5, 64, 0.5] });
+    assert.equal(company.gaveGround(bot, T0), null, 'nobody noted yet');
+    assert.deepEqual(company.withPlayer(bot, T0), { name: 'Caller', position: { x: 0.5, y: 64, z: 0.5 }, at: T0 });
+    const scare = company.gaveGround(bot, T0 + 1000);
+    assert.equal(scare.with, 'Caller'); assert.equal(scare.tries, 0); assert.equal(scare.at, T0 + 1000);
+    // more ground given: the same scare, its quiet counted from the last of it
+    assert.equal(company.gaveGround(bot, T0 + 4000), scare); assert.equal(scare.at, T0 + 1000); assert.equal(scare.last, T0 + 4000);
+    // the player's place is kept while they are in view
+    bot.players.Caller.entity.position = new Vec3(2.5, 64, 3.5); company.withPlayer(bot, T0 + 4500);
+    assert.deepEqual(scare.position, { x: 2.5, y: 64, z: 3.5 });
+    // a scare long over is not carried on: the next ground given starts another, if a player is by
+    const later = T0 + 1000 + company.BACK_HOLDS_MS + 1;
+    assert.equal(company.gaveGround(bot, later), null, 'the company of a quarter of an hour ago is nobody');
+    assert.equal(bot._scare, undefined);
+    // no player within the distance that keeps it up at night: no company, no scare
+    const far = scene({ at: [6.5, 64, 0.5], player: [6.5 + company.STAY_UP + 2, 64, 0.5] }).bot;
+    assert.equal(company.withPlayer(far, T0), null); assert.equal(company.gaveGround(far, T0 + 100), null);
+    // company seen half a minute ago and more is not company: the bot went off to work since
+    const worked = scene({ at: [6.5, 64, 0.5] }).bot; company.withPlayer(worked, T0);
+    assert.equal(company.gaveGround(worked, T0 + company.WITH_MS + 1), null);
+    // a request or a stop ends it
+    const asked = scene({ at: [6.5, 64, 0.5] }).bot; company.withPlayer(asked, T0); company.gaveGround(asked, T0 + 10);
+    company.letGo(asked); assert.equal(asked._scare, undefined); assert.equal(asked._company, undefined);
+  });
+
+  await check('the walk back is due once the bot has given no ground for three seconds, is off from its player, and no monster is about them', async () => {
+    const scared = (over = {}) => { const s = scene({ at: [26.5, 64, 0.5], ...over }); company.withPlayer(s.bot, T0); s.bot.entity.position = new Vec3(20.5, 64, 0.5); const scare = company.gaveGround(s.bot, T0); return { ...s, scare }; };
+    const day = { dark: false }, quiet = T0 + company.BACK_QUIET_MS;
+    let { bot, scare } = scared();
+    assert.equal(company.backDue(bot, { ...day, now: quiet - 1 }), null, 'still giving ground a moment ago');
+    assert.equal(company.backDue(bot, { ...day, now: quiet }), scare, '20 blocks off and quiet');
+    assert.equal(company.backDue(bot, { ...day, now: quiet, hostileNear: (at, blocks) => blocks === company.NEAR_PLAYER && at.x === 0.5 }), null, 'a monster by the player: not yet');
+    assert.equal(bot._scare, scare, 'and the scare is kept for when it is gone');
+    // a walk made: not another for twenty seconds, and three in all
+    scare.tries = 1; scare.triedAt = quiet;
+    assert.equal(company.backDue(bot, { ...day, now: quiet + company.BACK_RETRY_MS - 1 }), null);
+    assert.equal(company.backDue(bot, { ...day, now: quiet + company.BACK_RETRY_MS }), scare);
+    scare.tries = company.BACK_TRIES;
+    assert.equal(company.backDue(bot, { ...day, now: quiet + 60000 }), null); assert.equal(bot._scare, undefined, 'three walks failed: let go');
+    // back with them already (it ran four blocks, or the player came over): nothing to walk, and the scare is over
+    ({ bot, scare } = scared()); bot.entity.position = new Vec3(0.5 + company.BACK_OFF - 1, 64, 0.5);
+    assert.equal(company.backDue(bot, { ...day, now: quiet }), null); assert.equal(bot._scare, undefined);
+    // the player out of view: by day to where they were last seen, by night not at all (the shelter comes first)
+    ({ bot, scare } = scared()); bot.players.Caller.entity = null;
+    assert.equal(company.backDue(bot, { dark: false, now: quiet }), scare); assert.deepEqual(scare.position, { x: 0.5, y: 64, z: 0.5 });
+    assert.equal(company.backDue(bot, { dark: true, now: quiet }), null); assert.equal(bot._scare, scare, 'kept for the morning');
+    bot.players.Caller.entity = { position: new Vec3(0.5, 64, 0.5) };
+    assert.equal(company.backDue(bot, { dark: true, now: quiet }), scare, 'in view, the night does not hold it');
+    // the player gone from the game, or the scare a quarter of an hour old: let go
+    bot.players = {}; assert.equal(company.backDue(bot, { ...day, now: quiet }), null); assert.equal(bot._scare, undefined);
+    ({ bot, scare } = scared());
+    assert.equal(company.backDue(bot, { ...day, now: T0 + company.BACK_HOLDS_MS + 1 }), null); assert.equal(bot._scare, undefined);
+    assert.equal(company.backDue(scene().bot, { ...day, now: quiet }), null, 'no scare, no walk');
+  });
+
+  await check('the walk back is the bot\'s own errand: nobody is asked before another player\'s request replaces it, and it is not announced on arriving', async () => {
+    const handoff = require('../src/handoff').createHandoff();
+    const online = () => true;
+    assert.equal(handoff.holder({ active: { goal: { kind: 'come', from: 'Ann' } }, from: 'Ben', online }), 'Ann', 'a call a player made is theirs');
+    assert.equal(handoff.holder({ active: { goal: { kind: 'come', from: 'Ann', back: true } }, from: 'Ben', online }), null);
+    const { completion } = require('../src/speech');
+    assert.equal(completion({ kind: 'come', target: 'Ann', from: 'Ann', back: true }), '');
+    assert.match(completion({ kind: 'come', target: 'Ann', from: 'Ann' }), /I'm here with Ann/);
+    assert.match(completion({ kind: 'come', target: 'Ann', from: 'Ann', back: true, callerLeft: true }), /has left the game/);
+  });
+
+  // ---------------------------------------------------------------- to bed when the players go
+  const bedtime = require('../src/bedtime');
+  const Block = require('prismarine-block')(registry);
+  const POSE = registry.entitiesByName.player.metadataKeys.indexOf('pose');
+  const NIGHT = 14000;
+  // A bed lying north to south: its foot at (x, 64, z), its pillow one block north of it.
+  const bed = (world, x, z, { occupied = false } = {}) => {
+    for (const [part, dz] of [['foot', 0], ['head', -1]]) world.setBlockStateId(new Vec3(x, 64, z + dz), Block.fromProperties(registry.blocksByName.red_bed.id, { facing: 'north', occupied, part }, 0).stateId);
+    return { foot: new Vec3(x, 64, z), head: new Vec3(x, 64, z - 1) };
+  };
+  // The bot at night with its player in a bed, six blocks off.
+  function bedroom({ at = [6.5, 64, 0.5], time = NIGHT } = {}) {
+    const s = scene({ at, player: [0.5, 64.6875, -0.5] });
+    const { bot, caller } = s, said = [], slept = [], during = [];
+    bed(bot.world, 0, 0, { occupied: true });
+    caller.metadata = []; caller.metadata[POSE] = 2;
+    bot.time = { timeOfDay: time, day: 3 };
+    bot.findBlocks = ({ matching, maxDistance, count }) => {
+      const ids = new Set([].concat(matching)), c = bot.entity.position.floored(), r = Math.ceil(maxDistance), out = [];
+      for (let x = c.x - r; x <= c.x + r; x++) for (let z = c.z - r; z <= c.z + r; z++) { const p = new Vec3(x, 64, z), b = bot.blockAt(p); if (b && ids.has(b.type) && p.distanceTo(bot.entity.position) <= maxDistance) out.push(p); }
+      return out.slice(0, count);
+    };
+    bot.pathfinder.movements = { canDig: true, allow1by1towers: true, scafoldingBlocks: [1, 2] };
+    bot.isSleeping = false; bot._survivalState = {};
+    bot.sleep = async block => { slept.push(block.position.clone()); bot.isSleeping = true; };
+    bot.wake = async () => { bot.isSleeping = false; };
+    const navigate = async (b, t, goal, options) => { during.push({ ...b.pathfinder.movements, options }); b.entity.position = new Vec3(goal.x + 0.5, goal.y, goal.z + 0.5); };
+    return { ...s, said, slept, during, navigate, opts: { navigate, goals, say: line => said.push(line), log: () => {} } };
+  }
+
+  await check('a player in bed is known by the pose the game sends, or by the bed they lie in', async () => {
+    assert.ok(POSE >= 0, 'the registry names the pose');
+    const { bot, caller } = bedroom();
+    assert.equal(bedtime.asleep(bot, caller), true);
+    caller.metadata[POSE] = 0; assert.equal(bedtime.asleep(bot, caller), true, 'no pose, but at the pillow of an occupied bed');
+    bed(bot.world, 0, 0, { occupied: false }); assert.equal(bedtime.asleep(bot, caller), false, 'standing on a bed nobody lies in');
+    caller.position = new Vec3(3.5, 64, 3.5); caller.metadata[POSE] = 2; assert.equal(bedtime.asleep(bot, caller), true, 'the pose alone');
+    caller.metadata = undefined; assert.equal(bedtime.asleep(bot, caller), false);
+    assert.equal(bedtime.asleep(bot, null), false);
+  });
+
+  await check('all asleep is every other player in the game, each one in view; nobody else in the game is nobody to go to bed with', async () => {
+    const { bot } = bedroom();
+    assert.equal(bedtime.allAsleep(bot), true);
+    bot.players.Ben = { entity: { position: new Vec3(3.5, 64, 3.5), metadata: [] } };
+    assert.equal(bedtime.allAsleep(bot), false, 'one of two is up');
+    bot.players.Ben.entity.metadata[POSE] = 2; assert.equal(bedtime.allAsleep(bot), true);
+    bot.players.Ben.entity = null; assert.equal(bedtime.allAsleep(bot), false, 'out of view is not known to be asleep');
+    bot.players.Ben.gamemode = 3; assert.equal(bedtime.allAsleep(bot), true, 'one only looking on is not counted');
+    bot.players = { Jev: { entity: bot.entity } }; assert.equal(bedtime.allAsleep(bot), false);
+  });
+
+  await check('the free beds within sixteen blocks, nearest first: whole, nobody in them, a cell to stand in beside the foot', async () => {
+    const { bot, set } = bedroom();
+    assert.deepEqual(bedtime.freeBeds(bot), [], 'the only bed is the player\'s');
+    const near = bed(bot.world, 4, 3), further = bed(bot.world, -4, 6);
+    bed(bot.world, 6.5 + bedtime.BED_REACH + 2, 0);
+    const found = bedtime.freeBeds(bot);
+    assert.deepEqual(found.map(b => [b.foot.x, b.foot.z]), [[4, 3], [-4, 6]]);
+    assert.ok(found[0].head.equals(near.head)); assert.ok(!found[0].stand.equals(near.head) && found[0].stand.distanceTo(near.foot) === 1);
+    // walled in on the three open sides of its foot: no cell to stand in, so it is not offered
+    for (const [x, z] of [[-5, 6], [-3, 6], [-4, 7]]) { set(x, 64, z, 'stone'); set(x, 65, z, 'stone'); }
+    assert.deepEqual(bedtime.freeBeds(bot).map(b => [b.foot.x, b.foot.z]), [[4, 3]]);
+    assert.ok(further);
+    // half a bed is no bed
+    bot.world.setBlockStateId(near.head, registry.blocksByName.air.defaultState);
+    assert.deepEqual(bedtime.freeBeds(bot), []);
+    bot.game.dimension = 'the_nether'; bed(bot.world, 4, 3); assert.deepEqual(bedtime.freeBeds(bot), [], 'a bed is lain in only in the Overworld');
+  });
+
+  await check('bed is due at night with every player in one, and not by day, in bed already, or after two walks that failed', async () => {
+    const { bot, caller } = bedroom();
+    assert.equal(bedtime.due(bot, T0), true);
+    bot.time.timeOfDay = 6000; assert.equal(bedtime.due(bot, T0), false, 'by day');
+    bot.isRaining = true; bot.thunderState = 1; assert.equal(bedtime.due(bot, T0), true, 'a thunderstorm lets a bed be lain in');
+    bot.isRaining = false; bot.time.timeOfDay = NIGHT;
+    caller.metadata[POSE] = 0; bed(bot.world, 0, 0); assert.equal(bedtime.due(bot, T0), false, 'the player is up');
+    caller.metadata[POSE] = 2;
+    bot.isSleeping = true; assert.equal(bedtime.due(bot, T0), false); bot.isSleeping = false;
+    const night = bedtime.nightOf(bot); night.at = T0; assert.equal(bedtime.due(bot, T0 + bedtime.RETRY_MS - 1), false, 'looked a moment ago');
+    assert.equal(bedtime.due(bot, T0 + bedtime.RETRY_MS), true);
+    night.tries = bedtime.TRIES; assert.equal(bedtime.due(bot, T0 + 60000), false);
+    bot.time.day = 4; assert.equal(bedtime.due(bot, T0 + 60000), true, 'another night, another record');
+  });
+
+  await check('to bed: the walk digs, pillars and bridges nothing; the bot lies down, keeps the bed as its respawn, and is up when its player is', async () => {
+    const { bot, caller, said, slept, during, opts } = bedroom();
+    const spare = bed(bot.world, 4, 3);
+    const run = bedtime.toBed(bot, task, opts);
+    for (let i = 0; i < 50 && !bot.isSleeping; i++) await new Promise(r => setTimeout(r, 20));
+    assert.equal(bot.isSleeping, true);
+    assert.equal(during.length, 1);
+    assert.deepEqual([during[0].canDig, during[0].allow1by1towers, during[0].scafoldingBlocks], [false, false, []]);
+    assert.equal(during[0].options.stopWhen(), false); assert.equal(during[0].options.sprint, true);
+    assert.deepEqual(bot.pathfinder.movements, { canDig: true, allow1by1towers: true, scafoldingBlocks: [1, 2] }, 'put back after the walk');
+    assert.ok(slept[0].equals(spare.foot)); assert.ok(bot.entity.position.distanceTo(spare.foot.offset(0.5, 0, 0.5)) <= 1.5, 'beside the foot');
+    assert.deepEqual({ ...bot._survivalState.spawnBed, at: undefined }, { name: 'red_bed', foot: { x: 4, y: 64, z: 3 }, head: { x: 4, y: 64, z: 2 }, at: undefined, guest: true });
+    assert.deepEqual(said, ['Good night!']);
+    // the player gets up: so does the bot
+    caller.metadata[POSE] = 0; bed(bot.world, 0, 0, { occupied: false });
+    const result = await run;
+    assert.equal(result.outcome, 'slept'); assert.equal(bot.isSleeping, false);
+    assert.equal(bedtime.nightOf(bot).tries, 0, 'a night in bed is not a walk that failed');
+  });
+
+  await check('to bed: morning or something coming for it ends the night in bed, and a cancel leaves the bot on its feet', async () => {
+    for (const end of ['morning', 'trouble', 'cancel']) {
+      const { bot, opts } = bedroom(); bed(bot.world, 4, 3);
+      let threat = false; const own = { cancelled: false, check() { if (this.cancelled) throw Object.assign(new Error('cancelled'), { name: 'Cancelled' }); } };
+      const run = bedtime.toBed(bot, own, { ...opts, trouble: () => threat }).catch(err => err);
+      for (let i = 0; i < 50 && !bot.isSleeping; i++) await new Promise(r => setTimeout(r, 20));
+      assert.equal(bot.isSleeping, true, end);
+      if (end === 'morning') bot.time.timeOfDay = 100; else if (end === 'trouble') threat = true; else own.cancelled = true;
+      const result = await run;
+      assert.equal(bot.isSleeping, false, end);
+      if (end === 'cancel') assert.equal(result.name, 'Cancelled'); else assert.equal(result.outcome, 'slept', end);
+    }
+    // trouble before it has set out: no walk
+    const { bot, during, opts } = bedroom(); bed(bot.world, 4, 3);
+    assert.equal((await bedtime.toBed(bot, task, { ...opts, trouble: () => true })).outcome, 'stopped'); assert.equal(during.length, 0);
+  });
+
+  await check('to bed with no free bed in reach: said once a night, and the bot stays up; a bed that will not have it is left after two walks', async () => {
+    const { bot, said, during, opts } = bedroom();
+    assert.equal((await bedtime.toBed(bot, task, opts)).outcome, 'no_bed');
+    assert.equal((await bedtime.toBed(bot, task, opts)).outcome, 'no_bed');
+    assert.deepEqual(said, ["There's no free bed near here, so I'll stay up and keep watch."]);
+    assert.equal(during.length, 0); assert.equal(bedtime.nightOf(bot).tries, 0, 'looking is not a walk');
+    assert.equal(bedtime.due(bot), false, 'not looked for again at once'); assert.equal(bedtime.due(bot, Date.now() + bedtime.RETRY_MS), true, 'a bed put down for it later is found');
+    // the game refuses the bed
+    const refused = bedroom(); bed(refused.bot.world, 4, 3);
+    refused.bot.sleep = async () => { throw new Error('there are monsters nearby'); };
+    const first = await bedtime.toBed(refused.bot, task, refused.opts);
+    assert.equal(first.outcome, 'refused'); assert.match(first.reason, /monsters nearby/);
+    assert.equal(refused.bot._survivalState.spawnBed, undefined, 'not lain in: no respawn recorded');
+    await bedtime.toBed(refused.bot, task, refused.opts);
+    assert.deepEqual(refused.said, ["I can't get into the free bed (there are monsters nearby), so I'll stay up."]);
+    assert.equal(bedtime.nightOf(refused.bot).tries, 2); assert.equal(bedtime.due(refused.bot, Date.now() + 60000), false);
+    // no way to it: the walk fails, nothing is dug
+    const walled = bedroom(); bed(walled.bot.world, 4, 3);
+    const none = await bedtime.toBed(walled.bot, task, { ...walled.opts, navigate: async () => { throw new Error('No path to the goal'); } });
+    assert.equal(none.outcome, 'no_way'); assert.equal(walled.bot.isSleeping, false);
+    assert.deepEqual(walled.bot.pathfinder.movements, { canDig: true, allow1by1towers: true, scafoldingBlocks: [1, 2] });
+  });
+
+  await check('the waiting bot\'s bedtime: begun when due, busy until it is on its feet again, and ended by a cancel', async () => {
+    const { bot, navigate } = bedroom(); bed(bot.world, 4, 3);
+    let busy = false;
+    const manager = bedtime.createBedtime({ bot, navigate, goals, isBusy: () => busy });
+    busy = true; assert.equal(manager.tick(), false, 'a request in hand'); busy = false;
+    bot.time.timeOfDay = 6000; assert.equal(manager.tick(), false, 'by day'); bot.time.timeOfDay = NIGHT;
+    bot.chat = () => {};
+    assert.equal(manager.tick(), true); assert.equal(manager.busy(), true); assert.equal(manager.tick(), true, 'one at a time');
+    for (let i = 0; i < 50 && !bot.isSleeping; i++) await new Promise(r => setTimeout(r, 20));
+    assert.equal(bot.isSleeping, true);
+    await manager.cancel();
+    assert.equal(bot.isSleeping, false); assert.equal(manager.busy(), false);
+    // a request arriving ends it too: busy says so, and the routine stops itself
+    assert.equal(manager.tick(), false, 'looked a moment ago');
+  });
+
+  await check('getting out of bed is asked for by name where the game names its actions, and by the library\'s own number where it does not', async () => {
+    const { fixWake } = require('../src/compatibility');
+    const written = [], own = async () => {};
+    const sleeper = { registry, isSleeping: true, entity: { id: 7 }, wake: own, _client: { write: (name, packet) => written.push([name, packet]) } };
+    assert.equal(fixWake(sleeper), true, '26.1 names them');
+    await sleeper.wake();
+    assert.deepEqual(written, [['entity_action', { entityId: 7, actionId: 'leave_bed', jumpBoost: 0 }]]);
+    sleeper.isSleeping = false; await assert.rejects(sleeper.wake(), /already awake/);
+    // what goes over the wire: action 0 for the name, where the library's number 2 is "stop sprinting" now
+    const serializer = require('minecraft-protocol').createSerializer({ state: 'play', isServer: false, version: '26.1', customPackets: {} });
+    const bytes = actionId => serializer.createPacketBuffer({ name: 'entity_action', params: { entityId: 7, actionId, jumpBoost: 0 } }).toString('hex');
+    assert.equal(bytes('leave_bed').slice(-4, -2), '00'); assert.equal(bytes(2), bytes('stop_sprinting'));
+    // an older game numbers them: the library's wake is left as it is
+    const old = { registry: require('prismarine-registry')('1.20.4'), isSleeping: true, entity: { id: 7 }, wake: own, _client: { write() {} } };
+    assert.equal(fixWake(old), false); assert.equal(old.wake, own);
+  });
+
+  await check('the players\' spare bed the bot lay in is its respawn and nothing more: no chest goes by it, and it is not taken up for a portal camp', async () => {
+    const { bedKitHome } = require('../src/bed-kit');
+    const camp = require('../src/portal-camp');
+    const { bot } = bedroom({ at: [6.5, 64, 0.5], time: 1000 });
+    bed(bot.world, 4, 0);
+    bot.game = { ...bot.game, gameMode: 'survival', dimension: 'overworld' };
+    bot.entities = { [bot.entity.id ?? 1]: bot.entity };
+    const record = guest => ({ name: 'red_bed', foot: { x: 4, y: 64, z: 0 }, head: { x: 4, y: 64, z: -1 }, at: new Date().toISOString(), ...(guest && { guest: true }) });
+    const goal = { kind: 'win', survival: {}, portals: [{ dimension: 'overworld', x: 204, y: 64, z: 0 }] };
+    // its own bed (a bed its own night was slept in): a home for a kit chest, and the bed a portal camp is made of
+    bot._survivalState = { spawnBed: record(false) };
+    assert.ok(bedKitHome(bot, goal), 'a bed of its own is a home');
+    const own = camp.offer(bot, goal);
+    assert.ok(own?.takeUp, 'a bed of its own is offered for the camp');
+    assert.deepEqual(own.takeUp.foot, { x: 4, y: 64, z: 0 });
+    // the same bed lain in as a guest: neither
+    bot._survivalState = { spawnBed: record(true) };
+    assert.equal(bedKitHome(bot, goal), null);
+    assert.equal(camp.offer(bot, goal), null, 'with no bed carried and only a guest bed, no camp is offered');
+  });
+
+  await check('the walk back waits while a monster is still after the bot', async () => {
+    const { bot } = scene({ at: [20.5, 64, 0.5], player: [0.5, 64, 0.5] });
+    bot._scare = { with: 'Caller', position: { x: 0.5, y: 64, z: 0.5 }, at: T0, last: T0, tries: 0, triedAt: 0 };
+    const at = T0 + company.BACK_QUIET_MS + 1;
+    assert.equal(company.backDue(bot, { now: at, dark: false, chased: () => true }), null);
+    assert.ok(bot._scare, 'the scare is kept for when the monster is gone');
+    assert.equal(company.backDue(bot, { now: at, dark: false, chased: () => false, hostileNear: () => true }), null);
+    assert.equal(company.backDue(bot, { now: at, dark: false, chased: () => false, hostileNear: () => false }), bot._scare);
+  });
+
   console.log(`\n${passed} checks passed`);
   process.exit(0);   // the decision layer's unanswered questions keep their timers
 })().catch(err => { console.error(err); process.exit(1); });

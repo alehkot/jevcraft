@@ -8116,6 +8116,8 @@ class Survival {
 
   async runAway(task, goal, save, danger, { gain = 4, only = false } = {}) {
     const bot = this.bot;
+    // Ground given to monsters while waiting with a player is a scare to come back from (company.js gaveGround).
+    try { require('./company').gaveGround(bot); } catch (_) { /* no walk back is owed */ }
     const movements = bot.pathfinder.movements;
     const previous = { canDig: movements.canDig, allow1by1towers: movements.allow1by1towers, allowSprinting: movements.allowSprinting };
     Object.assign(movements, { canDig: false, allow1by1towers: false, allowSprinting: true });
@@ -10508,7 +10510,9 @@ class Survival {
       }
       if (slept && [site.foot, site.head].every(p => isBed(bot.blockAt(p)))) {
         const was = this.state.spawnBed;
-        this.state.spawnBed = { name: item || bot.blockAt(site.foot)?.name || 'bed', foot: { x: site.foot.x, y: site.foot.y, z: site.foot.z }, head: { x: site.head.x, y: site.head.y, z: site.head.z }, at: new Date().toISOString() };
+        // A bed lain in as a guest (bedtime.js) stays one when the bot's own night is slept in it too.
+        const guest = !!was?.guest && was.foot?.x === site.foot.x && was.foot?.y === site.foot.y && was.foot?.z === site.foot.z;
+        this.state.spawnBed = { name: item || bot.blockAt(site.foot)?.name || 'bed', foot: { x: site.foot.x, y: site.foot.y, z: site.foot.z }, head: { x: site.head.x, y: site.head.y, z: site.head.z }, at: new Date().toISOString(), ...(guest && { guest: true }) };
         if (leaveAsSpawn) {
           this.report(goal, save, { action: 'spawn_bed_left', bed: item, at: { ...site.foot }, ...(was && (was.foot.x !== site.foot.x || was.foot.y !== site.foot.y || was.foot.z !== site.foot.z) ? { before: { ...was.foot } } : {}) });
           bot.chat?.(secondBed ? `This bed stays here as my respawn point; making another to carry.` : `This bed stays here as my respawn point.`);

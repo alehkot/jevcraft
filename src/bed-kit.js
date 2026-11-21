@@ -31,6 +31,8 @@ function bedKitHome(bot, goal) {
   if (!goal || !overworld(bot) || (bot.game?.gameMode && bot.game.gameMode !== 'survival')) return null;
   const sb = bot._survivalState?.spawnBed?.foot;
   if (!sb || !Number.isFinite(sb.x)) return null;
+  // A bed lain in as a guest (bedtime.js: the players' spare bed) is the respawn and nothing more: no chest goes by it.
+  if (bot._survivalState.spawnBed.guest) return null;
   const h = goal.survival?.home;
   if (h?.stash?.position && d3(h.stash.position, sb) <= HOME_COVERS) return null;
   // A read changes nothing (note 2637; the project review of 2026-10-30, item 6): the kit chest by a bed the spawn has

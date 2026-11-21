@@ -87,7 +87,8 @@ function offer(bot, goal, { now = Date.now() } = {}) {
     // from its bed three seconds on and never within 16 again; mid-full-19-campdrill-24, 25585, 2026-11-11 15:24Z). A
     // bed out of the loaded blocks is taken as standing: the taking up says so if it is not.
     const back = sb?.foot ? Math.round(Math.hypot(sb.foot.x - here.x, sb.foot.z - here.z)) : null;
-    if (sb?.foot && back <= BED_BACK && flat(portal, here) <= FAR_BED) {
+    // Not a bed lain in as a guest (bedtime.js): the players' spare bed stays in their house.
+    if (sb?.foot && !sb.guest && back <= BED_BACK && flat(portal, here) <= FAR_BED) {
       let block = null; try { block = bot.blockAt(new Vec3(sb.foot.x, sb.foot.y, sb.foot.z)); } catch (_) { block = null; }
       if (!block || /_bed$/.test(block.name || '')) { takeUp = { foot: { ...sb.foot }, name: block?.name || sb.name || 'bed', back }; m.bed = takeUp.name; }
     }

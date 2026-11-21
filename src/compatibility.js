@@ -74,6 +74,21 @@ function boundSyncWindow(bot) {
   bot._syncWindow = bounded;
 }
 
+// Out of bed (2026-11-21, on 26.1): mineflayer's wake() writes the action by its old number, 2, which since the game
+// dropped the two sneak actions is "stop sprinting". A bot told to get up stayed in its bed, asleep by its own flag,
+// until the game woke it: seen with a second player who rose at night, where nothing wakes the bot but itself. Where
+// the protocol names the actions, "leave bed" is sent by name. True when the bot's wake was replaced.
+function fixWake(bot) {
+  const fields = bot.registry?.protocol?.play?.toServer?.types?.packet_entity_action?.[1];
+  const action = Array.isArray(fields) && fields.find(f => f.name === 'actionId');
+  if (action?.type?.[0] !== 'mapper' || !Object.values(action.type[1].mappings || {}).includes('leave_bed')) return false;
+  bot.wake = async () => {
+    if (!bot.isSleeping) throw new Error('already awake');
+    bot._client.write('entity_action', { entityId: bot.entity.id, actionId: 'leave_bed', jumpBoost: 0 });
+  };
+  return true;
+}
+
 function compatibilityPlugin(bot) {
   boundSyncWindow(bot);
   bot.once?.('spawn', () => boundSyncWindow(bot));
@@ -103,6 +118,7 @@ function compatibilityPlugin(bot) {
     }
   });
   bot.once?.('spawn', () => fixPlayerDimensions(bot.physics));
+  fixWake(bot); bot.once?.('spawn', () => fixWake(bot));
   bot.on?.('forcedMove', () => { try { clearHairlineOverlap(bot); } catch (_) { /* no world yet */ } });
   const commandFields = bot.registry?.protocol?.play?.toServer?.types?.packet_client_command?.[1];
   const command = Array.isArray(commandFields) && commandFields.find(f => f.name === 'actionId');
@@ -217,4 +233,4 @@ function fixPathfinderResults() {
   AStar.prototype[patched] = true;
 }
 
-module.exports = { clearHairlineOverlap, boundSyncWindow, fixMiningMaterials, compatibilityPlugin, fixPathfinderResults, fixPlayerDimensions };
+module.exports = { clearHairlineOverlap, boundSyncWindow, fixMiningMaterials, compatibilityPlugin, fixPathfinderResults, fixPlayerDimensions, fixWake };

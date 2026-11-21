@@ -20,7 +20,8 @@ function createHandoff({ now = Date.now, questionMs = 90000, approvalMs = 120000
     // Whose work would be replaced, or null when nothing needs asking.
     holder({ active, from, online = () => true }) {
       const goal = active && !active.idle ? active.goal : null;
-      if (!goal || goal.dream || !goal.from || same(goal.from, from) || !online(goal.from)) return null;
+      // A walk back to a player after monsters (company.js backDue) is the bot's own errand: nobody's work to ask about.
+      if (!goal || goal.dream || goal.back || !goal.from || same(goal.from, from) || !online(goal.from)) return null;
       return goal.from;
     },
     approved(asker, request) {
