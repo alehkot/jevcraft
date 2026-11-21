@@ -64,7 +64,7 @@ const { batchPlan, remainingOutputs } = require('./batch-plan');
 const { visitPlace } = require('./memory');
 const { selectBundleBatch, batchOutputs } = require('./bundle-batch');
 const { remainingBuildBatch, materialCounts, createBuildBatch } = require('./build-batch');
-const { isBed, bedFloor, matchesBuildBlock, placementGoal, buildCellComplete, buildFootprint, blockOwnership } = require('./build-blocks');
+const { isBed, bedFloor, matchesBuildBlock, placementGoal, buildCellComplete, buildFootprint, blockOwnership, placementFacing, placementPitch, assertPlacementFootprint } = require('./build-blocks');
 const { isDoor, doorPairMatches } = require('./doors');
 const interactableBlocks = new Set(require('mineflayer-pathfinder/lib/interactable.json'));
 const { chooseConstructionWork, approachConstruction } = require('./construction-access');
@@ -1931,6 +1931,7 @@ async function place(bot, task, p, material, { face, properties, stay = false, r
   task.check(); checkAir(bot);
   const cell = { ...p, material, properties };
   if (buildCellComplete(bot, cell)) return;
+  if (properties?.type === 'single') assertPlacementFootprint(bot, p, material);
   // Walling in on a ledge: a cell that needs the bot to step aside, back
   // off or walk closer is left, never moved for. Sealing on a Nether ledge
   // with a piglin about, the dream run stepped back off it into the lava
@@ -1998,10 +1999,11 @@ async function place(bot, task, p, material, { face, properties, stay = false, r
       // looking at the click point from a diagonal rounded a west stair to
       // south: the build then waited on a block that could never match. Face
       // the wanted direction exactly and click without turning again.
-      const facingYaw = PLACEMENT_YAW[properties?.facing];
+      // A furnace or a chest turns its front to the player: looked the other way (build-blocks.js placementFacing).
+      const facingYaw = PLACEMENT_YAW[placementFacing(material, properties?.facing)];
       if (facingYaw !== undefined) {
         const target = face?.to || ref.position.offset(0.5, 0.5, 0.5), eyes = bot.entity.position.offset(0, 1.62, 0);
-        await bot.look(facingYaw, Math.atan2(target.y - eyes.y, Math.hypot(target.x - eyes.x, target.z - eyes.z)), true);
+        await bot.look(facingYaw, placementPitch(material, Math.atan2(target.y - eyes.y, Math.hypot(target.x - eyes.x, target.z - eyes.z))), true);
         // The turn reaches the server with the next movement packet, but the
         // click goes at once: a stair placed straight after walking took the
         // walking direction. Let the turn go out first.
