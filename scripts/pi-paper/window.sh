@@ -42,8 +42,11 @@ for f in "$guard/nw.sh" "$guard/window.sh" "$guard/doorknock.py" "$TESTCOPY/neww
 if ((check)); then export JEV_REVIEW_VALIDATE_ONLY=1; fi
 "$node" "$scripts/fixture.cjs"
 if ((check)); then echo "Private fixture and reviewer ready at $TESTCOPY"; exit 0; fi
-# All fixture directories and worktrees operate the same system services.
-exec 9>>/tmp/jevcraft-minecraft-paper-window.lock
+# All checkouts, including systemd units with a private /tmp, operate the
+# same live services. A directory lets different users open the lock read-only.
+lock=/run/lock/jevcraft-minecraft-paper-window
+mkdir -p -m 755 "$lock"
+exec 9<"$lock"
 flock -n 9 || { echo 'Another private window is active.' >&2; exit 2; }
 TESTCOPY=$(JEV_REVIEW_PREPARE="$mode" "$node" "$scripts/fixture.cjs")
 "$node" "$scripts/fixture.cjs"
