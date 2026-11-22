@@ -717,20 +717,26 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       request = `${bot.username} ${location.task}`;
       address = parseAddress(request, bot.username);
     }
-    const locationIntent = address.explicit && !literal && require('./home-location').locationRequest(address.text);
+    const locationIntent = address.explicit && !literal ? require('./home-location').locationRequest(address.text) : null;
+    const scope = locationIntent && require('./home-location').homeScope(address.text);
     if (locationIntent && !locationIntent.startsWith('visit_')) {
-      if (locationIntent === 'set') bot.chat(locations.setHome(from, bot.players[from]?.entity?.position, bot.game.dimension));
-      else locations.refresh().then(() => { if (!ended) bot.chat(locations.describe(from, locationIntent)); });
+      const reply = message => {
+        if (scope === 'personal' || (!scope && ['home', 'both'].includes(locationIntent) && locations.home(from, 'personal'))) bot.whisper(from, message);
+        else bot.chat(message);
+      };
+      if (locationIntent.startsWith('set')) reply(locations.setHome(from, bot.players[from]?.entity?.position, bot.game.dimension, locationIntent));
+      else if (locationIntent === 'forget_home') reply(locations.forgetHome(from, scope));
+      else locations.refresh().then(() => { if (!ended) reply(locations.describe(from, locationIntent, scope)); });
       return;
     }
     const directDiscovery = data.workSite && discoveryAt(address.text, bot.registry);
-    const action = address.explicit && !literal && require('./companion-actions').companionAction(address.text);
+    const action = address.explicit && !literal && require('./companion-actions').companionAction(address.text, data.workSite);
     const knownVisit = locationIntent?.startsWith('visit_');
     const visitLocation = async () => {
       if (locationIntent === 'visit_respawn') await locations.refresh();
       const home = locationIntent === 'visit_home';
-      const to = home ? locations.home(from) : locations.respawn();
-      if (!to?.position) return {kind:'clarify', from, request, message:locations.describe(from, home ? 'home' : 'respawn')};
+      const to = home ? locations.home(from, scope) : locations.respawn();
+      if (!to?.position) return {kind:'clarify', from, request, message:locations.describe(from, home ? 'home' : 'respawn', scope)};
       const {dimension, ...position} = to.position;
       return {kind:'visit',from,request,destination:{label:home ? 'home' : 'my respawn point',position,dimension}};
     };
@@ -801,7 +807,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
           discoveryResolution: spec.discoveryResolution, buildContinuation: spec.buildContinuation, usage: spec.usage, latencyMs: spec.latencyMs });
       }
       if (!spec || revision !== generation) return;
-      if (data.workSite && ['build', 'house', 'obtain', 'craft', 'bundle', 'find', 'come', 'light_area', 'climb_ladder'].includes(spec.kind)) {
+      if (data.workSite && ['build', 'house', 'obtain', 'craft', 'bundle', 'find', 'come', 'light_area', 'climb_ladder', 'place_at_site'].includes(spec.kind)) {
         spec.workSite = data.workSite;
         if (spec.kind === 'house') spec.kind = 'build';
         if (spec.kind === 'build') spec.buildAnchor = { ...data.workSite.position };
@@ -950,6 +956,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         spec.kind === 'house' ? `Building a small ${spec.material} house with a floor, doorway and roof.` :
         ['obtain', 'craft'].includes(spec.kind) ? `I'll get ${spec.count} ${spec.item.replaceAll('_', ' ')}${spec.deliver ? ` for ${from}` : ''}.` :
         spec.kind === 'light_area' ? "I'll check the ground for dark spots and light them." :
+        spec.kind === 'place_at_site' ? `I'll place the ${spec.item} beside the ${spec.workSite.name.replaceAll('_', ' ')}.` :
         spec.kind === 'climb_ladder' ? `I'll climb ${spec.direction} the nearby ladder.` :
         spec.kind === 'visit' ? `I'll head to ${spec.destination.label}.` :
         spec.kind === 'come' ? `Coming to ${spec.target}.` : spec.kind === 'follow' ? `Following ${spec.target}; say Jev stop to stop.` :

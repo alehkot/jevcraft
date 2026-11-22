@@ -10,6 +10,7 @@ const { drawingForEdit } = require('../src/house-details');
 const { houseBlueprint, interpret } = require('../src/objectives');
 const { designedBuildStep } = require('../src/work');
 const { Task } = require('../src/skills');
+const { starterHouse, useAvailableBed } = require('../src/starter-house');
 
 function landscape(biome) {
   const sand = biome === 'desert';
@@ -78,6 +79,85 @@ test('the designer receives the actual requested site, biome, slopes, water and 
     const explicit = designStarterHouse(bot, { starterBeds: 2, material: 'dark_oak_planks', buildAnchor: anchor });
     assert.ok(explicit.materials.dark_oak_planks > 100);
   }
+});
+
+test('the exterior door must lead through a standing aisle to each furnished room', () => {
+  const source = () => starterHouse(2, 'oak_planks', 'oak', ['white_bed', 'white_bed']);
+  const check = drawing => checkStarterDesign(validateSchematic(drawing, registry), { sleepers: 2 });
+  check(source());
+  for (const [from, to, block] of [
+    [[3,1,1], [3,2,1], 'oak_planks'], [[3,2,1], [3,2,1], 'oak_planks'], [[3,0,1], [3,0,1], 'air']
+  ]) {
+    const drawing = source();
+    drawing.regions.push({ from, to, block });
+    assert.throws(() => check(drawing));
+  }
+});
+
+test('a previously approved inaccessible house is repaired before its first block', async () => {
+  const bot = landscape('snowy_taiga');
+  const reference = designStarterHouse(bot, { starterBeds: 2 });
+  const saved = structuredClone(reference.source);
+  saved.regions.push({ from: [3,1,1], to: [3,2,1], block: 'spruce_planks' });
+  const goal = { kind: 'build', starterBeds: 2, designAttempts: 4, starterReference: { sleepers: 2, source: reference.source },
+    design: { ...validateSchematic(saved, registry), backend: 'guide' }, designReview: { accepted: true } };
+  await designedBuildStep(bot, new Task('resume house'), goal, () => {});
+  assert.equal(goal.blueprint, undefined);
+  assert.equal(goal.design, undefined);
+  assert.equal(goal.designReview.accepted, false);
+  assert.deepEqual(goal.designDraft, saved);
+  // Stop as soon as the replacement drawing is persisted, before construction.
+  const stop = new Error('saved before work');
+  await assert.rejects(designedBuildStep(bot, new Task('use furnished plan'), goal, () => {
+    if (goal.design) throw stop;
+  }), e => e === stop);
+  assert.equal(goal.design.backend, 'starter-house');
+  checkStarterDesign(goal.design, goal.starterReference);
+});
+
+test('a cuboid of beds accepts independent colors at a world offset across a saved goal', () => {
+  const source = starterHouse(2, 'oak_planks', 'oak', ['white_bed', 'white_bed']);
+  source.regions = source.regions.filter(r => r.block !== 'white_bed');
+  source.regions.push({ from: [1,1,5], to: [2,1,5], block: 'white_bed', properties: { facing: 'south', half: null } });
+  // A valid model drawing can already be at either wire-format limit.
+  for (const color of ['red','green','blue','white','black','purple','brown','yellow','orange']) {
+    const block = color + '_concrete';
+    source.palette.push(block);
+    source.regions.unshift({from:[0,0,0],to:[0,0,0],block});
+  }
+  while (source.regions.length < 256) source.regions.unshift({from:[0,0,0],to:[0,0,0],block:'oak_planks'});
+  assert.equal(source.palette.length,16);
+  validateSchematic(source, registry, {fromPlanner:true});
+  const design = validateSchematic(source, registry), origin = { x: -10, y: 70, z: 3 };
+  const blocks = design.blocks.map(p => ({ ...p, x: p.x + origin.x, y: p.y + origin.y, z: p.z + origin.z }));
+  const feet = list => list.filter(p => p.properties?.part === 'foot').sort((a,b) => a.x - b.x);
+  let goal = { design, blueprint: { origin, blocks } };
+  for (const [i, color] of [[1, 'red_bed'], [0, 'blue_bed']]) {
+    const bot = { registry, inventory: { items: () => [{ name: color, count: 1 }] } };
+    assert(useAvailableBed(bot, goal, feet(goal.blueprint.blocks)[i]));
+    goal = JSON.parse(JSON.stringify(goal));
+    const expected = i === 1 ? ['white_bed', 'red_bed'] : ['blue_bed', 'red_bed'];
+    assert.deepEqual(feet(goal.blueprint.blocks).map(p => p.material), expected);
+    assert.deepEqual(feet(validateSchematic(goal.design.source, registry).blocks).map(p => p.material), expected);
+    assert.throws(() => validateSchematic(goal.design.source, registry, {fromPlanner:true}), /palette|region count/);
+  }
+});
+
+test('a distant unobserved worksite waits for a local survey before drawing', async () => {
+  const bot = landscape('desert'), read = bot.blockAt;
+  const anchor = { x: 500, y: 65, z: 400 }, goal = { kind: 'build', starterBeds: 2, buildAnchor: anchor };
+  let loaded = false;
+  bot.blockAt = p => Math.abs(p.x - anchor.x) <= 24 && !loaded ? null : read(p);
+  const survey = () => require('../src/designer').surveyForDesign(bot, anchor);
+  assert.throws(survey, /building site/);
+  await designedBuildStep(bot, new Task('return to the site'), goal, () => {});
+  assert.equal(goal.step.action, 'survey_build_site');
+  assert.equal(goal.starterReference, undefined);
+  assert.equal(goal.designAttempts, undefined);
+  loaded = true;
+  const world = survey();
+  assert.deepEqual(world.position, anchor);
+  assert.equal(world.biome, 'desert');
 });
 
 test('a stop during review persists the planner and drawing; resume reviews exactly that plan', async (t) => {

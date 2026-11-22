@@ -1,6 +1,6 @@
 'use strict';
 const { woodInView } = require('./built');
-const { buildPalette, validateSchematic } = require('./designer');
+const { buildPalette, bedPaintStart, validateSchematic } = require('./designer');
 const { Vec3 } = require('vec3');
 const { isBed, buildFootprint, buildCellComplete } = require('./build-blocks');
 const { woolCarried } = require('./home-base');
@@ -59,7 +59,8 @@ function designStarterHouse(bot, goal) {
 
 function checkStarterDesign(design, { sleepers, material }) {
   const { source, blocks, materials } = design, [w, h, d] = source.size;
-  const cell = (x, y, z) => blocks.find(p => p.x === x && p.y === y && p.z === z);
+  const byPosition = new Map(blocks.map(p => [[p.x, p.y, p.z].join(','), p]));
+  const cell = (x, y, z) => byPosition.get([x, y, z].join(','));
   const doors = blocks.filter(p => p.properties?.half === 'lower' && p.material.endsWith('_door'));
   const beds = blocks.filter(p => p.properties?.part === 'foot');
   const seats = blocks.filter(p => p.material.endsWith('_stairs') && p.properties?.half === 'bottom');
@@ -69,28 +70,43 @@ function checkStarterDesign(design, { sleepers, material }) {
   const covered = p => blocks.some(q => q.x === p.x && q.z === p.z && q.y > p.y + 1 && !q.companion && q.material !== 'torch');
   const sofa = seats.find(a => seats.some(b => a.material === b.material && a.properties.facing === b.properties.facing && a.y === b.y &&
     (['north', 'south'].includes(a.properties.facing) ? a.z === b.z && Math.abs(a.x - b.x) === 1 : a.x === b.x && Math.abs(a.z - b.z) === 1)));
-  const innerDoor = doors.find(p => p.x > 0 && p.z > 0 && p.x < w - 1 && p.z < d - 1);
-  // Check that the interior door actually divides the rooms. A door on a
-  // freestanding block in one large room cannot make a separate bedroom.
-  function room(start, openDoor) {
-    const queue = start ? [start] : [], reached = new Set();
-    for (let i=0; i<queue.length; i++) {
-      const p=queue[i], key=p.x+','+p.z;
-      if (p.x<1 || p.z<1 || p.x>=w-1 || p.z>=d-1 || reached.has(key)) continue;
-      const c=cell(p.x,p.y,p.z);
-      if (c && !(c===innerDoor && openDoor) && ![...beds,...seats,chest].includes(c) && c.material!=='torch' && !isBed(c.material)) continue;
-      reached.add(key);
-      for (const [dx,dz] of [[1,0],[-1,0],[0,1],[0,-1]]) queue.push({x:p.x+dx,y:p.y,z:p.z+dz});
+  const sides = [[0, -1], [0, 1], [-1, 0], [1, 0]];
+  const key = (x, z) => x + ',' + z;
+  const passable = b => !b || b.material === 'torch' || b.material.endsWith('_door');
+  const alongDoor = (b, dx, dz) => !b?.material.endsWith('_door') ||
+    (['north', 'south'].includes(b.properties.facing) ? dx === 0 : dz === 0);
+  // Both walks start outside the rooms. Furniture is usable from an adjacent
+  // standing cell; a chest or a row of beds cannot serve as the only aisle.
+  function walk(openDoors) {
+    const reached = new Set(), queue = [];
+    if (!doors.includes(entrance)) return reached;
+    const y = entrance.y;
+    queue.push(entrance);
+    for (let i = 0; i < queue.length; i++) {
+      const p = queue[i], from = cell(p.x, y, p.z);
+      for (const [dx, dz] of sides) {
+        const x = p.x + dx, z = p.z + dz, k = key(x, z);
+        if (x <= 0 || z <= 0 || x >= w - 1 || z >= d - 1 || reached.has(k)) continue;
+        const feet = cell(x, y, z), floor = cell(x, y - 1, z);
+        if (!floor || passable(floor) || isBed(floor.material) || !passable(feet) || !passable(cell(x, y + 1, z))) continue;
+        if ((!openDoors && feet?.material.endsWith('_door')) || !alongDoor(from, dx, dz) || !alongDoor(feet, dx, dz)) continue;
+        reached.add(k);
+        queue.push({ x, z });
+      }
     }
     return reached;
   }
-  const living=room(sofa,false), bedrooms=room(sofa,true);
-  const separate = beds.every(p=>!living.has(p.x+','+p.z) && bedrooms.has(p.x+','+p.z));
-  const lights=blocks.filter(p=>p.material==='torch');
-  const litRooms=lights.some(p=>living.has(p.x+','+p.z)) && lights.some(p=>!living.has(p.x+','+p.z) && bedrooms.has(p.x+','+p.z));
-  const roofed=[...bedrooms].every(key=>{const [x,z]=key.split(',').map(Number);return covered({x,y:sofa.y,z});});
+  const living = walk(false), interior = walk(true);
+  const usableFrom = (area, p) => p && p.y === entrance?.y &&
+    buildFootprint(p).some(c => sides.some(([dx, dz]) => area.has(key(c.x + dx, c.z + dz))));
+  const separate = usableFrom(living, sofa) && usableFrom(interior, chest) &&
+    beds.every(p => !usableFrom(living, p) && usableFrom(interior, p));
+  const lights = blocks.filter(p => p.material === 'torch' && p.y === entrance?.y);
+  const litRooms = lights.some(p => living.has(key(p.x, p.z))) &&
+    lights.some(p => interior.has(key(p.x, p.z)) && !living.has(key(p.x, p.z)));
+  const roofed = [...interior].every(k => { const [x, z] = k.split(',').map(Number); return covered({ x, y: entrance.y, z }); });
   if (w > 11 || d > 12 || h > 7 || blocks.length > 380 || !doors.includes(entrance) || (entrance.x !== 0 && entrance.z !== 0 && entrance.x !== w-1 && entrance.z !== d-1) ||
-      !innerDoor || !separate || !roofed || !litRooms ||
+      !separate || !roofed || !litRooms ||
       windows.length < 2 || (materials.torch || 0) < 2 || beds.length !== sleepers || !chest || !sofa ||
       ![...beds, chest, sofa].every(covered) || (material && !(materials[material] >= Math.min(w, d) * 2))) {
     throw new Error('Keep the compact furnished house from the reference: a roofed bedroom and living room, an exterior and an interior door, two windows and floor torches, a usable chest, a two-stair sofa, the requested wall material and bed count.');
@@ -123,9 +139,12 @@ function setBedMaterial(bot, goal, foot, material) {
   if (material === foot.material) return false;
   const { origin, blocks } = goal.blueprint;
   const source = structuredClone(goal.design.source);
-  const region = source.regions.find(r => isBed(r.block) && r.from[0] + origin.x === foot.x &&
-    r.from[1] + origin.y === foot.y && r.from[2] + origin.z === foot.z);
-  region.block = material;
+  const at = [foot.x - origin.x, foot.y - origin.y, foot.z - origin.z];
+  // Regions are applied in order. Only override this foot, including when
+  // the model drew several beds with one cuboid or overlaid an earlier one.
+  const region = source.regions.slice(bedPaintStart(source.regions)).findLast(r => at.every((n,i) => n === r.from[i]));
+  if (region) region.block = material;
+  else source.regions.push({ from: at, to: [...at], block: material, properties: { facing: foot.properties.facing, half: null } });
   source.palette = [...new Set(source.regions.map(r => r.block).filter(name => name !== 'air'))];
   Object.assign(goal.design, validateSchematic(source, bot.registry));
   for (const part of buildFootprint(foot)) {

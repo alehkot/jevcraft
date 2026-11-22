@@ -37,6 +37,7 @@ OFFLINE_SUITES=(
   test/build-beds.test.js
   test/starter-house.test.js
   test/house-planner.test.js
+  test/pi-paper-window.test.js
   test/home-location.test.js
   test/boats-ladders-light.test.js
   test/companion-location.test.js

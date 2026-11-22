@@ -33,6 +33,45 @@ function scene() {
 }
 const task = { check() {} };
 
+test('landmark placements survive a stop after the click and finish the requested count at the site', async () => {
+  const { bot, set } = scene(), anchor = new Vec3(4, 64, 4);
+  set(anchor, 'crafting_table');
+  const { interpret } = require('../src/objectives');
+  const workSite = { name: 'crafting_table', dimension: 'overworld', kind: 'block', position: { ...anchor } };
+  const goal = await interpret(null, 'Jev put two torches', 'Alex', 'Jev', { registry, workSite, builds: [] });
+  assert.equal(goal.kind, 'place_at_site');
+  assert.equal(goal.count, 2);
+  let supplied = 1, clicks = 0, saved;
+  const save = () => { saved = structuredClone(goal); };
+  bot.inventory.items = () => supplied ? [{ name: 'torch', count: supplied }] : [];
+  const actions = {
+    navigate: async () => { bot.entity.position = anchor.offset(1.5, 0, 1.5); },
+    available: p => bot.blockAt(p)?.name === 'air' && bot.blockAt(p.offset(0,-1,0))?.name === 'grass_block',
+    acquireStep: async () => { supplied++; },
+    place: async (_bot, _task, cell, item) => {
+      assert(cell.distanceTo(anchor) <= 4); assert(!cell.equals(anchor));
+      set(cell, item); supplied--; clicks++;
+      if (clicks === 1) throw new Error('interrupted after the server placed the torch');
+    }
+  };
+  await assert.rejects(site.placeAtSite(bot, task, goal, save, actions), /interrupted/);
+  const resumed = JSON.parse(JSON.stringify(saved));
+  const read = bot.blockAt;
+  const pending = new Vec3(resumed.pendingPlacement.x, resumed.pendingPlacement.y, resumed.pendingPlacement.z);
+  bot.entity.position = anchor.offset(300, 0, 0);
+  bot.blockAt = p => p.equals(pending) && bot.entity.position.distanceTo(anchor) > 10 ? null : read(p);
+  await site.placeAtSite(bot, task, resumed, () => {}, actions);
+  assert.equal(resumed.placedAtSite.length, 1);
+  assert.equal(supplied, 0);
+  for (let n = 0; n < 4 && !await site.placeAtSite(bot, task, resumed, () => {}, actions); n++) {}
+  assert.equal(clicks, 2);
+  assert.equal(resumed.placedAtSite.length, 2);
+  assert.equal(bot.blockAt(anchor).name, 'crafting_table');
+  assert.equal((await interpret(null, 'Jev put a chest', 'Alex', 'Jev', { registry, workSite })).kind, 'place_at_site');
+  const namedHouse = await interpret(null, 'Jev add a chest to the house', 'Alex', 'Jev', { registry, workSite, builds: [] });
+  assert.equal(namedHouse.kind, 'clarify');
+});
+
 test('chat enables, resizes, reports, disables and persists the preference independently of any job', t => {
   const { bot } = scene(), dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-range-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));

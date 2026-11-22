@@ -21,8 +21,9 @@ function locationRequest(raw) {
       text
     )
   )
-    return 'set';
-  if (/^(?:go|come|return|head)(?: back)? (?:to (?:your |our )?)?home$/.test(text)) return 'visit_home';
+    return homeScope(text) === 'personal' ? 'set_personal' : 'set';
+  if (/^forget (?:my|our|your) home$/.test(text)) return 'forget_home';
+  if (/^(?:go|come|return|head)(?: back)? (?:to (?:your |our |my )?)?home$/.test(text)) return 'visit_home';
   if (
     /^(?:go|return|head)(?: back)? to (?:the |your )?(?:(?:re)?spawn|resurrection) (?:point|spot|location)$/.test(text)
   )
@@ -40,8 +41,16 @@ function locationRequest(raw) {
   return home && spawn ? 'both' : home ? 'home' : spawn ? 'respawn' : null;
 }
 
+function homeScope(text) {
+  if (/\bmy home\b/i.test(text)) return 'personal';
+  if (/\b(?:our|your) home\b/i.test(text)) return 'shared';
+}
+
 function attachHomeLocation(bot, survival, memory, builds, save) {
   const state = (survival.state.locations ||= {});
+  // Old releases copied every marker into locations.home without recording
+  // consent to share it. Its owner's separately saved notebook entry survives.
+  if (Object.hasOwn(state, 'home')) { delete state.home; save(); }
   const pending = new Set();
   let lastReply = 0;
   let current = false,
@@ -164,13 +173,14 @@ function attachHomeLocation(bot, survival, memory, builds, save) {
     for (const finish of pending) finish();
     pending.clear();
   });
-  function home(from) {
-    const named = memory
-      .context(from)
-      .places?.filter((e) => /^home$/i.test(e.label))
-      .sort((a, b) => String(b.at).localeCompare(String(a.at)))[0];
+  function personalHome(from) {
+    return memory.context(from).places?.findLast(e => /^home$/i.test(e.label));
+  }
+  function home(from, scope) {
+    const named = scope !== 'shared' && personalHome(from);
     if (named) return { position: point(named.position, named.dimension), source: 'saved home' };
-    if (state.home) return { position: state.home, source: 'saved home' };
+    if (scope === 'personal') return null;
+    if (state.sharedHome) return { position: state.sharedHome, source: 'shared home' };
     const base = survival.state.home;
     if (base?.origin) return { position: point(base.origin, base.dimension || 'overworld'), source: 'home base' };
     const built = builds
@@ -220,15 +230,15 @@ function attachHomeLocation(bot, survival, memory, builds, save) {
       request();
     });
   }
-  function describe(from, what) {
-    const h = home(from),
+  function describe(from, what, scope) {
+    const h = home(from, scope),
       r = respawn(),
       messages = [];
     if (what === 'home' || what === 'both')
       messages.push(
         h
-          ? `My ${h.source} is at ${where(h.position)}.`
-          : 'I have not learned a home yet. Stand there and say “Jev set home here”.'
+          ? `${scope === 'personal' ? 'Your' : 'My'} ${h.source} is at ${where(h.position)}.`
+          : scope === 'personal' ? 'Stand at your home and say “Jev set my home here”.' : 'Stand at our home and say “Jev set home here”.'
       );
     if (what === 'respawn' || what === 'both') {
       const label =
@@ -250,13 +260,22 @@ function attachHomeLocation(bot, survival, memory, builds, save) {
     refresh,
     home,
     respawn,
-    setHome(from, position, dim) {
+    forgetHome(from, scope) {
+      if (scope === 'personal') {
+        const entries = memory.context(from).places.filter(e => /^home$/i.test(e.label));
+        for (const entry of entries) memory.forget(from, entry.id);
+        return entries.length ? 'I forgot your saved home.' : 'You have no saved home.';
+      }
+      update({ sharedHome: null });
+      return 'I cleared the shared home marker.';
+    },
+    setHome(from, position, dim, intent = 'set') {
       const p = point(position, dim);
       if (!p) return 'Stand where you want home and ask me again when I can see you.';
-      memory.rememberPlace(from, 'home', p, p.dimension);
-      update({ home: p });
-      return `I will remember home at ${where(p)}.`;
+      if (intent === 'set_personal') memory.rememberPlace(from, 'home', p, p.dimension);
+      else update({ sharedHome: p });
+      return `I will remember ${intent === 'set_personal' ? 'your' : 'our'} home at ${where(p)}.`;
     }
   };
 }
-module.exports = { attachHomeLocation, locationRequest };
+module.exports = { attachHomeLocation, locationRequest, homeScope };

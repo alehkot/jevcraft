@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ ${1:-} == --help ]]; then
-  echo 'Usage: window.sh [--check | fittings | craft | furnished | fresh | resume | ladder | lighting | boat | home] ...'
-  echo 'The default runs fittings, door crafting, a furnished house, ladder travel, lighting, a boat crossing and home/respawn.'
+  echo 'Usage: window.sh [--check | fittings | craft | furnished | fresh | resume | ladder | landmarks | lighting | boat | home] ...'
+  echo 'The default runs fittings, door crafting, a furnished house, ladder travel, landmark placement, lighting, a boat crossing and home/respawn.'
   exit 0
 fi
 scripts=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$scripts/../.." && pwd)
 export TESTCOPY=${JEV_REVIEW_DIR:-"$HOME/jevcraft-paper-review"}
+export JEV_REVIEW_BASE
+JEV_REVIEW_BASE=$(realpath "$TESTCOPY")
+TESTCOPY=$JEV_REVIEW_BASE
 paper=${JEV_LIVE_PAPER:-"$HOME/minecraft"}
 guard="$paper/tools/testcopy"
 node=${JEV_NODE:-"$HOME/.local/bin/node"}
@@ -15,9 +18,9 @@ envfile=${JEV_REVIEW_ENV:-"$HOME/jevcraft/.env"}
 export JEV_REVIEW_RUN="$TESTCOPY/runs/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 check=0
 if [[ ${1:-} == --check ]]; then check=1; shift; fi
-if (($#==0)); then set -- fittings craft furnished ladder lighting boat home; fi
+if (($#==0)); then set -- fittings craft furnished ladder landmarks lighting boat home; fi
 for scene in "$@"; do
-  case "$scene" in fittings|craft|furnished|fresh|resume|ladder|lighting|boat|home) ;; *) echo "Unknown scene $scene" >&2; exit 2;; esac
+  case "$scene" in fittings|craft|furnished|fresh|resume|ladder|landmarks|lighting|boat|home) ;; *) echo "Unknown scene $scene" >&2; exit 2;; esac
 done
 regular=()
 separate=()
@@ -25,14 +28,26 @@ for scene in "$@"; do
   case "$scene" in home|resume) separate+=("$scene");; *) regular+=("$scene");; esac
 done
 if [[ " ${separate[*]} " == *' resume '* && " ${regular[*]} " == *' fresh '* ]]; then echo 'Choose fresh or resume in one run.'; exit 2; fi
+mode=regular
+if [[ " ${regular[*]} " == *' fresh '* ]]; then mode=fresh; fi
+if [[ " ${separate[*]} " == *' resume '* ]]; then mode=resume; fi
+if (( !check && $# > 1 )) && [[ $mode != regular ]]; then
+  others=()
+  for scene in "$@"; do [[ $scene == "$mode" ]] || others+=("$scene"); done
+  if (( ${#others[@]} )); then "$scripts/window.sh" "${others[@]}"; fi
+  exec "$scripts/window.sh" "$mode"
+fi
 for f in "$guard/nw.sh" "$guard/window.sh" "$guard/doorknock.py" "$TESTCOPY/newworld/paper.jar" "$envfile"; do test -r "$f" || { echo "Missing $f" >&2; exit 2; }; done
 [[ "$(realpath "$TESTCOPY/newworld")" != "$(realpath "$paper")" && "$(realpath "$TESTCOPY/newworld/world")" != "$(realpath "$paper/world")" ]]
 if ((check)); then export JEV_REVIEW_VALIDATE_ONLY=1; fi
 "$node" "$scripts/fixture.cjs"
 if ((check)); then echo "Private fixture and reviewer ready at $TESTCOPY"; exit 0; fi
-cd "$TESTCOPY"
-exec 9>"$TESTCOPY/private-window.lock"
+# All fixture directories and worktrees operate the same system services.
+exec 9>>/tmp/jevcraft-minecraft-paper-window.lock
 flock -n 9 || { echo 'Another private window is active.' >&2; exit 2; }
+TESTCOPY=$(JEV_REVIEW_PREPARE="$mode" "$node" "$scripts/fixture.cjs")
+"$node" "$scripts/fixture.cjs"
+cd "$TESTCOPY"
 exec > >(tee -a "$JEV_REVIEW_RUN/window.log") 2>&1
 minutes=${JEV_REVIEW_MINUTES:-15}
 [[ $minutes =~ ^([1-9]|1[0-9]|20)$ ]]
@@ -68,7 +83,7 @@ sudo -n systemctl stop minecraft
 guardian=$!
 for _ in {1..50}; do if grep -q '^listening on' doorknock.log; then break; fi; sleep .1; done
 grep -q '^listening on' doorknock.log
-"$guard/nw.sh" start
+"$guard/nw.sh" start 9>&-
 "$guard/nw.sh" wait 150
 run_client() {
   kill -0 "$guardian"

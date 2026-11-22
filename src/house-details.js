@@ -108,6 +108,8 @@ function houseSpec(intent, request, from, context) {
     };
   const homes = (context.builds || []).filter((b) => b.kind === 'house' || house.test(b.name) || house.test(b.request));
   const site = context.workSite?.position;
+  if (site && !house.test(request) && !/\b(?:forgot|missed|missing)\b/i.test(request))
+    return { kind: 'build', request, from, workSite: context.workSite, buildAnchor: { ...site } };
   const target = site
     ? homes.find(
         (b) =>

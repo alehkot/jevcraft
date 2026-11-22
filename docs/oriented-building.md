@@ -4,13 +4,17 @@ Ask **“Jev, help me build a small house for three.”** The starter layout has
 
 In Survival and Creative, `BUILD_DESIGNER=auto` sends the requested location, observed biome, terrain heights, surface materials, water, lava and inventory to the configured schematic model. It uses OpenRouter when an OpenRouter key is configured, then the guide provider when its key is configured. `BUILD_DESIGNER=guide` selects the guide provider explicitly. `JEV_BUILD_MODEL` can select Terra, Luna or another model offered by the provider. `BUILD_DESIGNER=jev` uses the built-in plans. Starter houses use local wood or sandstone on sandy sites. A wood named in chat takes priority.
 
-Jev saves the drawing before review and the approved layout and site before construction. **“Jev stop”** followed by **“Jev resume”** continues that drawing. A player’s unexpected block in a work space pauses construction and Jev identifies its coordinates.
+Jev travels to an unloaded requested site to observe its terrain before drawing. For a two- or three-person house, it checks that the front door leads to a clear aisle, the bedroom door opens onto a reachable room, and the beds, sofa and chest can be used. Jev saves the drawing before review and the approved layout and site before construction. **“Jev stop”** followed by **“Jev resume”** continues that drawing. Each bed can use a different available color. A player’s unexpected block in a work space pauses construction and Jev identifies its coordinates.
+
+**“Jev, put two torches beside the closest crafting table to me”** or **“Jev, put a chest next to the closest tree to me”** places the items on nearby supported ground. Jev measures from the speaker when the request arrives and remembers that spot through a stop or a trip for supplies.
 
 **“Jev, light up this room”** checks for ground that would be dark at night. Light travels through openings and around corners. **“Jev, climb down the ladder”** uses a supported ladder with landings. **“Jev, come to me by boat”** uses a boat where Jev can find a connected water route and a safe bank.
 
 ## Home and respawn
 
-**“Jev, where is home and where will you respawn?”** reports both locations with coordinates and dimensions. **“Jev, set home here”** saves the caller’s standing position. **“Jev, go home”** returns to it. Jev also recognizes its established base and its first recorded completed house. Until it has a home, it uses world spawn as a temporary meeting place.
+**“Jev, where is home and where will you respawn?”** reports both locations with coordinates and dimensions. **“Jev, set my home here”** marks a personal home, and **“Jev, where is my home?”** gets the coordinates in a whisper. **“Jev, set our home here”** or **“Jev, set home here”** marks the shared home at the speaker’s position. **“Jev, go to my home”** and **“Jev, go to our home”** select the destination explicitly. **“Jev, forget my home”** removes the speaker’s marker. Personal markers made by older versions stay in their owner’s notebook. To share an older marker, stand there and say **“Jev, set our home here”** once.
+
+For **“Jev, go home,”** Jev checks the speaker’s personal home, the shared marker, its established base and its first recorded completed house, in that order. Until it has a home, Jev uses world spawn as a temporary meeting place.
 
 The optional Paper 26.2 plugin in `paper/locations` answers a connected client about its own validated personal point, world spawn and effective respawn destination. It reads EssentialsSpawn’s group-spawn rule when that plugin controls the destination. It records the actual landing after death. A server with a randomized or unrecognized policy can supply the actual landing after respawn. On a server without the plugin, Jev reports its last known point from Minecraft’s packets and confirmed bed interactions.
 

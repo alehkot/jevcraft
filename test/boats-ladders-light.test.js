@@ -120,9 +120,12 @@ test('a climb targets a contiguous column with safe landings and releases the co
       cleared++;
     }
   };
-  assert.equal(ladderColumn(bot, bottom, 'up').top.y, 3);
+  const saved = JSON.parse(JSON.stringify(ladderColumn(bot, bottom, 'up')));
+  assert.equal(saved.top.y, 3);
   safe = false;
   assert.equal(ladderColumn(bot, bottom, 'down'), undefined);
+  await assert.rejects(climbLadder(bot, new Task('resume'), { direction: 'down', ladder: saved },
+    () => {}, () => assert.fail('navigated toward an unsafe landing')), /landing has changed/);
   safe = true;
   const task = new Task('ladder');
   bot.waitForTicks = async () => task.cancel();

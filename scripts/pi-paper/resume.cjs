@@ -1,35 +1,14 @@
 const fs = require('fs'),
   path = require('path'),
-  { root: S, run, runs, lib } = require('./fixture.cjs'),
+  { root: S, run, interruptedBuild, lib } = require('./fixture.cjs'),
   assert = require('node:assert/strict');
 const mc = lib('mineflayer'),
   { Vec3 } = lib('vec3'),
   { createSession } = lib('./src/session'),
   { TypeSafe } = lib('./src/typesafe'),
-  { buildCellComplete } = lib('./src/build-blocks');
-function mostRecentBuild() {
-  const selected = process.env.JEV_REVIEW_FROM;
-  const names = selected ? [selected] : fs.readdirSync(runs).sort().reverse();
-  for (const name of names) {
-    if (path.basename(name) !== name) throw new Error('JEV_REVIEW_FROM must name a run in the runs directory.');
-    const dir = path.join(runs, name, 'state'),
-      f = path.join(dir, '127_0_0_1-25575-HouseJev.json');
-    if (fs.existsSync(f)) {
-      const saved = JSON.parse(fs.readFileSync(f));
-      if (
-        saved.kind === 'build' &&
-        saved.starterBeds &&
-        saved.blueprint &&
-        saved.design?.model &&
-        saved.status !== 'complete'
-      )
-        return dir;
-    }
-  }
-  throw new Error('No interrupted fresh house was found in the private runs directory.');
-}
+  { buildCellComplete, matchesBuildBlock } = lib('./src/build-blocks');
 const cfg = { host: '127.0.0.1', port: 25575, version: '26.1', auth: 'offline' },
-  dir = mostRecentBuild(),
+  dir = interruptedBuild(),
   file = path.join(dir, '127_0_0_1-25575-HouseJev.json'),
   state = () => JSON.parse(fs.readFileSync(file)),
   delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -69,6 +48,19 @@ witness.on('messagestr', (m) => {
   cmd('tp HouseTester ' + [entrance.x + 0.5, entrance.y + 3, entrance.z + 0.5].join(' '));
   cmd('tp HouseJev ' + approach);
   await delay(900);
+  const evidence = path.join(path.dirname(dir), 'fresh-checkpoint.json');
+  const receipt = path.join(path.dirname(dir), 'checkpoint-verified.json');
+  if (fs.existsSync(evidence) && !fs.existsSync(receipt)) {
+    await Promise.all([witness.waitForChunksToLoad(), bot.waitForChunksToLoad()]);
+    const { placed, stock } = JSON.parse(fs.readFileSync(evidence));
+    for (const c of placed) assert(matchesBuildBlock(witness.blockAt(new Vec3(c.x,c.y,c.z)), c), 'saved block ' + JSON.stringify(c));
+    for (const [item, count] of Object.entries(stock)) {
+      const carried = bot.inventory.items().filter(i => i.name === item).reduce((sum,i) => sum + i.count, 0);
+      assert(carried >= count, 'saved supply ' + item + ' expected ' + count + ', found ' + carried);
+    }
+    log('verified saved blocks and inventory before resume', { placed: placed.length, stock });
+    fs.writeFileSync(receipt, JSON.stringify({ verifiedIn: path.basename(run) }) + '\n');
+  }
   witness.chat('HouseJev resume');
   const deadline = Date.now() + 610000;
   while (Date.now() < deadline) {

@@ -116,4 +116,49 @@ function stations(bot, name, site) {
   return bot.findBlocks({ point: at, matching: bot.registry.blocksByName[name].id, maxDistance: STATION_RADIUS, count: 8 });
 }
 
-module.exports = { WORK_RADIUS, STATION_RADIUS, forOutput, within, splitLocation, discoveryAt, resolveLocation, protects, approach, stations };
+async function placeAtSite(bot, task, goal, save, { navigate, acquireStep, place, available }) {
+  const { workSite: site, item, count } = goal;
+  if (bot.game.dimension !== site.dimension) throw blocked('Return to the dimension where you chose the spot.');
+  const centre = point(site.position), finished = goal.placedAtSite ||= [];
+  if (finished.length >= count) return true;
+  let target = goal.pendingPlacement && point(goal.pendingPlacement);
+  const confirm = () => {
+    finished.push({ ...target });
+    delete goal.pendingPlacement;
+    save();
+    return finished.length >= count;
+  };
+  if (target && !bot.blockAt(target)) await approach(bot, task, site, navigate);
+  if (target && bot.blockAt(target)?.name === item) return confirm();
+  if (!bot.inventory.items().some(i => i.name === item)) {
+    await acquireStep(bot, task, item, 1, goal, save);
+    return false;
+  }
+  await approach(bot, task, site, navigate);
+  if (target && bot.blockAt(target)?.name === item) return confirm();
+  const eligible = p => !p.equals(centre) && available(p) &&
+    !finished.some(previous => p.equals(point(previous))) &&
+    (item !== 'chest' || bot.blockAt(p.offset(0, 1, 0))?.boundingBox === 'empty' &&
+      [[1,0],[-1,0],[0,1],[0,-1]].every(([x,z]) => bot.blockAt(p.offset(x, 0, z))?.name !== 'chest'));
+  if (!target || !eligible(target)) {
+    const options = [];
+    for (let dx = -STATION_RADIUS; dx <= STATION_RADIUS; dx++) for (let dz = -STATION_RADIUS; dz <= STATION_RADIUS; dz++) {
+      for (const dy of [0, -1, 1, -2, 2]) {
+        const p = centre.offset(dx, dy, dz);
+        if ((dx || dz) && within(site, p, STATION_RADIUS) && eligible(p)) options.push(p);
+      }
+    }
+    options.sort((a, b) => a.distanceTo(centre) - b.distanceTo(centre) || a.distanceTo(bot.entity.position) - b.distanceTo(bot.entity.position));
+    target = options[0];
+    if (!target) throw blocked(`I need a free spot with solid ground beside the ${site.name.replaceAll('_', ' ')}.`);
+  }
+  goal.pendingPlacement = { ...target };
+  goal.step = { action: 'place_at_site', item, landmark: site.name, position: { ...target } };
+  save();
+  task.check();
+  await place(bot, task, target, item);
+  if (bot.blockAt(target)?.name !== item) throw new Error(`The ${item} did not stay in place.`);
+  return confirm();
+}
+
+module.exports = { WORK_RADIUS, STATION_RADIUS, forOutput, within, splitLocation, discoveryAt, resolveLocation, protects, approach, stations, placeAtSite };

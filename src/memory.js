@@ -9,7 +9,7 @@ const position = p => p && ['x', 'y', 'z'].every(k => Number.isFinite(p[k]) && M
 const text = value => String(value || '').replace(/[\r\n\u0000-\u001f]/g, ' ').trim().slice(0, 256);
 const owner = from => String(from || '').toLowerCase();
 const sameOwner = (entry, from) => owner(entry.from) === owner(from);
-const replayable = new Set(['obtain', 'craft', 'bundle', 'house', 'build', 'find', 'visit']);
+const replayable = new Set(['obtain', 'craft', 'bundle', 'house', 'build', 'find', 'visit', 'place_at_site']);
 function intentOf(goal) {
   if (!replayable.has(goal.kind)) return null;
   return Object.fromEntries(['kind', 'request', 'item', 'count', 'deliver', 'material', 'starterBeds', 'houseDetails', 'workSite', 'discoveryTarget', 'destination', 'tasks']

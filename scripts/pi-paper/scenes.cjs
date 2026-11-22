@@ -11,7 +11,7 @@ const { createSession } = lib('./src/session'),
   { houseBlueprint } = lib('./src/objectives');
 const { place, acquireStep, designedBuildStep } = lib('./src/work'),
   { validateSchematic, selectSchematicSite } = lib('./src/designer');
-const { buildCellComplete, regionProperties } = lib('./src/build-blocks'),
+const { buildCellComplete, matchesBuildBlock, regionProperties } = lib('./src/build-blocks'),
   { boatTravelStep } = lib('./src/boats');
 const cfg = { host: '127.0.0.1', port: 25575, version: '26.1', auth: 'offline' };
 assert.equal(process.cwd(), root);
@@ -74,11 +74,13 @@ async function give(name, n) {
   await until(name, () => counts(name) >= before + n);
 }
 async function ask(request, seconds = 80) {
+  const previous = state().createdAt;
+  const task = lib('./src/work-site').splitLocation(request, bot.registry)?.task || request;
   witness.chat(worker + ' ' + request);
   const timeout = Date.now() + seconds * 1000;
   while (Date.now() < timeout) {
     let g = state();
-    if (g.request?.includes(request)) {
+    if (g.createdAt !== previous && g.request?.includes(task)) {
       if (g.status === 'complete') return g;
       if (['blocked', 'failed'].includes(g.status))
         throw Error(JSON.stringify({ request: g.request, status: g.status, error: g.lastError, step: g.step }));
@@ -157,10 +159,45 @@ async function ladders() {
   assert.equal(g.direction, 'up');
   assert.equal(bot.entity.position.floored().y, 196);
   log('six-rung ladder ascent', { end: bot.entity.position });
+  const foot = g.ladder.foot;
+  cmd('setblock ' + coord(foot) + ' stone');
+  await until('changed bottom landing', () => at(v(foot), 'stone'));
+  await assert.rejects(lib('./src/companion-actions').climbLadder(bot, new Task('resume descent'),
+    { direction: 'down', ladder: g.ladder }, () => {}, navigate), /landing has changed/);
+  assert.equal(bot.entity.position.floored().y, 196);
+  cmd('setblock ' + coord(foot) + ' air');
+  await until('restored landing', () => at(v(foot), 'air'));
   await tp(player, pos(67.5, 196, 9.5));
   await ask('climb down the ladder', 50);
   assert.equal(bot.entity.position.floored().y, 190);
   log('six-rung ladder descent', { end: bot.entity.position });
+}
+async function landmarks() {
+  const table = pos(108, 190, 4), tree = pos(118, 190, 6);
+  cmd('gamemode survival ' + player, 'forceload add 96 -8 127 23', 'fill 100 189 -2 125 189 15 stone', 'fill 100 190 -2 125 197 15 air',
+    'setblock ' + coord(table) + ' crafting_table', 'fill 118 190 6 118 193 6 spruce_log',
+    'fill 117 194 5 119 194 7 spruce_leaves[persistent=true]');
+  await tp(worker, pos(107.5, 190, 6.5));
+  await tp(player, pos(109.5, 190, 5.5));
+  await until('speaker visible at landmark', () => bot.players[player]?.entity?.position.distanceTo(pos(109.5,190,5.5)) < 1);
+  await until('table and tree', () => at(table, 'crafting_table') && at(tree, 'spruce_log'));
+  for (const [message, item, anchor] of [
+    ['put a torch beside the closest crafting table', 'torch', table],
+    ['place a chest next to the closest spruce tree', 'chest', tree]
+  ]) {
+    const before = counts(item);
+    await give(item, 1);
+    const g = await ask(message);
+    assert.equal(g.kind, 'place_at_site');
+    assert.deepEqual(g.workSite.position, { ...anchor });
+    assert.equal(g.placedAtSite.length, 1);
+    const p = v(g.placedAtSite[0]);
+    assert(p.distanceTo(anchor) > 0 && p.distanceTo(anchor) <= 4);
+    assert.equal(block(p)?.name, item); assert.equal(counts(item), before);
+    log('placed beside landmark', { item, anchor, position: p });
+  }
+  assert(at(table, 'crafting_table') && at(tree, 'spruce_log'));
+  cmd('gamemode spectator ' + player);
 }
 async function light() {
   const c = pos(78, 190, 8);
@@ -333,6 +370,9 @@ async function fresh() {
   await until('new build ground', () => at(pos(43, 189, 0), 'dirt'));
   const message = 'help me build a small spruce house for two';
   witness.chat(worker + ' ' + message);
+  await until('requester and house site recorded', () => state().buildAnchor && state().request?.includes(message));
+  cmd('gamemode spectator ' + player);
+  await tp(player, pos(50.5, 198, 8.5));
   await until(
     'new planned house',
     () => state().blueprint?.blocks?.length > 75 && state().request?.includes(message),
@@ -349,6 +389,14 @@ async function fresh() {
   );
   witness.chat(worker + ' stop');
   await until('checkpoint on stop', () => state().status === 'cancelled', 15);
+  if (process.env.JEV_REVIEW_CHECKPOINT_ONLY === '1') {
+    const placed = original.blueprint.blocks.filter(c => c.y > origin.y && matchesBuildBlock(block(v(c)), c));
+    assert(placed.length > 0);
+    const stock = Object.fromEntries(['spruce_planks', 'spruce_door', 'spruce_stairs', 'torch', 'glass', 'white_bed', 'chest'].map(item => [item, counts(item)]));
+    fs.writeFileSync(path.join(run, 'fresh-checkpoint.json'), JSON.stringify({ placed, stock }));
+    log('saved fresh house for a separate window', { origin, placed: placed.length, stock });
+    return;
+  }
   witness.chat(worker + ' resume');
   await until('resumed build complete', () => state().status === 'complete' && state().request?.includes(message), 520);
   const goal = state();
@@ -363,7 +411,7 @@ async function fresh() {
     checkedBlocks: goal.blueprint.blocks.length
   });
 }
-const scenes = { fittings: retrofit, ladder: ladders, lighting: light, furnished, boat, craft: craftDoor, fresh },
+const scenes = { fittings: retrofit, ladder: ladders, landmarks, lighting: light, furnished, boat, craft: craftDoor, fresh },
   fail = [];
 (async () => {
   await until('witness login', () => witness.entity?.position && witness.health > 0, 55);

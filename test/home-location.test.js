@@ -4,6 +4,28 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { Vec3 } = require('vec3');
 const { attachHomeLocation, locationRequest } = require('../src/home-location');
+const { CompanionMemory } = require('../src/memory');
+const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+test('personal markers remain per player across dimensions, forgetting and legacy migration', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-home-'));
+  t.after(() => fs.rmSync(dir, {recursive:true, force:true}));
+  const file = path.join(dir, 'memory.json'), alice = new Vec3(12, 68, -3), shared = new Vec3(4, 65, 8);
+  const survival = { state: { locations: { home: { ...alice, dimension: 'overworld' } } } };
+  new CompanionMemory(file).rememberPlace('Alice', 'home', alice, 'overworld');
+  const connect = () => attachHomeLocation(Object.assign(new EventEmitter(), { _client: new EventEmitter(), game: {} }),
+    survival, new CompanionMemory(file), { all: () => [] }, () => {});
+  const loc = connect();
+  assert.equal(loc.home('Bob'), null);
+  assert.equal(loc.home('Alice').position.x, 12);
+  loc.setHome('Bob', shared, 'overworld', locationRequest('set our home here'));
+  loc.setHome('Alice', new Vec3(21, 64, 0), 'nether', locationRequest('remember this as my home'));
+  assert.equal(loc.home('Alice', 'personal').position.x, 21);
+  assert.equal(loc.home('Alice', 'shared').position.x, 4);
+  assert.equal(connect().home('Bob').position.x, 4);
+  assert.match(loc.forgetHome('Alice', 'personal'), /forgot/i);
+  assert.equal(connect().home('Alice', 'personal'), null);
+  assert.equal(connect().home('Alice').position.x, 4);
+});
 function setup(state = {}, entries = [], places = []) {
   const bot = Object.assign(new EventEmitter(), {
     game: { dimension: 'overworld' },

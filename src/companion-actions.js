@@ -7,7 +7,7 @@ const vec = (p) => new Vec3(p.x, p.y, p.z);
 const directions = { north: [0, -1], south: [0, 1], east: [1, 0], west: [-1, 0] };
 const blocked = (message) => Object.assign(new Error(message), { name: 'Blocked', needsPlayer: true });
 
-function companionAction(text) {
+function companionAction(text, workSite) {
   const ask = text
     .toLowerCase()
     .trim()
@@ -24,6 +24,13 @@ function companionAction(text) {
       ask
     );
   if (ladder) return { kind: 'climb_ladder', direction: ladder[1] || ladder[2] || 'up' };
+  if (workSite) {
+    const placement = /^(?:put(?: down)?|place|install|add|set up) (?:(a|an|one|two|three|four|[1-9]\d{0,2}) )?(torch(?:es)?|chests?)(?: here)?$/.exec(ask);
+    if (placement) {
+      const count = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4 }[placement[1]] || Number(placement[1] || 1);
+      return { kind: 'place_at_site', item: placement[2].startsWith('torch') ? 'torch' : 'chest', count, workSite };
+    }
+  }
   if (
     /^(?:light (?:up (?:this (?:area|room)|the area|around (?:me|here)|here)|(?:this (?:area|room)|the area) up)|(?:put|place|add|set up) (?:some |a few )?torches (?:around (?:here|me)|here|in this (?:area|room)))$/.test(
       ask
@@ -31,6 +38,18 @@ function companionAction(text) {
   )
     return { kind: 'light_area' };
   return null;
+}
+
+function safeLadderEnds(bot, foot, landing, top) {
+  const clear = p => {
+    const b = bot.blockAt(p);
+    return b?.boundingBox === 'empty' && !/lava|water|fire/.test(b.name);
+  };
+  const safe = p => {
+    const floor = bot.blockAt(p.offset(0, -1, 0));
+    return floor?.boundingBox === 'block' && !/magma_block|campfire|cactus/.test(floor.name) && clear(p) && clear(p.offset(0, 1, 0));
+  };
+  return safe(foot) && safe(landing) && clear(top.offset(0, 1, 0)) && clear(top.offset(0, 2, 0));
 }
 
 function ladderColumn(bot, anchor, direction) {
@@ -58,13 +77,7 @@ function ladderColumn(bot, anchor, direction) {
     const [dx, dz] = directions[facing];
     const foot = bottom.offset(dx, 0, dz),
       landing = top.offset(-dx, 1, -dz);
-    const clear = (q) => {
-      const b = bot.blockAt(q);
-      return b?.boundingBox === 'empty' && !/lava|water|fire/.test(b.name);
-    };
-    const safe = (q) =>
-      bot.blockAt(q.offset(0, -1, 0))?.boundingBox === 'block' && clear(q) && clear(q.offset(0, 1, 0));
-    if (!safe(landing) || !safe(foot) || !clear(top.offset(0, 1, 0)) || !clear(top.offset(0, 2, 0))) continue;
+    if (!safeLadderEnds(bot, foot, landing, top)) continue;
     const nearest = new Vec3(p.x, Math.max(bottom.y, Math.min(anchor.y, top.y)), p.z);
     columns.push({
       bottom,
@@ -96,6 +109,10 @@ async function climbLadder(bot, task, goal, save, navigate) {
     top = vec(goal.ladder.top);
   const centred = (p) => p.offset(0.5, 0, 0.5);
   const atEnd = () => bot.entity.onGround && bot.entity.position.floored().equals(end);
+  const checkLandings = () => {
+    if (!safeLadderEnds(bot, start, end, top)) throw blocked('The ladder landing has changed. I need safe ground and headroom at both ends.');
+  };
+  checkLandings();
   if (atEnd()) return true;
   const here = bot.entity.position.floored();
   if (here.x !== bottom.x || here.z !== bottom.z || here.y < bottom.y || here.y > top.y) {
@@ -106,6 +123,7 @@ async function climbLadder(bot, task, goal, save, navigate) {
       lastProgress = Date.now();
     for (let tick = 0; tick < 140 + 12 * (top.y - bottom.y + 1); tick++) {
       task.check();
+      checkLandings();
       if (atEnd()) return true;
       const feet = bot.entity.position,
         cell = feet.floored();
