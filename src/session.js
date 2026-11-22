@@ -237,9 +237,17 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     trouble: () => !!require('./reactive-wait').emergency(bot) }) : null;
   if (!survivalStore.read() && store.read()?.status === 'cancelled') survival.state.paused = true;
   const saveSurvival = () => { if (!ended) { survival.state.version = 1; survivalStore.save(survival.state); } };
+  const locations = require('./home-location').attachHomeLocation(bot, survival, memory, builds, saveSurvival);
+  bot.homeLocation = locations;
   const saveGoal = goal => { if (!ended) { memory.recordGoal(goal, bot); world.harvest(goal); store.save(goal); } };
   const workStore = { save: goal => { saveGoal(goal); saveSurvival(); } };
   let active = null;
+  const noteOwnPlacement = block => {
+    const goal = active?.goal || store.read();
+    if (goal && !['complete','failed'].includes(goal.status) && require('./construction-access').recordBuildPlacement(goal, block)) saveGoal(goal);
+  };
+  bot.on('blockPlaced', (_old, block) => noteOwnPlacement(block));
+  bot.on('confirmedBuildScaffold', noteOwnPlacement);
   // A goal going again after a threat escaped its loop (launch's catch).
   let relaunching = false;
   let pending = Promise.resolve();
@@ -620,6 +628,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     const me = bot.entity?.position, them = bot.players[from]?.entity?.position, t = bot.time?.timeOfDay;
     const mine = memory.context(from);
     return { health: bot.health, food: bot.food, dimension: bot.game?.dimension,
+      locations: locations.context(from),
       ...(stayClose.preference(bot) && { stayClose: stayClose.status(bot) }),
       time: Number.isFinite(t) ? (t >= 12300 && t < 23500 ? 'night' : 'day') : undefined,
       holding: bot.heldItem?.name, carrying: Object.fromEntries(bot.inventory.items().slice(0, 16).map(item => [item.name, item.count])),
@@ -708,7 +717,24 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       request = `${bot.username} ${location.task}`;
       address = parseAddress(request, bot.username);
     }
+    const locationIntent = address.explicit && !literal && require('./home-location').locationRequest(address.text);
+    if (locationIntent && !locationIntent.startsWith('visit_')) {
+      if (locationIntent === 'set') bot.chat(locations.setHome(from, bot.players[from]?.entity?.position, bot.game.dimension));
+      else locations.refresh().then(() => { if (!ended) bot.chat(locations.describe(from, locationIntent)); });
+      return;
+    }
     const directDiscovery = data.workSite && discoveryAt(address.text, bot.registry);
+    const action = address.explicit && !literal && require('./companion-actions').companionAction(address.text);
+    const knownVisit = locationIntent?.startsWith('visit_');
+    const visitLocation = async () => {
+      if (locationIntent === 'visit_respawn') await locations.refresh();
+      const home = locationIntent === 'visit_home';
+      const to = home ? locations.home(from) : locations.respawn();
+      if (!to?.position) return {kind:'clarify', from, request, message:locations.describe(from, home ? 'home' : 'respawn')};
+      const {dimension, ...position} = to.position;
+      return {kind:'visit',from,request,destination:{label:home ? 'home' : 'my respawn point',position,dimension}};
+    };
+    const houseIntent = !literal && require('./house-details').houseRequest(address.text, bot.registry);
     // A literal status request reads local state immediately, even while a
     // previous natural-language request is waiting for a model response.
     if (/^status( please)?[.!?]?$/i.test(normalized)) {
@@ -719,7 +745,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     if (require('./built').on() && address.explicit && !literal && !answer && /^(yes,? )?(you (may|can) )?use the buildings?[.!]?$/i.test(normalized)) {
       bot.chat(useBuildingsNow(from)); return;
     }
-    if (guide && !directDiscovery && !guided.has(data) && !literal && !answer && address.explicit && !control.test(address.text)) {
+    if (guide && !directDiscovery && !houseIntent && !action && !knownVisit && !guided.has(data) && !literal && !answer && address.explicit && !control.test(address.text)) {
       guideQueue = null;
       bot.swingArm?.('right');
       guide.consult({ from, text: address.text, botName: bot.username, status: guideStatus(from) }).then(out => {
@@ -757,12 +783,12 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       // A catalog or list walk is several calls: look like it is thinking,
       // not like it did not hear. Not over work in hand: the glance turns the
       // head, and a dig in progress needs it where it is.
-      const stopThinking = literal || directDiscovery || active ? () => {} : thinking(bot);
-      const spec = literal ? { kind: 'operator_command' } : directDiscovery ?
+      const stopThinking = literal || directDiscovery || houseIntent || action || knownVisit || active ? () => {} : thinking(bot);
+      const spec = literal ? { kind: 'operator_command' } : knownVisit ? await visitLocation() : directDiscovery ?
         { kind: 'find', discoveryTarget: directDiscovery, from, request } : await interpret(requestClient, request, from, bot.username, {
         registry: bot.registry, players: Object.keys(bot.players),
-        ...requestPosition, memory: { ...memory.context(from), found: require('./exploration').foundEntries(world.known) },
-        builds: builds.describe(bot, bot.entity.position, bot.game.dimension),
+        ...requestPosition, houseIntent, action, workSite: data.workSite, memory: { ...memory.context(from), found: require('./exploration').foundEntries(world.known) },
+        builds: builds.describe(bot, requestPosition.speakerPosition || bot.entity.position, bot.game.dimension),
         continueBuilds: (request, candidates) => resolveBuildContinuation(requestClient, request, candidates,
           { speaker: requestPosition.speakerPosition }),
         inventory: Object.fromEntries(bot.inventory.items().map(item => [item.name, item.count])),
@@ -775,7 +801,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
           discoveryResolution: spec.discoveryResolution, buildContinuation: spec.buildContinuation, usage: spec.usage, latencyMs: spec.latencyMs });
       }
       if (!spec || revision !== generation) return;
-      if (data.workSite && ['build', 'house', 'obtain', 'craft', 'bundle', 'find', 'come'].includes(spec.kind)) {
+      if (data.workSite && ['build', 'house', 'obtain', 'craft', 'bundle', 'find', 'come', 'light_area', 'climb_ladder'].includes(spec.kind)) {
         spec.workSite = data.workSite;
         if (spec.kind === 'house') spec.kind = 'build';
         if (spec.kind === 'build') spec.buildAnchor = { ...data.workSite.position };
@@ -923,6 +949,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         spec.kind === 'find' ? `I will look for ${spec.discoveryTarget.name.replaceAll('_', ' ')} and tell you where I find it.` :
         spec.kind === 'house' ? `Building a small ${spec.material} house with a floor, doorway and roof.` :
         ['obtain', 'craft'].includes(spec.kind) ? `I'll get ${spec.count} ${spec.item.replaceAll('_', ' ')}${spec.deliver ? ` for ${from}` : ''}.` :
+        spec.kind === 'light_area' ? "I'll check the ground for dark spots and light them." :
+        spec.kind === 'climb_ladder' ? `I'll climb ${spec.direction} the nearby ladder.` :
         spec.kind === 'visit' ? `I'll head to ${spec.destination.label}.` :
         spec.kind === 'come' ? `Coming to ${spec.target}.` : spec.kind === 'follow' ? `Following ${spec.target}; say Jev stop to stop.` :
         spec.kind === 'win' ? "Let's beat the dragon! I'll gather supplies and take it one step at a time." :

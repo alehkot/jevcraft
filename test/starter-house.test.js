@@ -7,7 +7,7 @@ const registry = require('prismarine-registry')('26.1');
 const Chunk = require('prismarine-chunk')(registry);
 const World = require('prismarine-world')(registry);
 const Block = require('prismarine-block')(registry);
-const { designStarterHouse } = require('../src/starter-house');
+const { designStarterHouse, checkStarterDesign } = require('../src/starter-house');
 const { selectSchematicSite } = require('../src/designer');
 const { buildCellComplete, buildFootprint, isBed, matchesOwnership } = require('../src/build-blocks');
 const { ConstructionGoal } = require('../src/construction-access');
@@ -50,10 +50,12 @@ function scene() {
     } });
   bot._placeBlockWithOptions = async (ref, normal) => {
     const foot = ref.position.plus(normal), material = bot.heldItem.name;
-    if (isBed(material) || isDoor(material)) assert.ok(normal.equals(new Vec3(0, 1, 0)));
+    if (isBed(material) || isDoor(material) || material === 'torch') assert.ok(normal.equals(new Vec3(0, 1, 0)));
     const facing = { 0: 'north', 1: 'west', 2: 'south', 3: 'east' }[(Math.round(bot.entity.yaw / (Math.PI / 2)) + 4) % 4];
     const old = bot.blockAt(foot);
-    const properties = isBed(material) ? { facing, part: 'foot' } : isDoor(material) ? { facing, half: 'lower' } : undefined;
+    const properties = isBed(material) ? { facing, part: 'foot' } : isDoor(material) ? { facing, half: 'lower' } :
+      material === 'chest' ? { facing: {north:'south', south:'north', east:'west', west:'east'}[facing], type:'single', waterlogged:false } :
+      material.endsWith('_stairs') ? { facing, half:'bottom', waterlogged:false } : undefined;
     for (const part of buildFootprint({ ...foot, material, properties })) {
       set(point(part), material, part.properties);
     }
@@ -71,7 +73,7 @@ function standForWork(bot, cell) {
   const target = new ConstructionGoal(bot, cell, operation, cell);
   for (const y of [0, 1, -1, 2]) for (const z of [-1, 1, -2, 2, 0]) for (const x of [0, -1, 1, -2, 2]) {
     const feet = point(cell).offset(x + .5, y, z + .5);
-    if (bot.blockAt(feet)?.name !== 'air' || bot.blockAt(feet.offset(0, 1, 0))?.name !== 'air' ||
+    if (bot.blockAt(feet)?.boundingBox !== 'empty' || bot.blockAt(feet.offset(0, 1, 0))?.boundingBox !== 'empty' ||
       bot.blockAt(feet.offset(0, -1, 0))?.boundingBox !== 'block') continue;
     if (target.reachable(feet) && !point(cell).equals(feet.floored().offset(0, -1, 0))) {
       bot.entity.position = feet;
@@ -98,8 +100,9 @@ for (const sleepers of [2, 3]) {
     const stop = new Error('first batch persisted');
     await assert.rejects(designedBuildStep(bot, task, goal, () => { if (goal.buildBatch) throw stop; }), e => e === stop);
     assert.ok(point(goal.blueprint.origin).distanceTo(point(anchor)) < 12);
-    assert.deepEqual(goal.design.source.size, [sleepers + 3, 4, 5]);
-    assert.equal(goal.design.materials.spruce_door, 1);
+    assert.deepEqual(goal.design.source.size, [7, 4, 8]);
+    assert.equal(goal.design.materials.spruce_door, 2);
+    checkStarterDesign(goal.design, { sleepers, material:'spruce_planks' });
     assert.equal(goal.design.materials.white_bed, sleepers);
     assert.ok(goal.design.materials.spruce_planks > 0);
     assert.ok(chat.some(line => line.includes('drop logs or wool')));
@@ -112,13 +115,14 @@ for (const sleepers of [2, 3]) {
     assert.equal(plan[0].count, 4);
     assert.equal(plan.at(-1).item, 'spruce_planks');
     const cell = (x, y, z) => goal.design.blocks.find(p => p.x === x && p.y === y && p.z === z);
-    assert.equal(cell(2, 1, 0).properties.half, 'lower');
-    assert.equal(cell(2, 2, 0).properties.half, 'upper');
-    const width = sleepers + 3;
-    for (let x = 0; x < width; x++) for (let z = 0; z < 5; z++) assert.equal(cell(x, 3, z).material, 'spruce_planks');
-    assert.equal(cell(0, 2, 2), undefined);
-    assert.equal(cell(width - 1, 2, 2), undefined);
-    for (let x = 1; x < width - 1; x++) for (const y of [1, 2]) assert.equal(cell(x, y, 1), undefined);
+    for (const z of [0, 3]) {
+      assert.equal(cell(3, 1, z).properties.half, 'lower');
+      assert.equal(cell(3, 2, z).properties.half, 'upper');
+    }
+    for (let x = 0; x < 7; x++) for (let z = 0; z < 8; z++) assert.equal(cell(x, 3, z).material, 'spruce_planks');
+    assert.equal(cell(0, 2, 2).material, 'glass');
+    assert.equal(cell(6, 2, 5).material, 'glass');
+    for (const z of [1,2,4]) assert.equal(cell(3, 1, z), undefined);
   });
   test(`places all ${sleepers} beds from donated supplies and verifies the finished house across a resume`, async () => {
     const { bot, set, stock, clicks } = scene();
@@ -192,9 +196,9 @@ test('a player can supply the shell in batches and the builder finishes the enti
   const goal = { kind: 'build', starterBeds: 3, buildAnchor: { x: 0, y: 64, z: 0 } };
   const batchReady = new Error('new batch');
   let lastBatch, finished = false, firstBedAt;
-  for (let turn = 0; turn < 230 && !finished; turn++) {
+  for (let turn = 0; turn < 350 && !finished; turn++) {
     const remaining = goal.buildBatch?.cells.filter(cell => !buildCellComplete(bot, cell));
-    if (remaining?.length) assert.ok(remaining.some(cell => standForWork(bot, cell)), 'a reachable work face');
+    if (remaining?.length) assert.ok(remaining.some(cell => standForWork(bot, cell)), 'a reachable work face for ' + remaining.map(p=>p.material + '@' + point(p)).join(', '));
     try {
       finished = await designedBuildStep(bot, task, goal, () => {
         if (goal.buildBatch && goal.buildBatch !== lastBatch) { lastBatch = goal.buildBatch; throw batchReady; }
@@ -207,7 +211,83 @@ test('a player can supply the shell in batches and the builder finishes the enti
   }
   assert.equal(finished, true);
   assert.deepEqual(verifyHouse(bot, goal.blueprint), { ok: true, missing: 0, obstructed: 0 });
-  assert.equal(clicks.filter(c => isDoor(c.material)).length, 1);
+  assert.equal(clicks.filter(c => isDoor(c.material)).length, 2);
+  for (const [material, count] of [['glass',2], ['torch',2], ['chest',1], ['spruce_stairs',2]]) {
+    assert.equal(clicks.filter(c => c.material === material).length, count);
+  }
   assert.equal(clicks.filter(c => isBed(c.material)).length, 3);
   assert.equal(firstBedAt, clicks.length - 3);
+});
+
+test('the saved plank-only house can be fitted out in place and resumed', async () => {
+  const { bot, set, stock, clicks } = scene();
+  const { BuildRegistry } = require('../src/builds');
+  const { houseBlueprint, interpret } = require('../src/objectives');
+  const { rememberFittings } = require('../src/house-details');
+  const original = houseBlueprint(new Vec3(0,64,0), 'oak_planks');
+  assert.deepEqual([...new Set(original.blocks.map(p=>p.material))], ['oak_planks']);
+  bot.buildRegistry = new BuildRegistry();
+  for (const c of original.blocks) set(point(c), c.material);
+  const entry = bot.buildRegistry.remember({kind:'house',request:'build a small dark oak house',blueprint:original}, {dimension:'overworld',status:'complete'});
+  const keepsake = new Vec3(0,65,0);
+  set(keepsake,'diamond_block');
+  const context = {registry,builds:bot.buildRegistry.describe(bot, bot.entity.position, 'overworld')};
+  let goal = await interpret(null, 'Jev you forgot door for house', 'Alex', 'Jev', context);
+  assert.equal(goal.houseDetails.target,entry.id);
+  assert.deepEqual(goal.houseDetails.parts,{door:1});
+  const all = await interpret(null, 'Jev furnish the house', 'Alex','Jev',context);
+  const run = async current => {
+    let g=current;
+    Object.assign(stock,{oak_door:4,glass:8,torch:8,oak_stairs:4,chest:2});
+    for(let i=0;i<65;i++){
+      const missing=g.blueprint?.blocks.filter(c=>!c.companion&&!buildCellComplete(bot,c));
+      if (missing?.length) {
+        const layer = Math.min(...missing.map(c => c.y));
+        assert.ok(missing.filter(c => c.y === layer).some(c => standForWork(bot, c)), 'no work face for ' + missing.map(c=>c.material+'@'+point(c)).join(', '));
+      }
+      if(await designedBuildStep(bot,task,g,noop)){rememberFittings(bot,g);return g;}
+      g=JSON.parse(JSON.stringify(g));
+    }
+    assert.fail('the retrofit did not finish');
+  };
+  goal=await run(goal);
+  assert.equal(goal.blueprint.blocks.length,2);
+  const completed=await run(all);
+  assert.equal(verifyHouse(bot,completed.blueprint).ok,true);
+  const after=bot.buildRegistry.find(entry.id);
+  assert.equal(after.name,'house');
+  assert.deepEqual(after.bounds,entry.bounds);
+  assert.equal(bot.buildRegistry.all().length,1);
+  assert.equal(bot.blockAt(keepsake).name,'diamond_block');
+  assert.equal(after.blueprint.blocks.filter(c=>c.material==='glass').length,2);
+  assert.equal(after.blueprint.blocks.filter(c=>c.material==='torch').length,2);
+  const count=clicks.length;
+  await run({...all,blueprint:undefined,buildBatch:undefined,buildOwned:undefined});
+  assert.equal(clicks.length,count,'asking again reuses the installed fittings');
+});
+
+test('a wall replacement by a player is kept and a blocked entrance is explained', () => {
+  const {bot,set}=scene();
+  const {houseBlueprint}=require('../src/objectives');
+  const {planFittings}=require('../src/house-details');
+  const blueprint=houseBlueprint(new Vec3(0,64,0),'oak_planks');
+  for(const c of blueprint.blocks)set(point(c),c.material);
+  const wall=new Vec3(-2,65,0), door=new Vec3(0,64,-2);
+  set(wall,'chest');set(door,'diamond_block');
+  const entry={blueprint,entrance:blueprint.entrance};
+  const windows=planFittings(bot,entry,{parts:{window:2}});
+  assert.ok(!windows.blueprint.blocks.some(p=>point(p).equals(wall)));
+  assert.throws(()=>planFittings(bot,entry,{parts:{door:1}}),e=>e.needsPlayer&&/doorway/.test(e.message));
+});
+
+test('a saved house can clear its own blocked doorway before furnishing the bedroom', async () => {
+  const {bot,set,stock}=scene(), goal=siteWithShell(bot,set,2);
+  const entrance=point(goal.blueprint.entrance), upper=entrance.offset(0,1,0);
+  const {entrancePassage,recordBuildPlacement}=require('../src/construction-access');
+  assert.ok(entrancePassage(goal.blueprint).has([upper.x,upper.y,upper.z].join(',')));
+  for(const p of [entrance,upper]) { set(p,'dirt');assert.ok(recordBuildPlacement(goal,bot.blockAt(p))); }
+  stock.white_bed=2;
+  assert.ok(standForWork(bot,{...upper,material:'dirt'}));
+  const cleared=new Error('dug the obstruction');
+  await assert.rejects(designedBuildStep(bot,task,goal,()=>{if ([entrance,upper].some(p=>bot.blockAt(p).name==='air'))throw cleared;}),e=>e===cleared);
 });

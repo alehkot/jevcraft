@@ -53,6 +53,11 @@ async function interpret(client, request, from, username, context = {}) {
   const address = parseAddress(request, username);
   const numbers = quantityCandidates(address.text);
   const registry = context.registry || require('minecraft-data')('26.1');
+  const action = address.explicit && (context.action || require('./companion-actions').companionAction(address.text));
+  if (action) return { ...action, request, from, ...(action.byBoat && { target: from }) };
+  const houses = require('./house-details');
+  const houseIntent = address.explicit && (context.houseIntent || houses.houseRequest(address.text, registry));
+  if (houseIntent) return houses.houseSpec(houseIntent, request, from, { ...context, registry });
   const woods = woodChoices(registry);
   const memory = context.memory && { ...preferenceContext(context.memory), places: context.memory.places || [] };
   // Everything below is one request. The item, wood-note and discovery
@@ -135,7 +140,7 @@ async function interpret(client, request, from, username, context = {}) {
     spec.target = target;
   }
   const starterBeds = ['house', 'build'].includes(kind) && { two: 2, three: 3 }[a.starter_house?.choice];
-  if (starterBeds) spec.kind = 'build';
+  if (starterBeds || kind === 'house') spec.kind = 'build';
   if (spec.kind === 'build' && context.continueBuilds) {
     // Code offers only structures that actually stand nearby; Jev decides
     // whether this request continues one, and where a new one should go.

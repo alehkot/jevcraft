@@ -21,7 +21,7 @@ const { walkersApart, apartSays } = require('./walk-reach');
 const { darkCells, groundCells, placeTorches, lightSources, blockLight } = require('./torches');
 // Dark enough where the bot stands for monsters to spawn: a fact for the
 // questions that weigh staying against leaving.
-const darkHere = bot => { const feet = feetCell(bot); return blockLight(feet, lightSources(bot, feet, 4)) === 0 && ((bot.blockAt(feet)?.skyLight ?? 15) < 8 || night(bot)); };
+const darkHere = bot => { const feet = feetCell(bot); return blockLight(feet, lightSources(bot, feet, 4), bot) === 0 && ((bot.blockAt(feet)?.skyLight ?? 15) < 8 || night(bot)); };
 const { verifyHouse } = require('./objectives');
 const { recoverItems } = require('./recovery');
 const { surveyRoute, countOf } = require('./skills');

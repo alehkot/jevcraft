@@ -1985,7 +1985,7 @@ async function place(bot, task, p, material, { face, properties, stay = false, r
   const item = bot.inventory.items().find(i => i.name === material);
   if (!item) throw new Blocked(`Need more ${material}`);
   await bot.equip(item, 'hand');
-  if (properties) {
+  if (properties || material === 'torch') {
     face = placementGoal(bot, p, cell).getFaceAndRef(bot.entity.position.offset(0, 1.62, 0));
     if (!face) throw new Error(`Cannot reach the requested ${material} orientation at ${p}`);
   }
@@ -5030,11 +5030,7 @@ async function designedBuildStep(bot, task, goal, save, client, onStep) {
   // Mineflayer emits this only for placements performed by this bot, including
   // pathfinder scaffolding. Persist ownership so resume can clear that access.
   const placed = (_old, block) => {
-    if (!goal.blueprint) return;
-    const p = block.position;
-    goal.buildOwned ||= {};
-    goal.buildOwned[`${p.x},${p.y},${p.z}`] = blockOwnership(block);
-    save();
+    if (require('./construction-access').recordBuildPlacement(goal, block)) save();
   };
   bot.on('blockPlaced', placed);
   try { return await executeDesignedBuildStep(bot, task, goal, save, client, onStep); }
@@ -5075,6 +5071,18 @@ async function reachableBlocks(bot, task, candidates, { limit = 16, budgetMs = 3
 }
 
 async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = () => {}) {
+  if (goal.houseDetails && !goal.blueprint) {
+    const entry = bot.buildRegistry?.find(goal.houseDetails.target);
+    if (!entry || entry.dimension !== dimensionName(bot)) throw Object.assign(new Blocked('I need the house you chose in this dimension.'), { needsPlayer: true });
+    const door = pos(entry.entrance || entry.origin);
+    if (!bot.blockAt(door) || door.distanceTo(bot.entity.position) > 20) {
+      await navigate(bot, task, new goals.GoalNear(door.x, door.y, door.z, 3)); return false;
+    }
+    const patch = require('./house-details').planFittings(bot, entry, goal.houseDetails);
+    goal.buildId = entry.id; goal.blueprint = patch.blueprint; goal.buildOwned = patch.owned;
+    save();
+    return false;
+  }
   if (goal.continueBuild && !goal.blueprint) {
     const entry = bot.buildRegistry?.find(goal.continueBuild.id);
     // Only the player can say what to do about a building the notes no
@@ -5091,28 +5099,29 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
       : `Picking ${entry.name} back up where I left it.`);
     return false;
   }
-  if (goal.starterBeds && !goal.design) {
+  if (goal.starterBeds && !goal.design && !goal.blueprint && !goal.starterReference) {
     const design = require('./starter-house').designStarterHouse(bot, goal);
     if (!design) {
       await explore(bot, task, goal, save, 'trees for the starter house', { surfaceOnly: true });
       return false;
     }
-    goal.design = design;
+    goal.starterReference = { sleepers: goal.starterBeds, material: goal.material, source: design.source };
     save();
-    bot.chat(`I'll build a ${design.source.size[0]} by 5 house for ${goal.starterBeds}. I'll build the shell first, then furnish it. You can drop logs or wool beside me to help.`);
+    bot.chat(`I'll build a furnished house for ${goal.starterBeds}. You can drop logs or wool beside me to help.`);
   }
-  if (!goal.design) {
+  const pendingDraft = goal.designDraftInfo && goal.designReview?.accepted !== false;
+  if (goal.starterReference && !goal.design && !goal.blueprint && !pendingDraft &&
+      (!designerAvailable(bot) || goal.designHistory?.length >= 2)) {
+    goal.design = { ...validateSchematic(goal.starterReference.source, bot.registry), backend: 'starter-house', createdAt: new Date().toISOString() };
+    if (goal.designHistory?.length) bot.chat("I'll use my furnished house plan with the materials I found here.");
+    save();
+  }
+  if (!goal.design && !goal.blueprint) {
     const mode = process.env.BUILD_DESIGNER || 'auto';
-    if (!['auto', 'jev', 'openrouter'].includes(mode)) throw new Blocked('BUILD_DESIGNER must be auto, jev or openrouter');
-    const fallback = !designerAvailable(bot, { mode });
-    // A template cannot be drawn against an existing building, so an edit
-    // without the custom designer came out as a separate building that then
-    // took over the original's record. Say so and build it beside instead.
+    if (!['auto', 'jev', 'openrouter', 'guide'].includes(mode)) throw new Blocked('BUILD_DESIGNER must be auto, guide, jev or openrouter');
+    const fallback = !pendingDraft && !designerAvailable(bot, { mode });
     if (fallback && goal.buildContinuation?.mode === 'edit') {
-      const name = goal.buildContinuation.name || 'that building';
-      goal.buildContinuation = { ...goal.buildContinuation, mode: 'fresh', placement: 'beside_target', editUnsupported: true };
-      delete goal.buildId; save();
-      bot.chat(`I can't change ${name} without the custom designer, so I'll build this beside it instead.`);
+      throw Object.assign(new Blocked('I need the schematic designer to revise this building. I can still install doors, windows, lights or furniture here.'), { needsPlayer: true });
     }
     // Recheck saved geometry after a validator update, before paying for a
     // replacement or silently reducing the user's request to a house template.
@@ -5123,8 +5132,12 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     // exactly what an interrupted review left behind.
     let savedDraft = null;
     if (!fallback && goal.designDraft && goal.designReview?.accepted !== false) {
-      try { savedDraft = { ...validateSchematic(goal.designDraft, bot.registry), backend: 'validated-saved-draft', createdAt: new Date().toISOString() }; delete goal.designFallbackReason; }
-      catch (error) { goal.designError = error.message; }
+      try {
+        savedDraft = { ...validateSchematic(goal.designDraft, bot.registry), backend: 'validated-saved-draft', createdAt: new Date().toISOString(), ...goal.designDraftInfo };
+        if (goal.starterReference) require('./starter-house').checkStarterDesign(savedDraft, goal.starterReference);
+        delete goal.designFallbackReason;
+      }
+      catch (error) { savedDraft = null; goal.designError = error.message; }
     }
     if (!savedDraft && !fallback && (goal.designAttempts || 0) >= 4) throw new Blocked(`Building designer could not produce a usable plan after four attempts: ${goal.designError || 'request failed'}`);
     goal.step = { action: 'design_building' }; save(); onStep(goal);
@@ -5142,15 +5155,15 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     // its materials, line up with its storeys and meet its wall.
     const joining = goal.buildContinuation?.mode === 'edit'
       ? bot.buildRegistry?.find(goal.buildContinuation.target) : null;
-    const editing = joining?.design?.source ? { name: joining.name, size: joining.design.source.size,
-      palette: joining.design.source.palette, regions: joining.design.source.regions,
-      entrance: joining.design.source.entrance } : undefined;
+    const editing = require('./house-details').drawingForEdit(joining)?.source;
+    if (goal.buildContinuation?.mode === 'edit' && !editing) throw Object.assign(new Blocked('I need the original building plan to anchor that change.'), { needsPlayer: true });
     // Held here until the review passes. On the goal straight away, a review
     // cut short (a stop, a mob, a dropped connection) left a design the next
     // step took as settled, and it was built unreviewed.
     let design = savedDraft;
     if (!design) try { design = fallback ? await designWithJev(bot, task, goal.request, client, goal.memoryContext) :
-      await designBuilding(bot, task, goal.request, { previousDraft: goal.designDraft, feedback: goal.designError, memory: goal.memoryContext, editing }); }
+        await designBuilding(bot, task, goal.request, { previousDraft: goal.designDraft, feedback: goal.designError, memory: goal.memoryContext, editing,
+          starter: goal.starterReference, anchor: goal.workSite?.position || goal.buildAnchor }); }
     catch (err) {
       if (!fallback && ['Cancelled', 'NeedsAir', 'NeedsSafety'].includes(err.name)) goal.designAttempts--;
       goal.designError = err.message;
@@ -5158,7 +5171,7 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
       if (!['Cancelled', 'NeedsAir', 'NeedsSafety'].includes(err.name)) {
         (goal.designHistory ||= []).push({ at: new Date().toISOString(), attempt: goal.designAttempts, error: err.message, draft: err.draft });
         goal.designHistory = goal.designHistory.slice(-4);
-        if (!fallback && err.draft && goal.designAttempts < 4) err.name = 'DesignRepair';
+        if (!fallback && (goal.starterReference || err.draft) && goal.designAttempts < 4) err.name = 'DesignRepair';
       }
       save(); throw err;
     }
@@ -5167,7 +5180,8 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     if (!fallback && client) {
       // Kept as the draft while it is judged: a review cut short (a stop, a
       // mob) used to throw a paid design away, and cost an attempt too.
-      delete goal.designReview; goal.designDraft = design.source; save();
+      delete goal.designReview; goal.designDraft = design.source;
+      goal.designDraftInfo = { model: design.model, backend: design.backend, world: design.world, createdAt: design.createdAt }; save();
       let review;
       try { review = await reviewDesign(client, { request: goal.request, design, memory: goal.memoryContext, editing }); }
       catch (err) { if (!savedDraft && ['Cancelled', 'NeedsAir', 'NeedsSafety'].includes(err.name)) goal.designAttempts--; save(); throw err; }
@@ -5186,15 +5200,15 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
       }
     }
     goal.design = design;
-    delete goal.designDraft; delete goal.designError;
+    delete goal.designDraft; delete goal.designDraftInfo; delete goal.designError;
     save();
     const changing = goal.buildContinuation?.mode === 'edit' && goal.buildContinuation.name;
     bot.chat(changing ? `I've worked out how to change ${changing}. Starting on it now.`
       : `I've planned ${goal.design.source.name}! I'll find a good spot and start building.`);
     return false;
   }
-  const schematic = validateSchematic(goal.design.source, bot.registry);
   if (!goal.blueprint) {
+    const schematic = validateSchematic(goal.design.source, bot.registry);
     // Anchor the site where the player asked for it, and treat Jev's own past
     // structures as ground to stand on and material to build into.
     const registry = bot.buildRegistry;
@@ -5203,7 +5217,9 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     // the result goes over the real one: additions land against it, and
     // anything the drawing leaves out is cleared instead of left standing.
     const offset = edited && schematic.existingOffset;
-    const at = offset ? { x: edited.origin.x - offset[0], y: edited.origin.y - offset[1], z: edited.origin.z - offset[2] } : undefined;
+    if (edited && !offset) throw Object.assign(new Blocked('I need a drawing anchored to the original building before making this change.'), { needsPlayer: true });
+    const origin = edited && require('./house-details').drawingForEdit(edited).origin;
+    const at = offset ? { x: origin.x - offset[0], y: origin.y - offset[1], z: origin.z - offset[2] } : undefined;
     // The design is the only party that saw the ground and the building
     // together, so its choice of spot is tried first. It is a suggestion, not
     // an instruction: a player's "here" still wins, and code searches on its
@@ -5211,7 +5227,7 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     const owned = registry?.claimed(dimensionName(bot), edited ? undefined : goal.buildId);
     // Everything Jev built except the building being changed stays standing.
     const protect = registry?.claimed(dimensionName(bot), edited ? edited.id : goal.buildId);
-    const here = bot.entity.position.floored();
+    const here = goal.design.world?.position || bot.entity.position.floored();
     const proposed = !goal.buildAnchor && !at && schematic.site
       ? { x: here.x + schematic.site[0], y: here.y + schematic.site[1], z: here.z + schematic.site[2] } : null;
     if (goal.starterBeds && goal.buildAnchor && !bot.blockAt(pos(goal.buildAnchor))) {
@@ -5336,9 +5352,13 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     faces.some(f => bot.blockAt(pos(p).plus(f))?.boundingBox === 'block'))
     .map(p => ({ position: p, operation: air(bot.blockAt(pos(p))) ? 'place' : 'dig', material: p.material, properties: p.properties }));
   const placements = availablePlacements.filter(p => p.position.y === layer);
+  const passage = goal.starterBeds ? require('./construction-access').entrancePassage(blueprint) : new Set();
+  const interior = furnishing ? new Set(blueprint.empty.map(p => `${p.x},${p.y},${p.z}`)) : new Set();
   const clearing = obstructions.filter(p => {
+    const k = `${p.x},${p.y},${p.z}`;
     const block = bot.blockAt(pos(p));
-    return block?.diggable && (!missing.length || !['dirt', 'cobblestone'].includes(block.name) || goal.buildOwned?.[`${p.x},${p.y},${p.z}`] !== (block.stateId ?? block.name));
+    return block?.diggable && (!missing.length || passage.has(k) || interior.has(k) ||
+      !['dirt', 'cobblestone'].includes(block.name) || goal.buildOwned?.[k] !== (block.stateId ?? block.name));
   }).sort((a, b) => b.y - a.y).map(p => ({ position: p, operation: 'dig', cleanup: true,
     // Rock is dug from the face inward. A cell walled in on every side cannot
     // be seen, let alone reached, until its neighbours are gone, so leaving it
@@ -10838,6 +10858,10 @@ function spinGuard(bot = null) {
 async function runGoal(bot, task, goal, store, { maxSteps = Infinity, onStep = () => {}, decisionClient, survival, recoveryAdviser, backoffMs = 3000 } = {}) {
   const save = () => store.save(goal);
   task.opportunityClient = decisionClient;
+  if (goal.kind === 'house' && !goal.blueprint) {
+    goal.kind = 'build'; goal.starterBeds ||= 2;
+    goal.buildAnchor ||= goal.requesterPosition;
+  }
   if (goal.boatTravel?.placed?.uuid && goal.boatTravel.placed.dimension === bot.game.dimension) (bot._ownedBoats ||= new Set()).add(goal.boatTravel.placed.uuid);
   survival ||= createSurvival(bot, { state: goal.survival, client: decisionClient });
   goal.survival = survival.state;
@@ -11003,6 +11027,8 @@ async function runGoal(bot, task, goal, store, { maxSteps = Infinity, onStep = (
       if (goal.kind === 'bundle') complete = await bundleStep(bot, task, goal, save,
         (child, checkpoint) => obtainStep(bot, task, child, checkpoint, decisionClient, () => onStep(goal)),
         { prepare: () => prepareBundleStep(bot, task, goal, save, decisionClient, () => onStep(goal)) });
+      if (goal.kind === 'climb_ladder') complete = await require('./companion-actions').climbLadder(bot, task, goal, save, navigate);
+      if (goal.kind === 'light_area') complete = await require('./companion-actions').lightArea(bot, task, goal, save, { acquireStep, place, navigate });
       if (goal.kind === 'find') complete = await discoverStep(bot, task, goal, save, { navigate, explore,
         boatTravel: target => boatTravelStep(bot, task, goal, save, target, { acquireStep }) });
       if (['come', 'follow'].includes(goal.kind)) complete = goal.kind === 'come' && goal.workSite ? true : await movementStep(bot, task, goal, save);
@@ -11025,7 +11051,8 @@ async function runGoal(bot, task, goal, store, { maxSteps = Infinity, onStep = (
       goal.history = goal.history.slice(-40);
       if (complete) {
         if (goal.kind === 'house') survival.rememberHouse(goal.blueprint);
-        bot.buildRegistry?.remember(goal, { dimension: dimension(bot), status: 'complete' });
+        if (goal.houseDetails) require('./house-details').rememberFittings(bot, goal);
+        else bot.buildRegistry?.remember(goal, { dimension: dimension(bot), status: 'complete' });
         goal.status = 'complete'; goal.completedAt = new Date().toISOString(); save();
         const done = completion(goal); if (done) bot.chat(done);
         return { ok: true, goal };

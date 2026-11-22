@@ -2,19 +2,21 @@
 const { Vec3 } = require('vec3');
 const { surfaceObserver } = require('./surface');
 const { checkAir } = require('./vitals');
-const { furnishingPlacement, isBed, regionProperties, buildFootprint, matchesOwnership } = require('./build-blocks');
+const { ladderSupport, furnishingPlacement, isBed, regionProperties, buildFootprint, matchesOwnership } = require('./build-blocks');
 const { isDoor, isWoodenDoor } = require('./doors');
 const { thinking } = require('./speech');
 const MODEL = 'anthropic/claude-opus-5.5';
-// The generative model (OpenRouter) is for Creative play only. In Survival
-// every judgment is Jev's, so a dream run never waits on or pays for it.
-const generativeAllowed = bot => bot?.game?.gameMode === 'creative';
-// Whether a build request goes to the generative designer rather than Jev's
-// templates and shelf. In Creative, when it does, every build request goes
-// there, a plain house included: materials are free, so the catalog's only
-// advantage, cost, does not apply.
-function designerAvailable(bot, { mode = process.env.BUILD_DESIGNER || 'auto', apiKey = process.env.OPENROUTER_API_KEY } = {}) {
-  return generativeAllowed(bot) && (mode === 'openrouter' || mode === 'auto' && !!apiKey);
+const generativeAllowed = bot => ['survival', 'creative'].includes(bot?.game?.gameMode);
+function designerConfig({ mode = process.env.BUILD_DESIGNER || 'auto', apiKey = process.env.OPENROUTER_API_KEY } = {}) {
+  if (mode === 'jev') return null;
+  if (mode === 'openrouter' || (mode === 'auto' && apiKey)) return { provider: 'openrouter', apiKey,
+    url: 'https://openrouter.ai/api/v1/chat/completions', model: process.env.JEV_BUILD_MODEL || process.env.OPENROUTER_BUILD_MODEL || MODEL };
+  if (mode === 'guide' || (mode === 'auto' && process.env.JEV_GUIDE_API_KEY)) return { provider: 'guide', apiKey: process.env.JEV_GUIDE_API_KEY,
+    url: process.env.JEV_GUIDE_URL || 'https://api.openai.com/v1/chat/completions', model: process.env.JEV_BUILD_MODEL || process.env.JEV_GUIDE_MODEL || 'gpt-6.1-terra' };
+  return null;
+}
+function designerAvailable(bot, options) {
+  return generativeAllowed(bot) && Boolean(designerConfig(options)?.apiKey);
 }
 const LIMITS = { width: 25, height: 16, depth: 25, regions: 256, blocks: 6000 };
 const CEILING = { width: 48, height: 32, depth: 48, regions: 256, blocks: 12000 };
@@ -60,7 +62,7 @@ const naturalGround = b => b?.boundingBox === 'block' && /^(grass_block|dirt|coa
 // exactly. Stairs/slabs and wooden doors carry explicit states; gravity
 // blocks, fluids and commands are not treated as ordinary solid cubes.
 function buildPalette(registry) {
-  return registry.blocksArray.filter(b => registry.itemsByName[b.name] && b.boundingBox === 'block' &&
+  return registry.blocksArray.filter(b => b.name === 'torch' || b.name === 'ladder' || registry.itemsByName[b.name] && b.boundingBox === 'block' &&
     b.diggable !== false && b.hardness >= 0 &&
     (/_(planks|concrete|terracotta|wool|bricks|stained_glass|stairs|slab)$/.test(b.name) || isWoodenDoor(registry, b.name) || isBed(b.name) || furnishingPlacement(b.name) ||
       ['glass', 'stone', 'smooth_stone', 'cobblestone', 'mossy_cobblestone', 'bricks', 'quartz_block', 'smooth_quartz',
@@ -111,10 +113,19 @@ function validateSchematic(input, registry) {
   for (const cell of cells.values()) if (furnishingPlacement(cell.material) === 'single_container') {
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (cells.get(key({ ...cell, x: cell.x + dx, z: cell.z + dz }))?.material === cell.material) fail('a chest cannot stand beside another chest of its kind');
   }
+  for (const cell of cells.values()) if (cell.material === 'ladder') {
+    const support = ladderSupport(cell.properties.facing);
+    const wall = cells.get(key({ x: cell.x + support.x, y: cell.y, z: cell.z + support.z }));
+    if (!wall || wall.properties || ['torch', 'enchanting_table'].includes(wall.material)) fail('a ladder needs a full supporting wall behind each rung');
+  }
+  for (const cell of cells.values()) if (cell.material === 'torch') {
+    const floor = cells.get(key({ ...cell, y: cell.y - 1 }));
+    if (!floor || floor.properties || floor.material === 'torch' || floor.material === 'enchanting_table') fail('a standing torch needs a solid floor below it');
+  }
   for (const cell of [...cells.values()].filter(p => isDoor(p.material))) {
     const upper = buildFootprint(cell)[1], floor = cells.get(key({ ...cell, y: cell.y - 1 }));
     if (upper.y >= input.size[1] || cells.has(key(upper))) fail('a door needs a free cell above its bottom position');
-    if (!floor || floor.properties) fail('a door needs a full-block floor directly below it');
+    if (!floor || floor.properties || floor.material === 'torch') fail('a door needs a full-block floor directly below it');
     cells.set(key(upper), upper);
   }
   for (const cell of [...cells.values()].filter(p => isBed(p.material))) {
@@ -123,7 +134,7 @@ function validateSchematic(input, registry) {
     if (cells.has(key(head))) fail('a bed needs a free cell toward its facing for its head');
     for (const part of [cell, head]) {
       const floor = cells.get(key({ ...part, y: part.y - 1 }));
-      if (!floor || floor.properties) fail('a bed needs a full-block floor below both halves');
+      if (!floor || floor.properties || floor.material === 'torch') fail('a bed needs a full-block floor below both halves');
     }
     cells.set(key(head), head);
   }
@@ -195,23 +206,36 @@ function validateSchematic(input, registry) {
   return { source: input, blocks, empty, materials, notes, existingOffset, site, access: access && [access.x, access.y, access.z] };
 }
 
-function surveyForDesign(bot) {
-  const o = bot.entity.position.floored();
-  const span = (SURVEY.radius * 2) / SURVEY.step + 1;
+function surveyForDesign(bot, anchor) {
+  const grid = bot.game.gameMode === 'survival' ? { radius: 24, step: 4, depth: 14 } : SURVEY;
+  const here = bot.entity.position.floored(), requested = anchor && new Vec3(anchor.x, anchor.y, anchor.z).floored();
+  const o = requested && bot.blockAt(requested) ? requested : here;
+  const biomes = new Set(), fluids = new Set(), wet = [];
+  const { biomeAt } = require('./discovery');
+  const span = (grid.radius * 2) / grid.step + 1;
   const heights = [], surface = [], palette = [], indexOf = new Map();
   const nearby = new Set();
   for (let iz = 0; iz < span; iz++) {
     const row = [], materials = [];
     for (let ix = 0; ix < span; ix++) {
-      const dx = -SURVEY.radius + ix * SURVEY.step, dz = -SURVEY.radius + iz * SURVEY.step;
-      let ground = null;
-      for (let y = o.y + SURVEY.depth; y >= o.y - SURVEY.depth; y--) {
+      const dx = -grid.radius + ix * grid.step, dz = -grid.radius + iz * grid.step;
+      let ground = null, surfaceFluid = null;
+      for (let y = o.y + grid.depth; y >= o.y - grid.depth; y--) {
         const p = o.offset(dx, y - o.y, dz), b = bot.blockAt(p);
         if (!b) break;
+        if (b.name === 'water' || b.name === 'lava') {
+          fluids.add(b.name);
+          surfaceFluid ||= { dx, dz, y, fluid: b.name };
+        }
         if (naturalGround(b) && replaceable(bot.blockAt(p.offset(0, 1, 0)))) { ground = { y, name: b.name }; break; }
       }
+      if (surfaceFluid) wet.push(surfaceFluid);
       row.push(ground ? ground.y : null);
-      if (ground) nearby.add(ground.name);
+      if (ground) {
+        nearby.add(ground.name);
+        const biome = biomeAt(bot, o.offset(dx, ground.y - o.y, dz));
+        if (biome) biomes.add(biome);
+      }
       if (iz % MATERIAL_EVERY || ix % MATERIAL_EVERY) continue;
       if (ground && !indexOf.has(ground.name)) { indexOf.set(ground.name, palette.length); palette.push(ground.name); }
       materials.push(ground ? indexOf.get(ground.name) : null);
@@ -220,18 +244,18 @@ function surveyForDesign(bot) {
     if (!(iz % MATERIAL_EVERY)) surface.push(materials);
   }
   const terrain = {
-    step: SURVEY.step, radius: SURVEY.radius,
-    note: `heights[iz][ix] is the ground height at dx = -${SURVEY.radius} + ix*${SURVEY.step}, dz = -${SURVEY.radius} + iz*${SURVEY.step}, relative to Jev; null where no ground was found. surface uses the same layout at ${SURVEY.step * MATERIAL_EVERY}-block spacing, indexing surfacePalette.`,
-    heights, surface, surfacePalette: palette,
+    step: grid.step, radius: grid.radius,
+    note: `heights[iz][ix] is the ground height at dx = -${grid.radius} + ix*${grid.step}, dz = -${grid.radius} + iz*${grid.step}, relative to position; null where no ground was found. surface uses the same layout at ${grid.step * MATERIAL_EVERY}-block spacing, indexing surfacePalette.`,
+    heights, surface, surfacePalette: palette, fluidSamples: wet,
   };
   const ids = bot.registry.blocksArray.filter(b => /_log$|^(stone|sand|red_sand|sandstone|red_sandstone|dirt)$/.test(b.name)).map(b => b.id);
-  for (const p of bot.findBlocks?.({ matching: ids, maxDistance: 32, count: 64 }) || []) nearby.add(bot.blockAt(p)?.name);
+  for (const p of bot.findBlocks?.({ point: o, matching: ids, maxDistance: 32, count: 64 }) || []) nearby.add(bot.blockAt(p)?.name);
   const stock = Object.fromEntries(bot.inventory.items().map(i => [i.name, 0]));
   for (const i of bot.inventory.items()) stock[i.name] += i.count;
   const local = new Set(Object.keys(stock).filter(name => buildPalette(bot.registry).includes(name)));
   for (const name of new Set([...nearby, ...Object.keys(stock)])) if (name?.endsWith('_log')) local.add(name.replace('_log', '_planks'));
   if (nearby.has('stone')) local.add('cobblestone');
-  if (nearby.has('sand')) local.add('sandstone');
+  if (nearby.has('sand')) { local.add('sandstone'); local.add('glass'); }
   if (nearby.has('red_sand')) local.add('red_sandstone');
   if (nearby.has('dirt')) local.add('dirt');
   for (const name of [...local]) for (const suffix of ['stairs', 'slab', 'door']) {
@@ -251,7 +275,9 @@ function surveyForDesign(bot) {
       return { block, carried: stock[block] || 0, for64Blocks: plan.map(s => ({ action: s.action, item: s.item || s.drops, count: s.count })) };
     } catch { return { block, carried: stock[block] || 0, acquisition: 'No executable acquisition plan; use only what is carried' }; }
   });
-  return { dimension: bot.game.dimension, gameMode: bot.game.gameMode, position: { ...o }, terrain,
+  return { dimension: bot.game.dimension, gameMode: bot.game.gameMode, position: { ...o }, botPosition: { ...here }, terrain,
+    biome: biomeAt(bot, o) || null, observedBiomes: [...biomes], observedFluids: [...fluids], requestedAnchor: anchor,
+    weather: bot.isRaining ? 'precipitation' : 'clear', timeOfDay: bot.time?.timeOfDay,
     existingStructures: bot.buildRegistry?.describe(bot, o, bot.game.dimension) || [],
     materials: { locallyObservedSources: [...nearby], practicalPalette: materialGuide,
       catalogMeaning: 'The response schema enumerates the supported block types. That is what Jev can place, NOT what is available here: unlisted decorative materials may require distant biomes or another dimension.' },
@@ -261,7 +287,7 @@ function surveyForDesign(bot) {
 async function readDesign(response, report) {
   const body = response.body;
   // A stubbed or non-streaming reply still answers in one piece.
-  if (!body || typeof body[Symbol.asyncIterator] !== 'function') {
+  if (response.headers?.get?.('content-type')?.includes('application/json') || !body || typeof body[Symbol.asyncIterator] !== 'function') {
     const whole = await response.json(), choice = whole.choices?.[0];
     return { content: choice?.message?.content, finishReason: choice?.finish_reason, usage: whole.usage };
   }
@@ -313,11 +339,11 @@ function designProgress(say, editing) {
   };
 }
 
-async function designBuilding(bot, task, request, { fetchImpl = fetch, apiKey = process.env.OPENROUTER_API_KEY,
-  model = process.env.OPENROUTER_BUILD_MODEL || MODEL, previousDraft, feedback, memory, editing } = {}) {
+async function designBuilding(bot, task, request, { fetchImpl = fetch, apiKey, planner = designerConfig({ apiKey }), model = planner?.model,
+  previousDraft, feedback, memory, editing, starter, anchor } = {}) {
   memory = require('./preferences').preferenceContext(memory);
-  if (!apiKey) { const e = new Error('Building designer needs OPENROUTER_API_KEY in the local .env'); e.name = 'Blocked'; throw e; }
-  const world = surveyForDesign(bot), controller = new AbortController();
+  if (!planner?.apiKey) { const e = new Error('I need a configured building model to draw this plan.'); e.name = 'Blocked'; throw e; }
+  const world = surveyForDesign(bot, anchor), controller = new AbortController();
   const schema = structuredClone(SCHEMA);
   const allowed = [...buildPalette(bot.registry), 'air'];
   schema.properties.palette.items.enum = allowed;
@@ -331,18 +357,25 @@ async function designBuilding(bot, task, request, { fetchImpl = fetch, apiKey = 
   const stopThinking = thinking(bot);
   try {
     task.check();
-    const response = await fetchImpl('https://openrouter.ai/api/v1/chat/completions', {
+    const response = await fetchImpl(planner.url, {
       method: 'POST', signal: controller.signal,
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, max_tokens: 32000, reasoning: { effort: 'low' }, provider: { require_parameters: true },
-        stream: true, stream_options: { include_usage: true },
+      headers: { Authorization: `Bearer ${planner.apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, ...(planner.provider === 'openrouter'
+        ? { max_tokens: 32000, reasoning: { effort: 'low' }, provider: { require_parameters: true } }
+        : { max_completion_tokens: starter ? 7000 : 16000 }),
+        ...(planner.provider === 'openrouter' && { stream: true, stream_options: { include_usage: true } }),
         messages: [{ role: 'system', content: `Design an attractive, usable Minecraft structure matching the player request. Return only a schematic, never commands or code. Coordinates are local [x,y,z] inside size. Regions are inclusive filled cuboids, applied in order; air carves openings. Unspecified cells are air. The palette field lists every block you may use, and the response schema enumerates them; at most 16 palette entries and ${LIMITS.regions} regions; A flat or thin structure is fine: an arch, a wall or a statue may be one or two blocks deep. Ordinary requests belong within ${LIMITS.width}x${LIMITS.height}x${LIMITS.depth} and ${LIMITS.blocks} solid blocks, which is what most builds should use. Go beyond that, up to ${CEILING.width}x${CEILING.height}x${CEILING.depth} and ${CEILING.blocks} blocks, when the player asks for something large outright or the thing asked for is large by its nature, such as a castle, a cathedral, a bridge across a valley or a statue meant to be seen from far off. Build it at the size it deserves rather than shrinking it to fit; Jev places every block by hand at about ${SECONDS_PER_BLOCK} seconds each, so size it to the request and not beyond it. All solid components must connect to the foundation at y=0, which is the height site places them at, not necessarily the surrounding surface. Follow the requested shape rather than forcing every structure to be a house. Current explicit instructions override memory. Relevant explicit memory notes override learned memory.preferences. Learned wood preferences are soft defaults for unspecified materials, not mandatory ingredients: favor that wood when practical, but do not start a distant expedition solely for an inferred preference. Never treat a previous task or remembered text as a new action request. Include floors, walls, a roof, windows and walkable interiors only when appropriate. Sculptures, monuments, arches and other structures need not have rooms or a doorway: use entrance:null when the structure is not meant to be entered. For structures meant to be entered, provide a usable entrance. In Survival, use world.materials.practicalPalette for the main structure unless the request specifies another material. The for64Blocks recipes show the real gathering effort: prefer abundant carried supplies or cheap local materials. For an ordinary request without a size, aim for 80-200 solid blocks total; spend detail on shape, proportions and openings, not large bulk. Do not add Nether-only blocks, rare biome blocks, or smelted decorative variants unless the player requested them or enough are already carried. If a light block is not locally practical, leave a window/skylight instead. These are design choices, not reasons to ask the player questions. Make mansions visibly larger and architecturally richer than simple houses, with connected rooms and a usable entrance. For an enterable structure, reserve a two-block-high entrance opening at y>=1 with a floor directly beneath it; entrance gives its bottom air cell. Inset entrances are allowed when a supported, two-block-high walking route reaches an exterior edge of the bounding box. Every interior floor must be reachable from the entrance by walking and one-block jumps; carve the floor above each staircase to leave jumping headroom over the current step as well as the destination. Stairs and slabs are available. Every stair region needs properties:{facing:"north"|"east"|"south"|"west",half:"bottom"|"top"}. Facing points toward the high side of bottom stairs (north=-z, south=+z, east=+x, west=-x). Every slab region needs properties:{facing:null,half:"bottom"|"top"}. Other blocks use properties:null. Stair corners join automatically; do not specify shape, waterlogging or double slabs. Use full blocks for structural supports and entrance floors; stairs/slabs are useful for steps, roofs and trim. Wooden doors are available. A door region specifies only its lower cell, with properties:{facing:"north"|"east"|"south"|"west",half:null}. Code adds the upper cell and counts one inventory door for the pair. Leave the cell above it free and put a full block directly below it. Facing follows the walking direction through the doorway, for example south for entering from a north wall. A usable entrance may contain a door. Do not specify hinges, open states, or upper door halves; Minecraft handles them. Beds are available. A bed region specifies only its foot cell with properties:{facing:"north"|"east"|"south"|"west",half:null}; facing points from foot toward head. Code adds the horizontal head cell and counts one inventory bed. Leave that cell free inside the size bounds, with full-block floors below both halves. Never list a head cell separately. Furnishings are available. A furnace, smoker, blast_furnace, barrel, stonecutter, loom, chest or trapped_chest needs properties:{facing:"north"|"east"|"south"|"west",half:null}; facing is the side its front opens to, toward where a player stands to use it. A chest is a single chest: never two of a kind side by side. A crafting_table, cartography_table, smithing_table, fletching_table or enchanting_table uses properties:null. Design compactly with cuboids rather than listing thousands of individual blocks. When \`editing\` is present the player wants an existing building changed, and its exact schematic is given in its own local coordinates. Return the COMPLETE building as it should end up, existing parts and changes together, and set existingOffset to the local position the old building's [0,0,0] now occupies in your drawing. Any cell you leave out is torn down, so this expresses whatever the request actually means: adding a wing or a balcony, opening a wall, taking a roof off, raising a storey, reshaping or redecorating. You are free to alter the original where the request calls for it; keep the parts it does not. The result must be ONE connected building: every part you add shares a face with the existing structure or with something else you add, never floating beside it with air in between. Match the existing materials and proportions unless asked otherwise, and keep the whole result within the size limits. For a fresh build with nothing to change, set existingOffset to null. world.terrain is the lie of the land around Jev: a heightmap covering ${SURVEY.radius} blocks in every direction, sampled every ${SURVEY.step} blocks, with terrain.note explaining how to read it. Read it as ground: flat shelves, slopes, ridges, hollows and water. Design for that ground rather than for a flat plain, and set site to the [dx, dy, dz] the building should stand on, relative to world.position, where dy puts local y=0 at the height you want, choosing ground that suits it: level enough for its footprint, and a hilltop, a shoreline or a clearing where the request calls for one. Take the slope into account in the design itself. You may set the building into the ground rather than on top of it: put local y=0 below the surrounding surface and carve the rooms with explicit air regions, and the ground inside them is dug out for you, up to ${SITE.excavate} blocks. Cells you simply leave unmentioned keep whatever ground is already there, so a cellar or a hall in a hillside must be carved with air on purpose. Step or raise the foundation where the ground falls away instead, when the building belongs on the surface. Code proves the spot before building and will look elsewhere if it does not hold, so choose the best ground you can see rather than the nearest. Use site:null only when nowhere in view suits it. world.existingStructures lists buildings already standing here: match the materials and proportions of any the request adjoins.` },
-          { role: 'user', content: JSON.stringify({ request, world, memory, editing }) },
+          { role: 'system', content: 'Return one JSON object matching the schematic schema. Adapt the layout, materials, roof and foundation to the observed biome, slope, hazards, inventory and requested location. Keep an explicit material choice. A standing torch is a torch on a solid floor. A ladder region has cardinal facing away from a full wall behind every rung. For a starter house use the supplied furnished layout as the baseline. Keep two rooms, working entry and interior doors, full roof, glass windows, two torches, a chest, a two-stair sofa and one accessible bed per requested sleeper. Return a compact, buildable drawing. Use only the declared schematic fields.' },
+          { role: 'user', content: JSON.stringify({ request, world, memory, editing, starter, ...(planner.provider === 'guide' && { format: SCHEMA }) }) },
           ...(previousDraft ? [{ role: 'assistant', content: JSON.stringify(previousDraft) },
             { role: 'user', content: `The schematic failed validation: ${feedback}. Correct this issue while preserving the requested structure and materials. Do not replace it with a different building type. Check all geometry, connections, entrance access and walkable interior floors before returning it. Return the full corrected schematic.` }] : [])],
-        response_format: { type: 'json_schema', json_schema: { name: 'minecraft_schematic', strict: true, schema } } }),
+        response_format: planner.provider === 'guide' ? { type: 'json_object' } : { type: 'json_schema', json_schema: { name: 'minecraft_schematic', strict: true, schema } } }),
     });
-    if (!response.ok) throw new Error(`Building designer request failed (${response.status})`);
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      const reason = [detail.error?.code, detail.error?.param].filter(s => typeof s === 'string' && /^[\w. -]{1,80}$/.test(s)).join(', ');
+      throw new Error(`Building designer request failed (${response.status}${reason ? ', ' + reason : ''})`);
+    }
     const { content, finishReason, usage } = await readDesign(response, designProgress(message => {
       try { bot.chat(message); } catch (_) { /* an aside is never worth failing the design over */ }
     }, !!editing));
@@ -356,9 +389,16 @@ async function designBuilding(bot, task, request, { fetchImpl = fetch, apiKey = 
     if (content.length > 200000) throw new Error('Building designer response exceeded the schematic size limit');
     const draft = JSON.parse(content);
     let validated;
-    try { validated = validateSchematic(draft, bot.registry); }
+    try {
+      validated = validateSchematic(draft, bot.registry);
+      if (editing && !validated.existingOffset) throw new Error('Anchor the edited drawing to the existing structure using existingOffset.');
+      if (starter) require('./starter-house').checkStarterDesign(validated, starter);
+    }
     catch (err) { err.draft = draft; throw err; }
-    return { ...validated, model, createdAt: new Date().toISOString(), usage, world };
+    return { ...validated, model, backend: planner.provider, createdAt: new Date().toISOString(), usage, world };
+  } catch (err) {
+    if (controller.signal.aborted) { task.check(); checkAir(bot); throw controller.signal.reason || err; }
+    throw err;
   } finally { clearTimeout(timer); clearInterval(watcher); stopThinking(); }
 }
 
@@ -555,4 +595,4 @@ function schematicScaffolding(bot, goal) {
     return ['dirt', 'cobblestone'].includes(block?.name) && (block.stateId ?? block.name) === state ? [{ ...p }] : [];
   });
 }
-module.exports = { MODEL, generativeAllowed, designerAvailable, LIMITS, CEILING, SECONDS_PER_BLOCK, SURVEY, SCHEMA, designProgress, buildPalette, validateSchematic, surveyForDesign, designBuilding, selectSchematicSite, canClearSchematicBlock, schematicScaffolding };
+module.exports = { MODEL, designerConfig, generativeAllowed, designerAvailable, LIMITS, CEILING, SECONDS_PER_BLOCK, SURVEY, SCHEMA, designProgress, buildPalette, validateSchematic, surveyForDesign, designBuilding, selectSchematicSite, canClearSchematicBlock, schematicScaffolding };

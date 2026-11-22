@@ -22,7 +22,7 @@ const facingFurnishings = new Set(['furnace', 'blast_furnace', 'smoker', 'barrel
 const singleChest = name => name === 'chest' || name === 'trapped_chest';
 const furnishingPlacement = name => plainFurnishings.has(name) ? 'plain' : facingFurnishings.has(name) ? 'facing' : singleChest(name) ? 'single_container' : null;
 // The way the bot looks as it places `material` to face `facing`.
-const placementFacing = (material, facing) => ['facing', 'single_container'].includes(furnishingPlacement(material)) ? opposite[facing] : facing;
+const placementFacing = (material, facing) => material === 'ladder' ? undefined : ['facing', 'single_container'].includes(furnishingPlacement(material)) ? opposite[facing] : facing;
 // A barrel faces up or down too, by the pitch it is placed at: looking level, it faces a side.
 const placementPitch = (material, aimPitch) => material === 'barrel' ? 0 : aimPitch;
 // The half a cell is placed against, top or bottom: a stair's half, a slab's
@@ -41,6 +41,10 @@ function regionProperties(material, value) {
   if (furnishing === 'facing' || furnishing === 'single_container') {
     if (!Object.hasOwn(opposite, properties.facing) || properties.half !== undefined) throw new Error(`${material} needs a cardinal facing and no half`);
     return { facing: properties.facing, ...(furnishing === 'single_container' && { type: 'single', waterlogged: false }) };
+  }
+  if (material === 'ladder') {
+    if (!Object.hasOwn(opposite, properties.facing) || properties.half !== undefined) throw new Error('ladder needs a cardinal facing and no half');
+    return { facing: properties.facing, waterlogged: false };
   }
   if (isBed(material)) {
     if (!Object.hasOwn(opposite, properties.facing)) throw new Error(`${material} needs a cardinal facing`);
@@ -115,6 +119,7 @@ function buildCellComplete(bot, cell) {
   const parts = buildFootprint(cell), observed = parts.map(p => bot.blockAt(new Vec3(p.x, p.y, p.z)));
   if (isBed(cell.material) && parts.length === 2) return parts.every((p, i) => matchesBuildBlock(observed[i], p)) && bedPairMatches(...observed);
   if (parts.every((p, i) => matchesBuildBlock(observed[i], p)) && (parts.length === 1 || doorPairMatches(...observed))) return true;
+  if (cell.properties || isDoor(cell.material) || cell.material === 'torch' || furnishingPlacement(cell.material)) return false;
   return parts.every(p => enclosedCell(bot, p));
 }
 
@@ -140,8 +145,15 @@ function matchesOwnership(block, owned) {
     owned === (block.stateId ?? block.name);
 }
 
+function ladderSupport(facing) {
+  const [x, z] = bedDirections[facing];
+  return new Vec3(-x, 0, -z);
+}
+
 function placementGoal(bot, point, cell = {}) {
   const p = new Vec3(point.x, point.y, point.z), state = cell.properties || {};
+  if (cell.material === 'ladder') return new goals.GoalPlaceBlock(p, bot.world, { range: 4.25, faces: [ladderSupport(state.facing)] });
+  if (cell.material === 'torch') return new goals.GoalPlaceBlock(p, bot.world, { range: 4.25, faces: [new Vec3(0, -1, 0)] });
   if (isDoor(cell.material) || isBed(cell.material)) return new goals.GoalPlaceBlock(p, bot.world, { range: 4.25, facing: opposite[state.facing], faces: [new Vec3(0, -1, 0)] });
   const half = placedHalf(state);
   // GoalPlaceBlock's facing means the face toward the player, opposite the
@@ -172,4 +184,4 @@ function placementGoal(bot, point, cell = {}) {
   return goal;
 }
 
-module.exports = { furnishingPlacement, placementFacing, placementPitch, placedHalf, isBed, bedFloor, bedPairMatches, regionProperties, matchesBuildBlock, placementGoal, buildFootprint, buildCellComplete, enclosedCell, blockOwnership, matchesOwnership };
+module.exports = { ladderSupport, furnishingPlacement, placementFacing, placementPitch, placedHalf, isBed, bedFloor, bedPairMatches, regionProperties, matchesBuildBlock, placementGoal, buildFootprint, buildCellComplete, enclosedCell, blockOwnership, matchesOwnership };

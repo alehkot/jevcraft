@@ -24,8 +24,10 @@ node scripts/check-node.js
 low npm ci --ignore-scripts --no-audit --no-fund
 
 echo "== syntax of every tracked script"
-git ls-files -z -- '*.js' | low xargs -0 -n 1 node --check
-echo "$(git ls-files -- '*.js' | wc -l | tr -d ' ') files parse"
+bash -n scripts/pi-paper/window.sh
+bash -n paper/locations/build.sh
+git ls-files -z -- '*.js' '*.cjs' | low xargs -0 -n 1 node --check
+echo "$(git ls-files -- '*.js' '*.cjs' | wc -l | tr -d ' ') files parse"
 
 OFFLINE_SUITES=(
   scripts/company-test.js
@@ -34,6 +36,9 @@ OFFLINE_SUITES=(
   test/pocket-hold.test.js
   test/build-beds.test.js
   test/starter-house.test.js
+  test/house-planner.test.js
+  test/home-location.test.js
+  test/boats-ladders-light.test.js
   test/companion-location.test.js
   test/footing.test.js
   test/shot-epoch.test.js

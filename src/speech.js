@@ -165,6 +165,8 @@ function activity(step = {}) {
   if (step.action === 'combined_request') return activity(step.detail || { action: 'collect', item: step.item });
   const item = name(step.item || step.drops || step.resource || step.name || step.block);
   switch (step.action) {
+    case 'light_area': return "I'm placing a torch where the ground is dark.";
+    case 'climb_ladder': return `I'm climbing ${step.direction} the ladder.`;
     case 'boat_travel': return "I'm taking a boat across the water.";
     case 'reach_shore': return "I'm swimming back to dry land.";
     case 'prepare_build_site': return step.operation === 'fill' ? "I'm filling in a solid base for the building." : "I'm making the ground level for the building.";
@@ -225,6 +227,8 @@ function completion(goal) {
   }
   // Arrived, and whether the two can see each other (company.js standInView).
   if (goal.kind === 'come') return goal.outOfView ? `I'm right by ${goal.target || goal.from}, but I can't get to where we can see each other.` : `I'm here with ${goal.target || goal.from}!`;
+  if (goal.kind === 'climb_ladder') return `I'm at the ${goal.direction === 'up' ? 'top' : 'bottom'} of the ladder.`;
+  if (goal.kind === 'light_area') return goal.torchesPlaced ? `I placed ${goal.torchesPlaced} ${goal.torchesPlaced === 1 ? 'torch' : 'torches'}. The ground here is lit.` : 'The ground here is already lit.';
   if (goal.kind === 'visit') return `I'm at ${goal.destination.label}!`;
   if (goal.kind === 'house' || goal.kind === 'build') {
     const changed = goal.buildContinuation?.mode === 'edit' && goal.buildContinuation.name;

@@ -375,7 +375,7 @@ function preferredBoat(bot) {
 }
 
 async function boatTravelStep(bot, task, goal, save, destination, actions, client = task.opportunityClient) {
-  if (!client || task.preparingBoat || !bot.inventory || bot.game.gameMode === 'creative') return false;
+  if ((!client && !goal.byBoat) || task.preparingBoat || !bot.inventory || bot.game.gameMode === 'creative') return false;
   const state = goal.boatTravel ||= { attempts: 0 };
   if (isSetAside(goal, 'boat', 'crossing')) return false;
   // Two failures rested boats for half an hour; once that rest is over,
@@ -390,7 +390,8 @@ async function boatTravelStep(bot, task, goal, save, destination, actions, clien
       // The swim the boat would save, said as time (the decision audit,
       // 2026-09-25): a swimmer goes about two blocks a second, and drowned
       // come up at night.
-      const response = await chooseBoat(client, tripFacts(bot, goal, trip), { bot, goal, task });
+      const response = goal.byBoat ? { answers: { travel: { choice: 'boat', requested: true } } }
+        : await chooseBoat(client, tripFacts(bot, goal, trip), { bot, goal, task });
       task.check();
       // Held through an outage (note 707): surveyed and asked fresh next pass.
       if (response.stale) return true;

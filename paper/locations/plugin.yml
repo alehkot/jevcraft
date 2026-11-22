@@ -1,0 +1,5 @@
+name: JevcraftLocations
+version: 1.0
+main: jevcraft.locations.JevcraftLocations
+api-version: '26.2'
+softdepend: [Essentials, EssentialsSpawn]

@@ -1388,15 +1388,17 @@ async function eatFromHome(bot, task, goal, save, actions) {
 // The chores Jev chooses between when nothing needs it, each feasible now.
 // The dark ground around home, where monsters spawn between the bed, the
 // plot and the pen: looked at once a minute (a few hundred cells).
-const darkAtHome = new Map();
+const darknessByBot = new WeakMap();
 function homeDarkness(bot, home, now = Date.now()) {
-  const key = `${home.origin.x},${home.origin.y},${home.origin.z}`;
+  const key = `${bot.game?.dimension}/${home.origin.x},${home.origin.y},${home.origin.z}`;
+  if (!darknessByBot.has(bot)) darknessByBot.set(bot, new Map());
+  const darkAtHome = darknessByBot.get(bot);
   const cached = darkAtHome.get(key);
   if (cached && now - cached.at < 60000) return cached;
   const torches = require('./torches');
   const centre = pos(layout(home).footprint[31]).offset(0, 1, 0);
   const dark = torches.darkCells(bot, torches.groundCells(bot, centre, 10));
-  const result = { at: now, dark: dark.length, plan: torches.torchPlan(dark) };
+  const result = { at: now, dark: dark.length, plan: torches.torchPlan(dark, 8, bot) };
   darkAtHome.set(key, result);
   return result;
 }
@@ -1420,7 +1422,7 @@ function lightHomeOption(bot, home, now) {
       if (homeDistance(b, home) > 8) await goHome(b, t, g, s, home, a);
       g.step = { action: 'light_home', torches: plan.length }; s();
       const placed = await require('./torches').placeTorches(b, t, a, plan, { max: plan.length });
-      darkAtHome.delete(`${home.origin.x},${home.origin.y},${home.origin.z}`);
+      darknessByBot.delete(bot);
       if (!placed) throw new Error('No torch went down around home');
     } };
 }

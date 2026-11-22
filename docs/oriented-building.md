@@ -1,4 +1,24 @@
-# Stairs and slabs in custom builds
+# Building with Jev
+
+Ask **“Jev, help me build a small house for three.”** The starter layout has a living room, a bedroom, an exterior and interior door, a roof, two glass windows, a stair sofa, a chest, floor torches and a bed for each person. Two beds are the default. You can drop supplies while Jev works. **“Jev, you forgot the door”** and **“Jev, add windows and torches to the house”** update the nearby house in Jev’s building records. **“Jev, craft a door”** makes the item.
+
+In Survival and Creative, `BUILD_DESIGNER=auto` sends the requested location, observed biome, terrain heights, surface materials, water, lava and inventory to the configured schematic model. It uses OpenRouter when an OpenRouter key is configured, then the guide provider when its key is configured. `BUILD_DESIGNER=guide` selects the guide provider explicitly. `JEV_BUILD_MODEL` can select Terra, Luna or another model offered by the provider. `BUILD_DESIGNER=jev` uses the built-in plans. Starter houses use local wood or sandstone on sandy sites. A wood named in chat takes priority.
+
+Jev saves the drawing before review and the approved layout and site before construction. **“Jev stop”** followed by **“Jev resume”** continues that drawing. A player’s unexpected block in a work space pauses construction and Jev identifies its coordinates.
+
+**“Jev, light up this room”** checks for ground that would be dark at night. Light travels through openings and around corners. **“Jev, climb down the ladder”** uses a supported ladder with landings. **“Jev, come to me by boat”** uses a boat where Jev can find a connected water route and a safe bank.
+
+## Home and respawn
+
+**“Jev, where is home and where will you respawn?”** reports both locations with coordinates and dimensions. **“Jev, set home here”** saves the caller’s standing position. **“Jev, go home”** returns to it. Jev also recognizes its established base and its first recorded completed house. Until it has a home, it uses world spawn as a temporary meeting place.
+
+The optional Paper 26.2 plugin in `paper/locations` answers a connected client about its own validated personal point, world spawn and effective respawn destination. It reads EssentialsSpawn’s group-spawn rule when that plugin controls the destination. It records the actual landing after death. A server with a randomized or unrecognized policy can supply the actual landing after respawn. On a server without the plugin, Jev reports its last known point from Minecraft’s packets and confirmed bed interactions.
+
+To build the plugin against an installed Paper server, use its JDK and run `bash paper/locations/build.sh /path/to/paper /tmp/JevcraftLocations.jar`. Put the jar in that server’s `plugins` directory and restart Paper.
+
+The Pi field notes include the production respawn rule and commands for rerunning each private test. [Pi Paper field notes](pi-paper-notes.md)
+
+## Stairs and slabs in custom builds
 
 The building advisor can now include stair and slab regions in arbitrary designs.
 The same deterministic executor handles them in Survival and Creative. Jev still

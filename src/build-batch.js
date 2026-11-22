@@ -1,6 +1,6 @@
 'use strict';
 const { Vec3 } = require('vec3');
-const { bedFloor, buildCellComplete, buildFootprint, isBed, placedHalf } = require('./build-blocks');
+const { ladderSupport, bedFloor, buildCellComplete, buildFootprint, isBed, placedHalf } = require('./build-blocks');
 const { isDoor } = require('./doors');
 const Heap = require('mineflayer-pathfinder/lib/heap');
 function remainingBuildBatch(bot, batch) {
@@ -56,13 +56,15 @@ function orderBuildCells(bot, missing) {
     }
     const half = placedHalf(cell.properties);
     const supported = faces.some(face => {
-      if (isDoor(cell.material) && face.y !== -1) return false;
+      if ((isDoor(cell.material) || cell.material === 'torch') && face.y !== -1) return false;
+      if (cell.material === 'ladder' && !face.equals(ladderSupport(cell.properties.facing))) return false;
       if (half && face.y && face.y !== (half === 'bottom' ? -1 : 1)) return false;
       const p = new Vec3(cell.x, cell.y, cell.z).plus(face), refKey = key(p);
       if (pending.has(refKey)) return false;
       const proposed = planned.get(refKey), observed = proposed ? null : bot.blockAt(p);
       if (!proposed && observed?.boundingBox !== 'block') return false;
       const material = proposed?.material || observed.name, properties = proposed?.properties || observed?.getProperties?.() || {};
+      if (material === 'torch' || material === 'ladder') return false;
       if (material.endsWith('_slab') && properties.type !== 'double') {
         if (face.y && material === cell.material) return false;
         if (!face.y && half && properties.type !== half) return false;

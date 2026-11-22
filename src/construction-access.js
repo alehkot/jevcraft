@@ -72,6 +72,16 @@ function standingHeight(bot, point) {
   return surfaces.length ? Math.max(...surfaces) : point.y;
 }
 
+function entrancePassage(blueprint) {
+  if (!blueprint?.entrance || !blueprint.bounds) return new Set();
+  const e = vec(blueprint.entrance), {min, max} = blueprint.bounds;
+  const dx = e.x < min.x ? -1 : e.x > max.x ? 1 : 0;
+  const dz = e.z < min.z ? -1 : e.z > max.z ? 1 : 0;
+  const keys = new Set();
+  for (let n=0; n<2; n++) for (let y=0; y<2; y++) keys.add(key(e.offset(n*dx,y,n*dz)));
+  return keys;
+}
+
 function constructionMovement(bot, goal) {
   const m = bot.pathfinder.movements;
   const previous = { canDig: m.canDig, scafoldingBlocks: m.scafoldingBlocks, exclusionAreasPlace: m.exclusionAreasPlace, countScaffoldingItems: m.countScaffoldingItems, getScaffoldingItem: m.getScaffoldingItem };
@@ -83,6 +93,10 @@ function constructionMovement(bot, goal) {
   }
   const spare = name => goal.buildPhase === 'cleanup' ? 0 : Math.max(0, (bot.inventory?.items() || []).filter(i => i.name === name).reduce((n, i) => n + i.count, 0) - (reserved[name] || 0));
   const planned = new Set((goal.blueprint?.blocks || []).map(key));
+  if (goal.starterBeds) {
+    for (const p of goal.blueprint?.empty || []) planned.add(key(p));
+    for (const k of entrancePassage(goal.blueprint)) planned.add(k);
+  }
   // Access must not demolish the building or consume reserved materials. Use
   // surplus ordinary blocks already carried before making a new gathering trip.
   m.canDig = false;
@@ -151,4 +165,16 @@ async function approachConstruction(bot, task, goal, point, operation, cell) {
     return destination.placement?.getFaceAndRef(bot.entity.position.offset(0, 1.62, 0));
   } finally { restore(); }
 }
-module.exports = { ConstructionGoal, constructionMovement, chooseConstructionWork, approachConstruction };
+// A pathfinder placement can be acknowledged after its work step ends (or
+// just after a stop). Only Mineflayer's confirmed bot placement event gives
+// ownership, including for temporary scaffolds.
+function recordBuildPlacement(goal, block) {
+  const bounds = goal?.blueprint?.bounds, p = block?.position;
+  if (goal?.kind !== 'build' || !bounds || !p || p.y < bounds.min.y ||
+      !['x','y','z'].every(k => p[k] >= bounds.min[k]-3 && p[k] <= bounds.max[k]+3)) return false;
+  const owned = require('./build-blocks').blockOwnership(block), key = `${p.x},${p.y},${p.z}`;
+  if (JSON.stringify(goal.buildOwned?.[key]) === JSON.stringify(owned)) return false;
+  (goal.buildOwned ||= {})[key] = owned;
+  return true;
+}
+module.exports = { entrancePassage, recordBuildPlacement, ConstructionGoal, constructionMovement, chooseConstructionWork, approachConstruction };
