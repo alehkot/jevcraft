@@ -28,6 +28,17 @@ function createCommandAccess(bot, { users = [], audit = () => {} } = {}) {
     }
   };
   return {
+    // A private chat reply has one recipient, the player who spoke. On
+    // Paper the vanilla whisper has its own name alongside the Essentials alias.
+    whisper(sender, message) {
+      const player = sender && Object.values(bot.players).find(p => p.uuid === sender);
+      if (!player?.username || typeof message !== 'string' || /[\r\n\u0000]/.test(player.username + message)) return;
+      // The player-only argument accepts a literal name. A UUID is parsed as
+      // an entity selector and rejected by this command on Paper 26.2.
+      const name = /^[\w.-]+$/.test(player.username) ? player.username : JSON.stringify(player.username);
+      const verb = /paper|purpur|spigot/i.test(bot.game?.serverBrand || '') ? 'minecraft:msg' : 'tell';
+      for (const sentence of message.split(/(?<=[.!?])\s+/)) send(`/${verb} ${name} ${sentence}`);
+    },
     // Only raw playerChat events reach this function. Formatted chat, tellraw,
     // model answers, saved goals, and command-block output cannot authorize it.
     accept(data, { resolvedCommand, interpretation } = {}) {

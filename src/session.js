@@ -721,7 +721,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     const scope = locationIntent && require('./home-location').homeScope(address.text);
     if (locationIntent && !locationIntent.startsWith('visit_')) {
       const reply = message => {
-        if (scope === 'personal' || (!scope && ['home', 'both'].includes(locationIntent) && locations.home(from, 'personal'))) bot.whisper(from, message);
+        if (scope === 'personal' || (!scope && ['home', 'both'].includes(locationIntent) && locations.home(from, 'personal'))) commandAccess.whisper(data.sender, message);
         else bot.chat(message);
       };
       if (locationIntent.startsWith('set')) reply(locations.setHome(from, bot.players[from]?.entity?.position, bot.game.dimension, locationIntent));

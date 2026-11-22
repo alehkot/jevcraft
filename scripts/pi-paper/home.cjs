@@ -42,6 +42,7 @@ const get = () => bot.homeLocation.context(player);
 async function connect() {
   session = createSession({ ...cfg, username: worker }, new TypeSafe(), { stateDirectory: root });
   bot = session.bot;
+  bot.on('messagestr', (m, position) => { if (position === 'system') log('worker system message', { m }); });
   bot._client.on('custom_payload', (p) => {
     if (p.channel === 'jevcraft:locations') log('paper snapshot', { data: JSON.parse(p.data.toString()) });
   });
@@ -77,14 +78,18 @@ async function ask(line, part) {
   assert.equal(home.x, 98);
   cmd('tp ' + player + ' 102.5 190 32.5');
   await until('personal marker site', () => Math.floor(bot.players[player]?.entity?.position.x) === 102);
-  let n = lines.length;
-  witness.chat(worker + ' set my home here');
-  await until('personal home confirmation', () => lines.slice(n).some(s => s.includes('102, 190, 32')));
+  async function privateAnswer(request, expected) {
+    const n = lines.length;
+    witness.chat(worker + ' ' + request);
+    await until('private reply to ' + request, () => lines.slice(n).some(s => s.includes(expected)));
+    const replies = lines.slice(n).filter(s => s.includes(expected));
+    assert(replies.every(s => !s.includes('<' + worker + '>')), 'private coordinates appeared in public chat');
+  }
+  await privateAnswer('set my home here', '102, 190, 32');
+  await privateAnswer('where is my home', '102, 190, 32');
   assert.equal(get().home.position.x, 102);
   assert.equal(bot.homeLocation.home('AnotherPlayer').position.x, 98);
-  n = lines.length;
-  witness.chat(worker + ' forget my home');
-  await until('personal marker forgotten', () => lines.slice(n).some(s => s.includes('forgot your saved home')));
+  await privateAnswer('forget my home', 'forgot your saved home');
   assert.equal(bot.homeLocation.home(player, 'personal'), null);
   assert.deepEqual(get().home.position, home);
   log('personal home isolated from shared home and forgotten', { shared: home });

@@ -50,6 +50,24 @@ function setup(state = {}, entries = [], places = []) {
 }
 const world = { x: 48, y: 106, z: 0, dimension: 'overworld' },
   bed = { x: 4, y: 65, z: 6, dimension: 'overworld' };
+test('private home replies address only the requesting player on Paper and other servers', () => {
+  const { bot } = setup();
+  const player = { username: '.BedrockUser', uuid: 'ee7204cb-aa75-4e5d-a836-b36eb22d2cb1' };
+  const commands = [];
+  bot.players = { [player.username]: player };
+  bot.chat = text => commands.push(text);
+  const access = require('../src/commands').createCommandAccess(bot);
+  access.whisper(player.uuid, 'Your home is here.');
+  bot.game.serverBrand = 'Paper';
+  access.whisper(player.uuid, 'Your home is here. Your spawn is there.');
+  access.whisper('everyone', 'These coordinates are private.');
+  access.whisper(player.uuid, 'Two\nlines.');
+  assert.throws(() => bot.chat('/tell someone hello'), /explicit player request/);
+  player.username = 'Two Words';
+  access.whisper(player.uuid, 'One recipient.');
+  assert.deepEqual(commands, ['/tell .BedrockUser Your home is here.', '/minecraft:msg .BedrockUser Your home is here.',
+    '/minecraft:msg .BedrockUser Your spawn is there.', '/minecraft:msg "Two Words" One recipient.']);
+});
 test('home is durable across jobs and reconnects and stays separate from bed and effective respawn', async () => {
   const state = {},
     houses = [
