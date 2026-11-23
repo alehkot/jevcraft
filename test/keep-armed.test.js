@@ -173,3 +173,16 @@ test('the errand wants one sword more than is carried, and says what it has', ()
   assert.equal(completion({ kind: 'craft', item: 'stone_sword', count: 2, deliver: false, weaponErrand: true }), "I've made a stone sword to carry.");
   assert.equal(completion({ kind: 'craft', item: 'stone_sword', count: 1, deliver: false, weaponErrand: true, errandPockets: true }), '');
 });
+
+test('a running errand ends after eight minutes, or, gathering, with a minute of daylight left; not when already ended', () => {
+  const at = timeOfDay => ({ time: { timeOfDay } });
+  const goal = (extra = {}) => ({ weaponErrand: true, errandUntil: 1000000, ...extra });
+  assert.equal(arms.errandOver(goal(), at(6000), 999999), null);
+  assert.equal(arms.errandOver(goal(), at(6000), 1000001), 'it took too long');
+  assert.equal(arms.errandOver(goal(), at(12300 - arms.ERRAND_END_LEFT + 1), 0), 'night is near');
+  assert.equal(arms.errandOver(goal(), at(12300 - arms.ERRAND_END_LEFT), 0), null);
+  assert.equal(arms.errandOver(goal({ errandPockets: true }), at(13000), 0), null, 'from the pockets: no walk away to end');
+  assert.equal(arms.errandOver(goal({ errandEnded: 'it took too long' }), at(6000), 1000001), null);
+  assert.equal(arms.errandOver(goal({ errandStopped: 'cancelled' }), at(6000), 1000001), null);
+  assert.equal(arms.errandOver({ kind: 'craft' }, at(13000), 1000001), null, "a player's own craft");
+});

@@ -513,7 +513,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       });
       // Still due once the request is read: not stopped meanwhile ("stop" pauses with nothing active), not armed, not dark.
       const still = ended || active || pendingRequests ? null : errandNow(company.darkNow(bot));
-      if (!still || still.item !== due.item) { ledger.close(run.id, 'replaced'); return; }
+      // Not due after all: no other model call for a minute, should what stopped it come and go.
+      if (!still || still.item !== due.item) { armsCheckedAt = Date.now() + 60000; ledger.close(run.id, 'replaced'); return; }
       if (!spec || !['craft', 'obtain'].includes(spec.kind) || spec.item !== due.item)
         throw new Error('read as ' + (spec?.kind || 'nothing') + (spec?.item ? ' ' + spec.item : '') + ', not ' + due.item);
       // The total wanted, as at work (workSword): one sword more than is carried, or a worn one would be enough.
@@ -623,11 +624,10 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   let launchingArms = false, armsCheckedAt = 0, armsFailed = 0;
   const idleTimer = setInterval(() => {
     const now = Date.now();
-    // JEV_WEAPON=keep: an errand for a sword is ended after its eight minutes, and one gathering for it at nightfall;
-    // either way the bot then walks back to the player it waited with (keep-armed.js).
-    if (active && !active.idle && active.goal?.weaponErrand && !active.goal.errandEnded && !active.goal.errandStopped) {
-      const over = now > (active.goal.errandUntil || Infinity) ? 'it took too long'
-        : !active.goal.errandPockets && require('./company').darkNow(bot) ? 'night fell' : null;
+    // JEV_WEAPON=keep: an errand for a sword is ended after its eight minutes, and one gathering for it with a minute
+    // of daylight left; either way the bot then walks back to the player it waited with (keep-armed.js errandOver).
+    if (active && !active.idle && active.goal?.weaponErrand) {
+      const over = require('./keep-armed').errandOver(active.goal, bot, now);
       if (over) { active.goal.errandEnded = over; console.log(`[weapon] the errand was ended: ${over}`); stop('interrupted').catch(console.error); }
     }
     if (ready && !pendingRequests && !launchingDream && (!active || active.idle) && now - waitCheckedAt > 5000) {
