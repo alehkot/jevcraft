@@ -280,8 +280,12 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       return;
     }
     active.task.cancel();
-    // A walk back after monsters (launchBack) that is stopped or replaced is over, not kept for a later "resume".
-    if (!active.idle) { active.goal.status = active.goal.back ? 'complete' : status; workStore.save(active.goal); }
+    // A walk back after monsters (launchBack) that is stopped or replaced is over, not kept for a later "resume"; so is
+    // the bot's own errand for a sword (keep-armed.js).
+    if (!active.idle) {
+      if (active.goal.weaponErrand) active.goal.errandStopped = status;
+      active.goal.status = active.goal.back || active.goal.weaponErrand ? 'complete' : status; workStore.save(active.goal);
+    }
     bot.pathfinder.setGoal(null);
     bot.clearControlStates();
     bot.stopDigging();
@@ -293,12 +297,13 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     nextActivity();
     reactiveWait?.cancel().catch(() => {}); bedtime?.cancel().catch(() => {});
     // A request ends the scare a walk back was owed for (company.js): the player has said what comes next.
-    if (!goal.back) require('./company').letGo(bot);
+    if (!goal.back && !goal.weaponErrand) require('./company').letGo(bot);
     world.hydrate(goal);
     memory.bind(goal);
     goal.memoryContext = memory.context(goal.from);
-    // A walk back after monsters is not a player's word: a bot told to stop is as stopped after it as before.
-    if (!goal.back) { survival.state.paused = false; delete survival.state.idleBlocked; delete survival.state.deathBlocked; saveSurvival(); }
+    // A walk back after monsters is not a player's word: a bot told to stop is as stopped after it as before. Nor is
+    // the bot's own errand for a sword (keep-armed.js).
+    if (!goal.back && !goal.weaponErrand) { survival.state.paused = false; delete survival.state.idleBlocked; delete survival.state.deathBlocked; saveSurvival(); }
     // The goal's calls are charged to its run: the dream's when the dream
     // launched it, otherwise the request's own, picked back up by id.
     if (goal.dream) goal.ledgerRun = dreamRun(dreamStore.read()) ?? goal.ledgerRun;
@@ -336,7 +341,12 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       }
       // A walk back after monsters that failed is the bot's own errand: nothing is said, nothing is left to resume, and
       // it is tried again later while the scare holds (company.js backDue).
-      if (err.name !== 'Cancelled' && goal.back) {
+      // The bot's own errand for a sword that failed: nothing said, nothing left to resume, rested (keep-armed.js).
+      if (err.name !== 'Cancelled' && goal.weaponErrand) {
+        goal.status = 'complete'; goal.errandFailed = err.message; saveGoal(goal);
+        observation?.sample('error', { message: err.message, weaponErrand: true }, goal);
+        console.log(`[weapon] the errand failed: ${err.message}`);
+      } else if (err.name !== 'Cancelled' && goal.back) {
         goal.status = 'complete'; goal.backFailed = err.message; saveGoal(goal);
         observation?.sample('error', { message: err.message, back: true }, goal);
         console.log(`[company] the walk back to ${goal.target} failed: ${err.message}`);
@@ -349,6 +359,13 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       if (active === session) active = null;
       // Arrived: the scare is over. The player walking off again is not followed.
       if (goal.back && goal.status === 'complete' && !goal.backFailed && !session.relaunch) require('./company').letGo(bot);
+      // The errand for a sword, over: rested while there is still no sword ready; done, back to the player it waited
+      // with, as after monsters. Stopped or replaced, it is not walked back from: the player has said what comes next.
+      if (goal.weaponErrand && !session.relaunch) {
+        const arms = require('./keep-armed');
+        if (!arms.ready(bot)) { setAside(survival, 'weapon_errand', 'sword', String(goal.errandFailed || goal.errandStopped || 'over with no sword ready').slice(0, 160), arms.ERRAND_REST_MS); saveSurvival(); }
+        else if (goal.status === 'complete' && !goal.errandFailed && !goal.errandStopped && goal.returnTo) require('./company').oweBack(bot, goal.returnTo);
+      }
       if (session.relaunch) {
         relaunching = true;
         setTimeout(() => { relaunching = false; if (!ended && !active) launch(goal); }, 1500);
@@ -457,6 +474,52 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     launch(goal);
   }
 
+  // JEV_WEAPON=keep: the waiting bot's errand for a sword (keep-armed.js), looked at every five seconds.
+  function armsDue(now, dark) {
+    if (now - armsCheckedAt < 5000 || guideQueue?.rest?.length) return null;
+    armsCheckedAt = now;
+    try {
+      return require('./keep-armed').errandDue(bot, { survival, dark, paused: !!survival.state.paused, isSetAside,
+        threatened: require('./danger').threats(bot, 16).some(t => t.visible) });
+    } catch (err) { console.error('[weapon] the errand check:', err.message); return null; }
+  }
+
+  // The errand itself: read as the request "craft a stone sword" would be (the dream's way), and marked as the bot's
+  // own: nobody's work to ask about (handoff.js), quiet when it fails, ended by "stop" or by any request, rested after
+  // (keep-armed.js), and followed by a walk back to the player it waited with (company.js oweBack).
+  async function launchArms(due) {
+    launchingArms = true;
+    const arms = require('./keep-armed'), company = require('./company');
+    const run = ledger.open({ kind: 'request', name: 'own errand: ' + arms.errandRequest(due.item) });
+    try {
+      const seen = bot._company, now = Date.now();
+      const returnTo = seen && now - seen.at <= company.WITH_MS ? { name: seen.name, position: { ...seen.position } } : null;
+      const from = returnTo?.name || bot.username;
+      const spec = await interpret(withRun(client, run.id), bot.username + ' ' + arms.errandRequest(due.item), from, bot.username, {
+        registry: bot.registry, players: Object.keys(bot.players),
+        speakerPosition: position(bot.players[from]?.entity?.position), botPosition: position(bot.entity?.position), dimension: bot.game.dimension,
+        memory: { ...memory.context(from), found: require('./exploration').foundEntries(world.known) },
+        inventory: Object.fromEntries(bot.inventory.items().map(item => [item.name, item.count])),
+      });
+      if (ended || active || pendingRequests) { ledger.close(run.id, 'dropped'); return; }
+      if (!spec || !['craft', 'obtain'].includes(spec.kind) || spec.item !== due.item)
+        throw new Error('read as ' + (spec?.kind || 'nothing') + (spec?.item ? ' ' + spec.item : '') + ', not ' + due.item);
+      const said = due.item.replaceAll('_', ' ');
+      const goal = { ...spec, deliver: false, weaponErrand: true, returnTo, request: 'make a ' + said + ' to carry',
+        errandUntil: Date.now() + arms.ERRAND_MS, ledgerRun: run.id, version: 1, status: 'pending', createdAt: new Date().toISOString(),
+        suspendedTasks: suspendPrevious(store.read()), requesterPosition: null,
+        initialInventory: bot.inventory.items().map(i => ({ name: i.name, count: i.count })) };
+      saveGoal(goal);
+      console.log('[weapon] errand: ' + goal.request + (due.pockets ? ', from the pockets' : '') + (returnTo ? ', then back to ' + returnTo.name : ''));
+      bot.chat("I have no sword, so I'm making a " + said + (returnTo && !due.pockets ? '. Back soon, ' + returnTo.name : '') + '.');
+      launch(goal);
+    } catch (err) {
+      console.log('[weapon] the errand was not begun: ' + err.message);
+      ledger.close(run.id, 'blocked');
+      setAside(survival, 'weapon_errand', 'sword', String(err.message).slice(0, 160), arms.ERRAND_REST_MS); saveSurvival();
+    } finally { launchingArms = false; }
+  }
+
   function launchIdle() {
     bedtime?.cancel().catch(() => {});
     const retained = store.read();
@@ -543,8 +606,15 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   let waitCheckedAt = 0;
   // JEV_IDLE=wait: when the waiting bot was last in its shelter or in a hole (company.js routine).
   let lastSheltered = 0;
+  // JEV_WEAPON=keep: the waiting bot's errand for a sword (keep-armed.js).
+  let launchingArms = false, armsCheckedAt = 0;
   const idleTimer = setInterval(() => {
     const now = Date.now();
+    // JEV_WEAPON=keep: an errand for a sword still at it after its eight minutes is ended, and rests (keep-armed.js).
+    if (active && !active.idle && active.goal?.weaponErrand && now > (active.goal.errandUntil || Infinity) && !active.goal.errandStopped) {
+      console.log('[weapon] the errand took too long; ended');
+      stop('interrupted').catch(console.error);
+    }
     if (ready && !pendingRequests && !launchingDream && (!active || active.idle) && now - waitCheckedAt > 5000) {
       waitCheckedAt = now;
       const saved = resumeSaved(store.read());
@@ -583,14 +653,14 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       if (stands.sheltered) lastSheltered = now;
       const own = company.routine({ ...stands, sinceSheltered: now - lastSheltered });
       if (active?.idle && !active.closeWalk && own === 'end' && !relaunching) stop('interrupted').catch(console.error);
-      else if (ready && !active && !relaunching && !launchingDream && !pendingRequests) {
+      else if (ready && !active && !relaunching && !launchingDream && !launchingArms && !pendingRequests) {
         const standing = survival.state.paused ? null : dreamStore.read();
         // The waiting bot's two own moves, by rule: to bed when every player is in one (bedtime.js), and back to its
         // player after monsters (company.js backDue). What would hurt it where it stands comes before both. A bot
         // told to stop makes them too, and is as stopped after: it was the monsters that moved it, and a "stop" said
         // during the walk back ends that walk (stop() lets the scare go).
         // Neither rule may end the waiting itself: what goes wrong in one is logged, and the bot waits as before.
-        let hurting = false, abed = false, back = null;
+        let hurting = false, abed = false, back = null, armsNow = null;
         try {
           company.withPlayer(bot, now);
           hurting = !!require('./reactive-wait').emergency(bot);
@@ -606,6 +676,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         if (standing?.dream && shouldLaunchDream(standing, store.read(), { ready: readyForDream(), resting: isSetAside(survival, 'dream_launch', standing.dream) })) launchDream(standing);
         else if (abed) { if (hurting) bedtime.cancel().catch(err => console.error('[bedtime]', err)); }
         else if (back) { try { launchBack(back); } catch (err) { console.error('[company] the walk back was not begun:', err); } }
+        // JEV_WEAPON=keep: with no stone sword, it goes and makes one (keep-armed.js), by night only from its pockets.
+        else if (!hurting && (armsNow = armsDue(now, dark))) launchArms(armsNow).catch(err => console.error('[weapon]', err));
         else if (own === 'run' && !survival.state.paused && !survival.state.idleBlocked) launchIdle();
         else if (hurting || !toBed()) {
           if (!hurting && !survival.state.paused && !bot._reactiveWaitActive && stayClose.due(bot, true)) walkWhileWaiting();
@@ -1036,7 +1108,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       console.log(JSON.stringify({ sessionReady: true, username: bot.username }));
       const saved = store.read();
       // A walk back after monsters from before this start is over: the scare it answered went with that run.
-      if (saved?.back && saved.status !== 'complete') { saved.status = 'complete'; store.save(saved); }
+      if ((saved?.back || saved?.weaponErrand) && saved.status !== 'complete') { saved.status = 'complete'; store.save(saved); }
       // A "come here" is not taken up again when its player is not in the
       // game, or it was said minutes ago (company.js lapsed).
       if (saved && ['running', 'recovering'].includes(saved.status) && require('./company').lapsed(saved, bot)) {

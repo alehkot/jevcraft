@@ -2,6 +2,9 @@
 // JEV_WEAPON: Jev keeps a sword about it. Asked for 2026-11-23, when a set handed out by the server was turned down:
 // "jev should always try to carry some weapons and for the very first night getting stone sword at least".
 //   pockets  at work on a request, a sword the pockets make with crafts alone is made before the next step (workSword)
+//   keep     that, and between requests a waiting bot (JEV_IDLE=wait) with no stone sword or better goes and makes one:
+//            by day gathering for it as a request would, by night only from what its pockets make there and then;
+//            then back to the player it waited with (errandDue here, launchArms in session.js)
 // Unset: the bot fights with what it happens to carry, as before.
 //
 // Ready is a stone sword or better (stone, copper, iron, diamond, netherite) with ten uses or more left. An axe does
@@ -12,6 +15,9 @@ const TIERS = ['wooden', 'golden', 'stone', 'copper', 'iron', 'diamond', 'nether
 const READY = new Set(['stone', 'copper', 'iron', 'diamond', 'netherite']);
 const MIN_USES = 10;
 const REST_MS = 10 * 60000;
+const ERRAND_MS = 8 * 60000;        // an errand still at it after this is ended
+const ERRAND_REST_MS = 10 * 60000;  // after an errand that failed, was ended, or left the bot with no sword ready
+const ERRAND_HEALTH = 12, ERRAND_FOOD = 6;
 // Not made at: a come or a follow is the player's to wait on (a guard makes its own first, work.js), and the idle
 // loop and the dream's ladder keep their own.
 const NOT_AT = new Set(['come', 'follow', 'visit', 'climb_ladder', 'survive', 'win']);
@@ -27,7 +33,7 @@ const MAKINGS = {
 
 function mode(env = process.env) {
   const value = String(env?.JEV_WEAPON || '').trim().toLowerCase();
-  return value === 'pockets' ? value : null;
+  return value === 'keep' || value === 'pockets' ? value : null;
 }
 const items = bot => (typeof bot?.inventory?.items === 'function' ? bot.inventory.items() : []);
 function usable(bot, item) {
@@ -84,4 +90,28 @@ async function workSword(bot, task, goal, save, { acquireStep, craftable, countO
   return true;
 }
 
-module.exports = { mode, bestSword, ready, armed, spareFor, pocketSword, workSword, READY, MIN_USES, REST_MS };
+// Whether crafts alone make the item from what is carried (work.js craftableFromPack, for the waiting bot).
+function pocketsMake(bot, item) {
+  if (!bot?.registry?.itemsByName?.[item]) return false;
+  const stock = {};
+  for (const i of items(bot)) stock[i.name] = (stock[i.name] || 0) + i.count;
+  let plan; try { plan = require('./knowledge').planCatalog(bot.registry, item, 1, stock); } catch (_) { return false; }
+  const steps = Array.isArray(plan) ? plan : plan?.steps;
+  return Array.isArray(steps) && steps.length > 0 && steps.every(st => st.action === 'craft');
+}
+
+// The waiting bot's errand for a sword, or null: { item, pockets }. By day a stone sword, or the iron or copper one
+// the pockets make, gathered for as the request would be; in the dark only one the pockets make there and then.
+// Never while stopped, hurt, hungry, in the water, with a monster in sight, or resting after an errand.
+function errandDue(bot, { survival, dark = false, paused = false, threatened = false, craftable = item => pocketsMake(bot, item), isSetAside = () => false, env = process.env } = {}) {
+  if (mode(env) !== 'keep' || paused || threatened) return null;
+  if (bot?.game?.gameMode !== 'survival' || !overworld(bot) || bot?.entity?.isInWater) return null;
+  if ((bot.health ?? 20) < ERRAND_HEALTH || (bot.food ?? 20) < ERRAND_FOOD) return null;
+  if (ready(bot) || (survival && isSetAside(survival, 'weapon_errand', 'sword'))) return null;
+  const pocket = pocketSword(bot, craftable);
+  if (dark) return pocket ? { item: pocket, pockets: true } : null;
+  return pocket && pocket !== 'wooden_sword' ? { item: pocket, pockets: true } : { item: 'stone_sword', pockets: false };
+}
+const errandRequest = item => 'craft a ' + words(item);
+
+module.exports = { mode, bestSword, ready, armed, spareFor, pocketSword, workSword, pocketsMake, errandDue, errandRequest, READY, MIN_USES, REST_MS, ERRAND_MS, ERRAND_REST_MS };

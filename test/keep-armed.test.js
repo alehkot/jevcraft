@@ -1,5 +1,5 @@
 'use strict';
-// Keeping a sword (JEV_WEAPON, src/keep-armed.js; asked for 2026-11-23: "jev should always try to carry some weapons
+// Keeping a sword (JEV_WEAPON, src/keep-armed.js, and the waiting bot's errand for one in src/session.js; asked for 2026-11-23: "jev should always try to carry some weapons
 // and for the very first night getting stone sword at least", with a set handed out by the server turned down).
 //
 //   node test/keep-armed.test.js
@@ -52,7 +52,7 @@ test("the job's own items are never spent on a sword", () => {
   assert.equal(arms.pocketSword(botWith([]), all, arms.spareFor({ kind: 'bundle', tasks: [{ item: 'stick' }] })), null);
 });
 
-test('JEV_WEAPON: pockets, anything else is off', () => {
+test('JEV_WEAPON: pockets or keep, anything else is off', () => {
   assert.equal(arms.mode({}), null);
   assert.equal(arms.mode({ JEV_WEAPON: 'pockets' }), 'pockets');
   assert.equal(arms.mode({ JEV_WEAPON: ' Pockets ' }), 'pockets');
@@ -87,4 +87,59 @@ test('not when off, not on a come, a follow or a guard, not in creative or the N
   assert.equal(await arms.workSword(b, task, goal, () => {}, failing), false, 'resting');
   const stopped = opts({ acquireStep: async () => { throw Object.assign(new Error('stop'), { name: 'Cancelled' }); } });
   await assert.rejects(arms.workSword(bot(), task, { kind: 'build' }, () => {}, stopped), { name: 'Cancelled' });
+});
+
+test('JEV_WEAPON=keep: the waiting bot goes for a stone sword by day, by night only from its pockets', () => {
+  assert.equal(arms.mode({ JEV_WEAPON: ' KEEP ' }), 'keep');
+  const KEEP = { JEV_WEAPON: 'keep' };
+  const none = () => false, makes = (...names) => item => names.includes(item);
+  const waiting = (pockets = [], extra = {}) => Object.assign(botWith(pockets), { health: 20, food: 20, entity: {} }, extra);
+  const due = (bot, opts = {}) => arms.errandDue(bot, { craftable: none, env: KEEP, ...opts });
+  assert.deepEqual(due(waiting()), { item: 'stone_sword', pockets: false }, 'by day with empty pockets: gathered for');
+  assert.deepEqual(due(waiting(), { craftable: makes('iron_sword', 'stone_sword') }), { item: 'iron_sword', pockets: true });
+  assert.deepEqual(due(waiting(), { craftable: makes('wooden_sword') }), { item: 'stone_sword', pockets: false }, 'by day not wood');
+  assert.equal(due(waiting(), { dark: true }), null, 'in the dark nothing is gathered for');
+  assert.deepEqual(due(waiting(), { dark: true, craftable: makes('wooden_sword') }), { item: 'wooden_sword', pockets: true }, 'but wood from the pockets beats fists');
+  assert.deepEqual(due(waiting([['stone_axe']]), { dark: true, craftable: makes('stone_sword') }), { item: 'stone_sword', pockets: true });
+  assert.equal(due(waiting([['stone_sword']])), null, 'ready');
+  assert.deepEqual(due(waiting([['stone_sword', 1, 125]])), { item: 'stone_sword', pockets: false }, 'about to break');
+  assert.equal(due(waiting(), { env: POCKETS }), null, 'pockets only: no errand');
+  assert.equal(due(waiting(), { env: {} }), null);
+  assert.equal(due(waiting(), { paused: true }), null, 'told to stop');
+  assert.equal(due(waiting(), { threatened: true }), null, 'a monster in sight');
+  assert.equal(due(waiting([], { health: 11 })), null, 'hurt');
+  assert.equal(due(waiting([], { food: 5 })), null, 'hungry');
+  assert.equal(due(waiting([], { entity: { isInWater: true } })), null, 'swimming');
+  assert.equal(due(Object.assign(botWith([], { gameMode: 'creative' }), { entity: {} })), null);
+  assert.equal(due(Object.assign(botWith([], { dimension: 'the_nether' }), { entity: {} })), null);
+  const survival = {};
+  setAside(survival, 'weapon_errand', 'sword', 'no stone in reach', arms.ERRAND_REST_MS);
+  assert.equal(due(waiting(), { survival, isSetAside }), null, 'resting after an errand');
+  assert.deepEqual(due(waiting(), { survival: {}, isSetAside }), { item: 'stone_sword', pockets: false });
+  assert.equal(arms.errandRequest('stone_sword'), 'craft a stone sword');
+});
+
+test("the errand is the bot's own: no one is asked before a request replaces it, and no \"continue\" is offered after it", () => {
+  const { createHandoff } = require('../src/handoff');
+  const handoff = createHandoff();
+  const holder = goal => handoff.holder({ active: { goal }, from: 'Sky', online: () => true });
+  assert.equal(holder({ kind: 'craft', item: 'stone_sword', from: 'Robin', weaponErrand: true }), null);
+  assert.equal(holder({ kind: 'craft', item: 'stone_sword', from: 'Robin' }), 'Robin', "a player's own craft is still asked about");
+  const { reminder } = require('../src/agenda');
+  const under = [{ kind: 'build', status: 'interrupted', request: 'Jev build a starter house', from: 'Robin', item: undefined }];
+  assert.equal(reminder({ kind: 'craft', item: 'stone_sword', status: 'complete', weaponErrand: true, suspendedTasks: under }), null);
+});
+
+test('after the errand the bot owes the player it waited with a walk back, by the rules after monsters', () => {
+  const company = require('../src/company');
+  const { Vec3 } = require('vec3');
+  const bot = { username: 'Jev', entity: { position: new Vec3(30.5, 64, 0.5) }, players: { Robin: { username: 'Robin', entity: { position: new Vec3(0.5, 64, 0.5) } } }, game: { dimension: 'overworld' }, time: { timeOfDay: 6000 } };
+  const t = 1000000;
+  const scare = company.oweBack(bot, { name: 'Robin', position: { x: 0.5, y: 64, z: 0.5 } }, t);
+  assert.equal(scare.with, 'Robin'); assert.equal(scare.errand, true);
+  assert.equal(company.backDue(bot, { now: t + 1000 }), null, 'a moment first');
+  assert.equal(company.backDue(bot, { now: t + 4000 }), scare, 'then back');
+  bot.entity.position = new Vec3(3.5, 64, 0.5);
+  assert.equal(company.backDue(bot, { now: t + 5000 }), null, 'already with them');
+  assert.equal(company.oweBack(bot, null, t), null);
 });

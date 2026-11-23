@@ -72,7 +72,8 @@ class CompanionMemory {
   }
   recordGoal(goal, bot) {
     // Not a player's request: the bot's own walk back to a player after monsters (company.js backDue).
-    if (!goal?.from || goal.back || ['memory', 'operator_command', 'survive'].includes(goal.kind)) return;
+    // Nor its own errand for a sword (keep-armed.js).
+    if (!goal?.from || goal.back || goal.weaponErrand || ['memory', 'operator_command', 'survive'].includes(goal.kind)) return;
     goal.memoryId ||= this.state.history.find(e => e.goalCreatedAt && e.goalCreatedAt === goal.createdAt &&
       sameOwner(e, goal.from) && e.request === text(goal.request))?.id || randomUUID();
     if (this.state.forgottenTasks.includes(goal.memoryId)) { this.flush(); return; }

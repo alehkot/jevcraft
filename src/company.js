@@ -459,6 +459,12 @@ function gaveGround(bot, now = Date.now()) {
 }
 // A request, a stop: the scare is over, and so is the company kept for the next one.
 function letGo(bot) { if (bot) { delete bot._scare; delete bot._company; } }
+// After the bot's own errand (keep-armed.js: the sword it went to make), back to the player it waited with, by the
+// same rules as after monsters (backDue): said once, three tries, not with a monster after it or about them.
+function oweBack(bot, to, now = Date.now()) {
+  if (!bot || !to?.name || !to.position) return null;
+  return (bot._scare = { with: to.name, position: { ...to.position }, at: now, last: now, tries: 0, triedAt: 0, errand: true });
+}
 // Whether to walk back now: the scare, or null. chased() says whether a monster is still after
 // the bot; hostileNear(position, blocks) whether one is that near a place; dark is the night
 // (darkNow).
@@ -579,5 +585,5 @@ function withhold(options, out, keys = HIDES) {
   return gone;
 }
 
-module.exports = { HIDE_HEALTH, HIDES, RUNS, GUARD_TETHER, WAIT_TETHER, holdsGround, litAbout, LIT_ASKED_MS, FOOD_WALKS, fightKeysOut, guardFoodOut, underCover, playerNamed, playersNear, keepsOut, withhold, calledOver, callerState, lapsed, here, inShelter, holedUp, routine, standing, darkNow, drawnOut, pocketFirst, CLIMB_MS, rimOf, openGround, inLeftPocket, climbOut, afterLeave, LEFT_MS, nightMode, staysUp, comesOut, nearestPlayer, STAY_UP, COME_OUT, ALONE_MS, OUT_MS, inView, spotsInView, standInView, standable, EYE, REACH, RISE, CALL_HOLDS_MS, GONE_MS,
+module.exports = { oweBack, HIDE_HEALTH, HIDES, RUNS, GUARD_TETHER, WAIT_TETHER, holdsGround, litAbout, LIT_ASKED_MS, FOOD_WALKS, fightKeysOut, guardFoodOut, underCover, playerNamed, playersNear, keepsOut, withhold, calledOver, callerState, lapsed, here, inShelter, holedUp, routine, standing, darkNow, drawnOut, pocketFirst, CLIMB_MS, rimOf, openGround, inLeftPocket, climbOut, afterLeave, LEFT_MS, nightMode, staysUp, comesOut, nearestPlayer, STAY_UP, COME_OUT, ALONE_MS, OUT_MS, inView, spotsInView, standInView, standable, EYE, REACH, RISE, CALL_HOLDS_MS, GONE_MS,
   withPlayer, gaveGround, letGo, backDue, WITH_MS, BACK_QUIET_MS, BACK_OFF, NEAR_PLAYER, BACK_HOLDS_MS, BACK_TRIES, BACK_RETRY_MS };

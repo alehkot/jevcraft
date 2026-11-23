@@ -21,7 +21,8 @@ function createHandoff({ now = Date.now, questionMs = 90000, approvalMs = 120000
     holder({ active, from, online = () => true }) {
       const goal = active && !active.idle ? active.goal : null;
       // A walk back to a player after monsters (company.js backDue) is the bot's own errand: nobody's work to ask about.
-      if (!goal || goal.dream || goal.back || !goal.from || same(goal.from, from) || !online(goal.from)) return null;
+      // Nor its own errand for a sword (keep-armed.js).
+      if (!goal || goal.dream || goal.back || goal.weaponErrand || !goal.from || same(goal.from, from) || !online(goal.from)) return null;
       return goal.from;
     },
     approved(asker, request) {
