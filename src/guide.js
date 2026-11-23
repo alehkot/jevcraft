@@ -19,7 +19,7 @@ const fs = require('node:fs'), path = require('node:path');
 const clean = (value, size = 200) => typeof value === 'string'
   ? value.replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, size) : '';
 const owner = name => clean(String(name || ''), 64).toLowerCase();
-const MAX_RULES = 16, MAX_REQUESTS = 3, TALK_KEPT = 6;
+const MAX_RULES = 16, MAX_REQUESTS = 3, MAX_OPTIONS = 3, TALK_KEPT = 12;
 
 // JEV_PERSONALITY: how "say" sounds, the three manners of alexrmsouza/jevcraft
 // e244c34d's personality.js. Unset: the instructions as measured (.env.example).
@@ -31,7 +31,7 @@ const PERSONALITIES = {
 };
 const SYSTEM = (bot, { built = false, personality = null } = {}) => `You are the language layer of ${bot}, a companion bot in Minecraft survival. ${bot} plays honest survival: no commands, no cheats, nothing from nowhere. Everything it has was gathered, mined, smelted or crafted by it.
 
-You never act yourself. A separate engine does the work. Your job is to turn what the player said into what that engine understands, following the player's standing rules.
+You never act yourself. A separate engine does the work. Your job is to turn what the player said into what that engine understands, following the player's standing rules. Read it against recentTalk, the conversation so far with this player, both sides, oldest first, with how many seconds ago each line was said: a short message often answers what the bot said last ("50 blocks are fine" after the bot said how close it stays is a stay-close distance).
 
 The engine understands these requests (short imperative English, without the bot's name):
 - "follow me", "come here", "come to me by boat", "climb up the ladder", "climb down the ladder", "light up this area", "light up the whole area" (torches on the dark ground within 16 blocks, so monsters do not spawn there)
@@ -50,7 +50,7 @@ The engine understands these requests (short imperative English, without the bot
 The engine does one job at a time. Stay-close controls leave that job running. A job can have a location, for example "craft a chest beside the nearest crafting table" or "build a house next to the block I am pointing at". Preserve location clauses and the speaker's point of view. Guarding a spot with nobody there, scheduled farming and attacking a named target are outside the engine's abilities; protecting the player is not ("protect me").
 
 Answer with JSON only:
-{"say": string or null, "requests": [strings, at most ${MAX_REQUESTS}, done in order], "add_rule": string or null, "forget_rule": number or null${built ? ', "use_buildings": true or false' : ''}}
+{"say": string or null, "requests": [strings, at most ${MAX_REQUESTS}, done in order], "options": [{"label": string, "requests": [strings]}, at most ${MAX_OPTIONS}] or null, "add_rule": string or null, "forget_rule": number or null${built ? ', "use_buildings": true or false' : ''}}
 
 How to decide:
 1. A plain request the engine understands: pass it on unchanged as the only request, "say" null. Apply the standing rules where the request leaves something open (which wood, how many, what to do first or afterwards).${built ? ` Wood or logs wanted with no kind named and no rule about it: name the first kind in status.woodInView that has trees (the free wood near ${bot}, the nearest trees first; a kind with "trees": 0 is only bushes of one log each), or with no trees listed the first kind there, or with no list oak.` : ''}
@@ -61,7 +61,8 @@ How to decide:
 6. Something the engine cannot do: say so in "say" and name the nearest thing it can do. No requests. A number is never the reason: the counts, sizes and distances in a request on the list are the player's to choose.
 7. A job for idle time ("when you have nothing to do, collect coal"): that is a dream. Emit "your dream is to get me <N> <item>" yourself, with a sensible amount such as one stack, and say what you set. Never tell the player how to phrase something you can emit yourself.
 ${built ? `8. What someone built is left alone by the engine: it takes wood, stone and the rest from the wild, and never from a house, a village, a fence, a wall or anything else made by players or villagers. When the only source in view is built it says so and looks further. "use_buildings" is false unless the player clearly allows taking from buildings, in this message or in a standing rule ("take the wood from that house", "you can break the village houses", "use the buildings"): then true. With requests in the answer it covers those requests; with none it covers the work in hand (status.doing), and "say" confirms it. A plain request ("get wood") never sets it, and you never set it because it would be quicker. A standing rule that allows it ("you may always take wood from buildings") is stored like any other and applied to each request. Asked not to touch buildings: say that is how ${bot} works already, no rule needed.
-` : ''}Never write anything that starts with "/". Never promise what the engine cannot do. "say" is plain text, friendly and brief, in the player's language.${PERSONALITIES[personality] ? ` ${PERSONALITIES[personality]} The manner is for "say" only: it never changes the requests.` : ''}`;
+` : ''}Choices: when a wish could mean two or three different things the engine can do, or the nearest thing it can do is not quite what was asked, do not guess. Offer them in "options", each {"label": a few words, "requests": what it runs}, with only the question in "say" (the options are listed after it by number and the player answers with the number), and no requests. A single likely meaning is one option, answered with yes. A clear request is acted on, never offered back as a choice.
+Never write anything that starts with "/". Never promise what the engine cannot do. "say" is plain text, friendly and brief, in the player's language.${PERSONALITIES[personality] ? ` ${PERSONALITIES[personality]} The manner is for "say" only: it never changes the requests.` : ''}`;
 
 function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_API_KEY,
   url = process.env.JEV_GUIDE_URL || 'https://api.openai.com/v1/chat/completions',
@@ -88,9 +89,12 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
   };
   const talk = new Map(), calls = new Map(), refused = new Set();
   const rulesFor = from => state.rules.filter(rule => owner(rule.from) === owner(from));
+  // Both sides of the talk with a player (session.js notes the bot's own lines and the player's addressed ones). The
+  // same line again within three seconds is one line: the guide's own reply is noted here and again as it is said.
   const heard = (from, role, text) => {
-    const lines = talk.get(owner(from)) || [];
-    lines.push({ role, text: clean(text, 240) });
+    const lines = talk.get(owner(from)) || [], line = clean(text, 240), at = now(), last = lines.at(-1);
+    if (!line || (last && last.role === role && last.text === line && at - last.at < 3000)) return;
+    lines.push({ role, text: line, at });
     talk.set(owner(from), lines.slice(-TALK_KEPT));
   };
   // Chat is untrusted and each call costs money: a floor between calls and a cap an hour, per player.
@@ -106,7 +110,8 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
     const rules = rulesFor(from);
     const user = { player: clean(from, 64), said: clean(text, 300),
       standingRules: rules.map((rule, i) => `${i + 1}. ${rule.text}`),
-      recentTalk: talk.get(owner(from)) || [], status };
+      recentTalk: (lines => (lines.at(-1)?.role === 'player' && lines.at(-1).text === clean(text, 240) ? lines.slice(0, -1) : lines)
+        .map(l => ({ role: l.role, text: l.text, secondsAgo: Math.max(0, Math.round((now() - l.at) / 1000)) })))(talk.get(owner(from)) || []), status };
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs);
     const fallsThrough = why => { console.log(`[guide] ${why}; the message goes to the interpreter as said`); return null; };
     // The service's own words for a refusal, for the log. A refused key is quoted back in part by
@@ -145,11 +150,20 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
     } catch (err) { return fallsThrough(`${model} not reached (${err.name === 'AbortError' ? `no answer in ${timeoutMs / 1000} s` : err.name})`); }
     finally { clearTimeout(timer); }
     if (!parsed || typeof parsed !== 'object') return null;
-    const requests = (Array.isArray(parsed.requests) ? parsed.requests : []).map(r => clean(r, 160))
-      .filter(r => r && !r.startsWith('/')).slice(0, MAX_REQUESTS);
+    const requestsOf = list => (Array.isArray(list) ? list : []).map(r => clean(r, 160)).filter(r => r && !r.startsWith('/')).slice(0, MAX_REQUESTS);
+    // Choices, each with the requests it runs: offered in place of requests, the pick read by session.js (pickOption).
+    const options = (Array.isArray(parsed.options) ? parsed.options : []).map(o => ({ label: clean(o?.label, 40), requests: requestsOf(o?.requests) }))
+      .filter(o => o.label && o.requests.length).slice(0, MAX_OPTIONS);
+    const requests = options.length ? [] : requestsOf(parsed.requests);
     // A chat line that begins with a slash is sent by the client as a command. The model's line never is one.
     const out = { say: clean(clean(parsed.say, 240).replace(/^[\s/]+/, ''), 200) || null, requests, addedRule: null, forgotRule: null,
       ...(built && parsed.use_buildings === true && { useBuildings: true }) };
+    if (options.length) {
+      out.options = options;
+      const question = clean(out.say || (options.length === 1 ? `${options[0].label}?` : 'Which one?'), 120);
+      out.say = options.length === 1 ? `${question} (say yes)`
+        : /(^|\s)1[).:]/.test(question) ? question : `${question} ${options.map((o, i) => `${i + 1}) ${o.label}`).join(' ')} (say ${options.length === 2 ? '1 or 2' : '1, 2 or 3'})`;
+    }
     const add = clean(parsed.add_rule, 200);
     if (add && !add.startsWith('/')) {
       state.rules.push({ from: clean(from, 64), text: add, at: new Date(now()).toISOString() });
@@ -161,13 +175,27 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
     if (Number.isInteger(n) && n >= 1 && n <= rules.length) {
       state.rules.splice(state.rules.indexOf(rules[n - 1]), 1); save(); out.forgotRule = rules[n - 1].text;
     }
-    heard(from, 'player', text);
+    // The player's line is noted by session.js as it is said; the reply here, and again (as one) as it is said.
     if (out.say) heard(from, 'bot', out.say);
     if (!out.say && !requests.length && !out.addedRule && !out.forgotRule && !out.useBuildings) return null;
     return out;
   }
 
-  return { available: Boolean(apiKey), consult, rulesFor, model };
+  return { available: Boolean(apiKey), consult, rulesFor, model, note: heard };
 }
 
-module.exports = { createGuide, SYSTEM, PERSONALITIES };
+// The player's pick among the choices offered (out.options): the option, or null when the line is not a pick. A
+// number, "the second", the label itself, or yes to a single one; a long line that starts with a number is not one.
+const ORDINAL = { first: 0, one: 0, second: 1, two: 1, third: 2, three: 2 };
+function pickOption(text, options = []) {
+  const s = String(text || '').toLowerCase().trim().replace(/[.!?]+$/, '').trim();
+  if (!s || !options.length) return null;
+  let m = s.length <= 12 && /^(?:option |number |no\.? |#)?([1-9])(?:\)| please| one)?$/.exec(s);
+  if (m) return options[Number(m[1]) - 1] || null;
+  m = /^(?:the )?(first|second|third)(?: one)?(?: please)?$/.exec(s) || /^(one|two|three)$/.exec(s);
+  if (m) return options[ORDINAL[m[1]]] || null;
+  if (options.length === 1 && /^(?:yes|yeah|yep|yup|sure|ok|okay|please|do it|go ahead|right|correct)\b/.test(s)) return options[0];
+  return options.find(o => o.label.toLowerCase() === s) || null;
+}
+
+module.exports = { createGuide, SYSTEM, PERSONALITIES, pickOption };

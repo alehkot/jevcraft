@@ -153,7 +153,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   });
   // Mineflayer injects its own chat plugin after createBot, which would
   // overwrite a wrapper installed now; the filter goes on once chat exists.
-  bot.once('spawn', () => quietRepeats(bot));
+  bot.once('spawn', () => { noteOwnLines(); quietRepeats(bot); });
   // A world search that holds the event loop, said by its caller (note 772).
   bot.once('spawn', () => { try { require('./slow-calls').install(bot); } catch (_) { /* not watched */ } });
   // A new build is taken at a quiet moment (quiet-restart.js).
@@ -489,9 +489,11 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   // (keep-armed.js), and followed by a walk back to the player it waited with (company.js oweBack).
   async function launchArms(due) {
     launchingArms = true;
-    const arms = require('./keep-armed'), company = require('./company');
-    const run = ledger.open({ kind: 'request', name: 'own errand: ' + arms.errandRequest(due.item) });
+    const arms = require('./keep-armed');
+    let run = null;
     try {
+      const company = require('./company');
+      run = ledger.open({ kind: 'request', name: 'own errand: ' + arms.errandRequest(due.item) });
       const seen = bot._company, now = Date.now();
       const returnTo = seen && now - seen.at <= company.WITH_MS ? { name: seen.name, position: { ...seen.position } } : null;
       const from = returnTo?.name || bot.username;
@@ -501,7 +503,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         memory: { ...memory.context(from), found: require('./exploration').foundEntries(world.known) },
         inventory: Object.fromEntries(bot.inventory.items().map(item => [item.name, item.count])),
       });
-      if (ended || active || pendingRequests) { ledger.close(run.id, 'dropped'); return; }
+      if (ended || active || pendingRequests) { ledger.close(run.id, 'replaced'); return; }
       if (!spec || !['craft', 'obtain'].includes(spec.kind) || spec.item !== due.item)
         throw new Error('read as ' + (spec?.kind || 'nothing') + (spec?.item ? ' ' + spec.item : '') + ', not ' + due.item);
       const said = due.item.replaceAll('_', ' ');
@@ -515,7 +517,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       launch(goal);
     } catch (err) {
       console.log('[weapon] the errand was not begun: ' + err.message);
-      ledger.close(run.id, 'blocked');
+      if (run) ledger.close(run.id, 'blocked');
       setAside(survival, 'weapon_errand', 'sword', String(err.message).slice(0, 160), arms.ERRAND_REST_MS); saveSurvival();
     } finally { launchingArms = false; }
   }
@@ -693,6 +695,23 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   // for comes back through this same handler as plain requests, marked so they are not read twice.
   const guide = process.env.JEV_GUIDE_API_KEY ? createGuide({ file: path.join(stateDirectory, `${memoryIdentity}-guide.json`) }) : null;
   const guided = new WeakSet();
+  // Who the bot is talking with: a player who spoke to it in the last three minutes hears its lines in the guide's
+  // talk (guide.js note), so a reply made without the guide ("I aim to stay within 12 blocks") is part of what that
+  // player's next message is read against (2026-11-23: "50 blocks are fine" was read without it).
+  const talkPartners = new Map(), TALK_PARTNER_MS = 180000, notedLines = new WeakSet();
+  // Inside quietRepeats (spawn): a line it drops was never said.
+  function noteOwnLines() {
+    if (!guide || typeof bot.chat !== 'function' || bot._notesTalk) return;
+    bot._notesTalk = true;
+    const say = bot.chat.bind(bot);
+    bot.chat = message => {
+      try {
+        const at = Date.now();
+        for (const [name, last] of talkPartners) { if (at - last <= TALK_PARTNER_MS) guide.note(name, 'bot', String(message)); else talkPartners.delete(name); }
+      } catch (_) { /* the talk is for the guide; the line is said either way */ }
+      return say(message);
+    };
+  }
   let guideQueue = null;         // { sender, from, rest: [request, ...], useBuildings }: what the guide asked for after the request in hand
   const passOn = data => { guided.add(data); onPlayerChat(data); };
   // `useBuildings`: the player's leave to take from what is built (built.js), carried by the request itself so that
@@ -749,12 +768,36 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     try { literal = requestedCommand(request, bot.username); }
     catch (err) { console.error(err); bot.chat('I could not use that command. Please check what you asked me to do.'); return; }
     let address = parseAddress(request, bot.username);
+    // What the guide reads the next message against (guide.js note): the player's lines to the bot, addressed or
+    // answering a question it asked, once each, and not the requests the guide itself fed in. Other chat is not kept.
+    const noteHeard = () => {
+      if (!guide || literal || guided.has(data) || notedLines.has(data)) return;
+      notedLines.add(data); talkPartners.set(from, Date.now()); guide.note(from, 'player', address.text);
+    };
+    if (address.explicit) noteHeard();
     // The answer to "may I switch?": yes lets the held request through as it was said.
     const handed = handoff?.answer(from, address.text);
     if (handed) {
+      noteHeard();
       if (handed.verdict === 'yes') { bot.chat(`Thanks. Switching to ${handed.question.asker}'s request.`); onPlayerChat(handed.question.payload); }
       else bot.chat(`Okay, I'll stay on your task. Sorry, ${handed.question.asker}.`);
       return;
+    }
+    // A pick among the guide's numbered choices (guide.js options), addressed or not: run as the guide would have run
+    // it, with no second call to the model. Anything else addressed moves on from the choice.
+    const offered = clarifying.get(from);
+    if (offered?.kind === 'guide') {
+      const pick = offered.until > Date.now() && !literal ? require('./guide').pickOption(address.text, offered.options) : null;
+      if (pick) {
+        noteHeard();
+        clarifying.delete(from);
+        console.log(`[guide] ${from} chose ${JSON.stringify(pick.label)}: ${JSON.stringify(pick.requests)}`);
+        observation?.sample('guide', { from, said: address.text, chose: pick.label, requests: pick.requests });
+        guideQueue = { sender: data.sender, from, rest: pick.requests.slice(1), useBuildings: !!offered.useBuildings, workSite: offered.workSite };
+        inject(data.sender, pick.requests[0], guideQueue);
+        return;
+      }
+      if (address.explicit || offered.until <= Date.now()) clarifying.delete(from);
     }
     // Acknowledgements from other bots must never start new work. New goals
     // require an explicit name; short controls remain convenient when unprefixed.
@@ -766,10 +809,11 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     // the count and the recipient. The reply is read together with the
     // request it answers.
     const known = text => { const name = text.toLowerCase().replace(/\s+/g, '_'); return !!(bot.registry?.itemsByName?.[name] || bot.registry?.blocksByName?.[name] || bot.registry?.entitiesByName?.[name]); };
-    const question = clarifying.get(from);
+    const question = clarifying.get(from)?.kind === 'guide' ? null : clarifying.get(from);
     const answer = !literal && !control.test(address.text) && clarificationReply(question, address, { known });
     // A new addressed message moves on from the question either way.
     if (answer || address.explicit) clarifying.delete(from);
+    if (answer) noteHeard();
     if (answer) {
       if (question.workSite) data.workSite = question.workSite;
       request = `${bot.username} ${answer}`;
@@ -851,11 +895,14 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       guide.consult({ from, text: address.text, botName: bot.username, status: guideStatus(from) }).then(out => {
         if (ended) return;
         if (!out) { passOn(data); return; }
-        observation?.sample('guide', { from, said: address.text, say: out.say, requests: out.requests, addedRule: out.addedRule, forgotRule: out.forgotRule });
+        observation?.sample('guide', { from, said: address.text, say: out.say, requests: out.requests, addedRule: out.addedRule, forgotRule: out.forgotRule,
+          ...(out.options && { options: out.options.map(o => ({ label: o.label, requests: o.requests })) }) });
         console.log(`[guide] ${from}: ${JSON.stringify(address.text)} -> ${JSON.stringify(out)}`);
         if (out.say) bot.chat(out.say);
         const useBuildings = !!out.useBuildings && require('./built').on();
-        if (out.requests.length) {
+        // Choices offered: the pick is read when it comes (above), within the question's minute and a half.
+        if (out.options?.length) clarifying.set(from, { kind: 'guide', options: out.options, until: Date.now() + CLARIFY_MS, workSite: data.workSite, useBuildings });
+        else if (out.requests.length) {
           guideQueue = { sender: data.sender, from, rest: out.requests.slice(1), useBuildings, workSite: data.workSite };
           inject(data.sender, out.requests[0], guideQueue);
         } else if (useBuildings && !out.addedRule) {
