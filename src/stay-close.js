@@ -10,7 +10,9 @@ function readControl(text) {
   if (/^(?:stop (?:staying|keeping) close(?: to me)?|(?:don't|do not) stay close(?: to me)?|(?:turn off|disable) stay[ -]close(?: mode)?|(?:you can )?roam freely)$/.test(s)) return { mode: 'off' };
   if (/^(?:stay[ -]close status|how close are you staying(?: to me)?)$/.test(s)) return { mode: 'status' };
   const match = /^(?:(?:stay|keep|stick) (?:close|near|nearby)(?: (?:to |with |by )?me)?|stay[ -]close mode)(?:[, ]+(?:within |max(?:imum)? |about )?(\d+) blocks?(?: (?:of|from) me)?)?$/.exec(s) ||
-    /^(?:stay|keep) (?:within|around|about) (\d+) blocks? (?:of|from) me$/.exec(s);
+    // A distance with no "close" in it: "stay within 50 blocks", "stay max 50 blocks away", "keep no more than 50
+    // blocks from me" (2026-11-23: "stay max 50 bloxks away" went to the language layer and was refused there).
+    /^(?:stay|keep|be) (?:within|around|about|at most|max(?:imum)?|up to|no (?:more|farther|further) than|not more than) (\d+) blocks?(?: away)?(?: (?:of|from) me)?$/.exec(s);
   if (!match) return null;
   const radius = match[1] === undefined ? undefined : Number(match[1]);
   return radius !== undefined && !(Number.isSafeInteger(radius) && radius > 0) ? { mode: 'invalid' } : { mode: 'on', radius };

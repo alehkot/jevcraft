@@ -11103,6 +11103,8 @@ async function runGoal(bot, task, goal, store, { maxSteps = Infinity, onStep = (
         if (ran) { goal.stalls = 0; save(); onStep(goal); continue; }
       }
       if (!endTask && await upkeepStep(bot, task, goal, save, decisionClient, onStep)) { goal.stalls = 0; save(); onStep(goal); continue; }
+      // JEV_WEAPON: a sword the pockets make is made before the next step (keep-armed.js).
+      if (!endTask && await inCatch(task, goal, () => require('./keep-armed').workSword(bot, task, goal, save, { acquireStep, craftable: item => craftableFromPack(bot, item), countOf, setAside, isSetAside }))) { goal.stalls = 0; save(); onStep(goal); continue; }
       bot._goal = goal; bot._goalSave = save;
       if (goal.workSite && !goal.visitedWorkSite) {
         await workSites.approach(bot, task, goal.workSite, navigate);
