@@ -213,10 +213,15 @@ test('which lines go to the judge: not one for another player by name, or one th
   assert.equal(mayBeForBot('can someone get wood', { botNames: ['Jev'], others: [] }), true, 'alone with the bot');
   assert.equal(mayBeForBot('Sky, come here', { ...two, talking: true }), false);
   assert.equal(mayBeForBot('@sky look', { ...two, talking: true }), false);
-  assert.equal(mayBeForBot('daddy look at this', { ...two, talking: true }), true, 'a longer word is not the name');
+  assert.equal(mayBeForBot('Dadaism is fun, can you get wool', { ...two, talking: true }), true, 'a longer word is not the name');
+  for (const line of ['daddy look at this', 'son where are you', 'papa come here', 'mom?', 'Grandma, look', 'сынок, где ты?', 'мам иди сюда']) assert.equal(mayBeForBot(line, { ...two, talking: true }), false, line);
+  assert.equal(mayBeForBot('sonic boom, get me wood', { ...two, talking: true }), true, 'a longer word is not a family word');
+  assert.equal(mayBeForBot('give the wood to dad', { ...two, talking: true }), true, 'a family word at the end can be said to the bot');
   for (const line of ['lol', 'haha', 'ok', 'thanks!', 'brb', '?!', '👍']) assert.equal(mayBeForBot(line, { botNames: ['Jev'], others: [], talking: true }), false, line);
   const text = JUDGE('Jev');
   assert.match(text, /When unsure, it is not meant for Jev/);
+  assert.match(text, /by a family word/);
+  assert.match(text, /These come first/);
   assert.match(text, /the players' talk among themselves/);
   assert.match(text, /"forBot"/);
   assert.doesNotMatch(text, /undefined/);

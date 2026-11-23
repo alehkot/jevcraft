@@ -4,7 +4,9 @@
 // real model. A line taken wrongly (false positive) sets the bot to work nobody asked for and counts first; a line
 // missed is left for the player to say again with the name. Costs a cent or two a run. The key is read from
 // JEV_GUIDE_API_KEY or OPENAI_API_KEY and never printed.
-// 30 cases scored (four after a busy afternoon of chat), 4 shown only.
+// 46 cases scored, 5 shown only: four after a busy afternoon of chat, and seventeen with players with Bedrock-style
+// names (made up) who call each other by a family word or a first name. The judge is asked each line, the gate before
+// it (mayBeForBot) left out: live, a line starting with a family word never reaches it.
 // usage: node scripts/guide-eval-judge.js <model> <reasoning effort, or - for none sent> <runs per case>
 const { createGuide } = require('../src/guide.js');
 const [model, effort, reps = '3'] = process.argv.slice(2);
@@ -17,6 +19,11 @@ const BUSY = [P('Robin', 'stop', true), J('Stopped. I saved our progress. Say "J
   J("I aim to stay within 12 blocks of Robin. We're 3 blocks apart."), P('Robin', '50 blocks are fine', true), J("I aim to stay within 50 blocks of Robin. We're 3 blocks apart."),
   P('Sky', 'lol the pig is stuck'), P('Robin', 'haha'), P('Robin', 'get me 2 oak logs', true), J("I'll get 2 oak log for Robin."), J('Climbing back up top.'), P('Robin', 'stop', true),
   J('Stopped. I saved our progress. Say "Jev resume" to keep going.')];
+// Bedrock-style names (made up), calling each other by a family word or a first name. One has just had a job done by
+// the bot; the other has just been told how close the bot stays.
+const PA = '.p4nda77', PB = '.zoom_fox9', LIVE = [{ name: PA, blocks: 9 }, { name: PB, blocks: 6 }];
+const B_JOB = [P(PB, 'get me 2 oak logs', true), J("I'll get 2 oak log for " + PB + '.'), J('Here you go, ' + PB + ': 2 oak logs.')];
+const A_DISTANCE = [P(PA, 'stay close to me', true), J('I aim to stay within 12 blocks of ' + PA + ". We're 3 blocks apart.")];
 const cases = [
   ['continues: 50 blocks are fine', true, TWO, [P('Robin', 'stay close to me', true), J("I aim to stay within 12 blocks of Robin. We're 13 blocks apart.")], ['Robin', '50 blocks are fine']],
   ['why not, after a refusal', true, TWO, [P('Sky', 'stay max 50 bloxks away', true), J("Sorry, I can't do that. I can stay close to you (12 blocks).")], ['Sky', 'why not?']],
@@ -51,6 +58,24 @@ const cases = [
   ["Sky answers the bot's offer to Robin", null, TWO, [J('Robin, want me to get you some food? (say yes)')], ['Sky', 'yes he is hungry']],
   ['praise with the name in it', null, TWO, [J("I've made a stone sword to carry.")], ['Robin', 'nice one jev']],
   ['alone, help with zombies about', null, ONE, [J('Following you, Robin.')], ['Robin', 'help!! zombies']],
+  ["family word first: 'dad where r u'", false, LIVE, B_JOB, [PB, 'dad where r u']],
+  ["family word first: 'mama come here'", false, LIVE, B_JOB, [PB, 'mama come here']],
+  ["family word first: 'grandpa can you get me some wood'", false, LIVE, B_JOB, [PB, 'grandpa can you get me some wood']],
+  ["family word first: 'mommy look at this'", false, LIVE, B_JOB, [PB, 'mommy look at this']],
+  ["family word first: 'dad?'", false, LIVE, B_JOB, [PB, 'dad?']],
+  ["family word first, in Russian: 'мам иди сюда'", false, LIVE, B_JOB, [PB, 'мам иди сюда']],
+  ["first name first: 'Max, follow me'", false, LIVE, A_DISTANCE, [PA, 'Max, follow me']],
+  ["first name first: 'max come here'", false, LIVE, A_DISTANCE, [PA, 'max come here']],
+  ["family word first: 'son where are you'", false, LIVE, A_DISTANCE, [PA, 'son where are you']],
+  ["first name first: 'Max get the wood, I will build'", false, LIVE, A_DISTANCE, [PA, 'Max get the wood, I will build']],
+  ["family word first, in Russian: 'доча, где ты?'", false, LIVE, A_DISTANCE, [PA, 'доча, где ты?']],
+  ["yes after the other player asks 'Max' something, the bot's build offer open", false, LIVE, [...B_JOB, P(PB, 'build me a house jev', true), J(PB + ', shall I build a starter house for two people? (say yes)'), P(PA, 'Max, are you coming mining?')], [PB, 'yes']],
+  ["sure after the other player asks 'kiddo' something, the bot's food offer open", false, LIVE, [...B_JOB, J(PB + ', want me to get you some food? (say yes)'), P(PA, 'kiddo, want to come see the cave?')], [PB, 'sure']],
+  ["made-up names: a follow-up to the bot", true, LIVE, B_JOB, [PB, 'and some coal too']],
+  ["made-up names: an answer to the bot's distance", true, LIVE, A_DISTANCE, [PA, '50 blocks are fine']],
+  ["made-up names: the bot named last", true, LIVE, B_JOB, [PB, 'come here jev']],
+  ["made-up names: yes to the bot's build offer, nobody else spoke", true, LIVE, [...B_JOB, P(PB, 'build me a house jev', true), J(PB + ', shall I build a starter house for two people? (say yes)')], [PB, 'yes']],
+  ["made-up names: 'buddy get some wood' to the other player", null, LIVE, A_DISTANCE, [PA, 'buddy get some wood']],
 ];
 (async () => {
   const times = [], usage = { n: 0, in: 0, out: 0, reasoning: 0 };

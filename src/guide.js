@@ -107,10 +107,11 @@ It is meant for ${bot} when the player is talking to it without its name:
 - the player is alone with ${bot} and asks something of whoever hears it, or the line names ${bot} somewhere other than at its start ("come here jev").
 
 It is not meant for ${bot} when:
-- it is said to another player: their name is in it, or it answers what another player said or asked after ${bot}'s last line;
+- it is said to someone else: it calls a person by a name that is not ${bot}'s (a player's name, or a first name or nickname such as "Sam") or by a family word ("dad", "mom", "son"; in any language), or it answers what another player said or asked after ${bot}'s last line, even with a bare "yes". Players call each other so more often than by the names in players: with two players online, a name that is not ${bot}'s most likely means the other one, so "Sam, are you coming?" from one asks the other;
 - it is the players' talk among themselves: plans, jokes, comments, news, even about things ${bot} could do ("we need more wood", "lets build a tower");
 - it talks about ${bot} rather than to it ("is jev ok? he is so slow");
 - it asks nothing of anyone.
+These come first: a line that would fit as a follow-up to ${bot} is still not meant for it when it calls someone else or answers another player ("mom, can you get the coal?" right after ${bot} brought that player wood).
 When unsure, it is not meant for ${bot}: a line left alone costs nothing (the player can say the name), and a line taken wrongly sets ${bot} to work nobody asked for.
 
 You get the line ("said"), the player who said it, the players online (blocksFromBot when in sight), and recentChat: the game chat before the line, oldest first, who said each line (${bot}'s own under its name), how many seconds ago, and toBot when it was said to ${bot}.
@@ -120,11 +121,17 @@ Answer with JSON only: {"forBot": true or false, "why": "at most 12 words"}`;
 // asking nothing ("lol", "ok": a yes to the bot's own question is read before this), and only from a player who has
 // talked with the bot lately (talking), is alone with it (no others), or names it somewhere in the line.
 const ASKS_NOTHING = /^(?:lol|lmao|rofl|ha(?:ha)+h?|he(?:he)+|xd+|omg|wow|nice|cool|gg|brb|afk|bye|hi|hey|hello|ok|okay|k+|yes|yeah|yep|no|nope|nah|ty|thx|thanks|thank you|np|oops|ugh|hm+|wait|what|ah|oh)[\s!.?]*$/i;
+// A line that starts by calling a family member ("mom where r u", "son, come here", "мама, где ты?") is said to that
+// person whatever it asks, and never goes to the judge (in the judge's eval, such a line, said by one player to the other
+// right after the bot's talk with the first, was taken for the bot 3 times of 3). Only at the start: "give it to dad"
+// can be said to the bot.
+const FAMILY_FIRST = /^(?:dad|daddy|papa|mom|mommy|mum|mummy|mama|son|sonny|kiddo|grandpa|grandma|granny|пап|папа|папуль|папочка|мам|мама|мамуль|мамочка|сын|сынок|сынуля|доча|дочка|доченька|бабуль|бабушка|дедуль|дедушка)(?![\p{L}\p{N}_])/iu;
 const escRe = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 function mayBeForBot(text, { botNames = ['Jev'], others = [], talking = false } = {}) {
   const line = String(text || '').trim();
   if (!/\p{L}{2}/u.test(line) || ASKS_NOTHING.test(line)) return false;
   const lead = line.toLowerCase().replace(/^@/, '');
+  if (FAMILY_FIRST.test(lead)) return false;
   if (others.some(name => { const n = String(name || '').toLowerCase(); return n && lead.startsWith(n) && !/[\p{L}\p{N}_]/u.test(lead.charAt(n.length)); })) return false;
   if (talking || !others.length) return true;
   return new RegExp(`(^|[^\\p{L}\\p{N}_])(?:${botNames.filter(Boolean).map(escRe).join('|')})(?![\\p{L}\\p{N}_])`, 'iu').test(line);
