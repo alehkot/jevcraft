@@ -283,7 +283,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     // A walk back after monsters (launchBack) that is stopped or replaced is over, not kept for a later "resume"; so is
     // the bot's own errand for a sword (keep-armed.js).
     if (!active.idle) {
-      if (active.goal.weaponErrand) active.goal.errandStopped = status;
+      // Ended by the bot itself (the idle timer: too long, or night) is not a player's stop.
+      if (active.goal.weaponErrand && !active.goal.errandEnded) active.goal.errandStopped = status;
       active.goal.status = active.goal.back || active.goal.weaponErrand ? 'complete' : status; workStore.save(active.goal);
     }
     bot.pathfinder.setGoal(null);
@@ -359,12 +360,17 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       if (active === session) active = null;
       // Arrived: the scare is over. The player walking off again is not followed.
       if (goal.back && goal.status === 'complete' && !goal.backFailed && !session.relaunch) require('./company').letGo(bot);
-      // The errand for a sword, over: rested while there is still no sword ready; done, back to the player it waited
-      // with, as after monsters. Stopped or replaced, it is not walked back from: the player has said what comes next.
+      // The errand for a sword, over. With no sword ready it rests, and counts as one that came to nothing unless a
+      // player stopped it or asked for something else. Then back to the player it waited with, as after monsters,
+      // whatever came of it; not when a player stopped or replaced it: they have said what comes next.
       if (goal.weaponErrand && !session.relaunch) {
         const arms = require('./keep-armed');
-        if (!arms.ready(bot)) { setAside(survival, 'weapon_errand', 'sword', String(goal.errandFailed || goal.errandStopped || 'over with no sword ready').slice(0, 160), arms.ERRAND_REST_MS); saveSurvival(); }
-        else if (goal.status === 'complete' && !goal.errandFailed && !goal.errandStopped && goal.returnTo) require('./company').oweBack(bot, goal.returnTo);
+        if (arms.ready(bot)) { armsFailed = 0; attemptsFor(survival).clear('weapon_errand', 'sword'); saveSurvival(); }
+        else {
+          if (!goal.errandStopped) armsFailed++;
+          setAside(survival, 'weapon_errand', 'sword', String(goal.errandFailed || goal.errandEnded || goal.errandStopped || 'over with no sword ready').slice(0, 160), arms.ERRAND_REST_MS); saveSurvival();
+        }
+        if (goal.returnTo && !goal.errandStopped) require('./company').oweBack(bot, goal.returnTo);
       }
       if (session.relaunch) {
         relaunching = true;
@@ -464,24 +470,26 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   function launchBack(scare) {
     const seen = bot.players[scare.with]?.entity?.position;
     scare.tries++; scare.triedAt = Date.now();
-    const goal = { kind: 'come', back: true, request: 'come back after the monsters', from: scare.with, target: scare.with,
+    const after = scare.errand ? 'the errand for a sword' : 'the monsters';
+    const goal = { kind: 'come', back: true, request: `come back after ${after}`, from: scare.with, target: scare.with,
       version: 1, status: 'pending', createdAt: new Date().toISOString(), suspendedTasks: suspendPrevious(store.read()),
       requesterPosition: seen ? { ...seen } : { ...scare.position },
       initialInventory: bot.inventory.items().map(i => ({ name: i.name, count: i.count })) };
     saveGoal(goal);
-    console.log(`[company] back to ${scare.with} after the monsters: try ${scare.tries}, ${seen ? `${Math.round(seen.distanceTo(bot.entity.position))} blocks off` : 'out of view, to where they were last seen'}`);
+    console.log(`[company] back to ${scare.with} after ${after}: try ${scare.tries}, ${seen ? `${Math.round(seen.distanceTo(bot.entity.position))} blocks off` : 'out of view, to where they were last seen'}`);
     if (!scare.said) { scare.said = true; bot.chat(`Coming back to you, ${scare.with}.`); }
     launch(goal);
   }
 
   // JEV_WEAPON=keep: the waiting bot's errand for a sword (keep-armed.js), looked at every five seconds.
+  function errandNow(dark) {
+    return require('./keep-armed').errandDue(bot, { survival, dark, paused: !!survival.state.paused, isSetAside, failures: armsFailed,
+      threatened: require('./danger').threats(bot, 16).some(t => t.visible) });
+  }
   function armsDue(now, dark) {
     if (now - armsCheckedAt < 5000 || guideQueue?.rest?.length) return null;
     armsCheckedAt = now;
-    try {
-      return require('./keep-armed').errandDue(bot, { survival, dark, paused: !!survival.state.paused, isSetAside,
-        threatened: require('./danger').threats(bot, 16).some(t => t.visible) });
-    } catch (err) { console.error('[weapon] the errand check:', err.message); return null; }
+    try { return errandNow(dark); } catch (err) { console.error('[weapon] the errand check:', err.message); return null; }
   }
 
   // The errand itself: read as the request "craft a stone sword" would be (the dream's way), and marked as the bot's
@@ -503,20 +511,23 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         memory: { ...memory.context(from), found: require('./exploration').foundEntries(world.known) },
         inventory: Object.fromEntries(bot.inventory.items().map(item => [item.name, item.count])),
       });
-      if (ended || active || pendingRequests) { ledger.close(run.id, 'replaced'); return; }
+      // Still due once the request is read: not stopped meanwhile ("stop" pauses with nothing active), not armed, not dark.
+      const still = ended || active || pendingRequests ? null : errandNow(company.darkNow(bot));
+      if (!still || still.item !== due.item) { ledger.close(run.id, 'replaced'); return; }
       if (!spec || !['craft', 'obtain'].includes(spec.kind) || spec.item !== due.item)
         throw new Error('read as ' + (spec?.kind || 'nothing') + (spec?.item ? ' ' + spec.item : '') + ', not ' + due.item);
-      const said = due.item.replaceAll('_', ' ');
-      const goal = { ...spec, deliver: false, weaponErrand: true, returnTo, request: 'make a ' + said + ' to carry',
+      // The total wanted, as at work (workSword): one sword more than is carried, or a worn one would be enough.
+      const goal = { ...spec, count: arms.carried(bot, due.item) + 1, deliver: false, weaponErrand: true, errandPockets: !!due.pockets, returnTo, request: 'make ' + arms.a(due.item) + ' to carry',
         errandUntil: Date.now() + arms.ERRAND_MS, ledgerRun: run.id, version: 1, status: 'pending', createdAt: new Date().toISOString(),
         suspendedTasks: suspendPrevious(store.read()), requesterPosition: null,
         initialInventory: bot.inventory.items().map(i => ({ name: i.name, count: i.count })) };
       saveGoal(goal);
       console.log('[weapon] errand: ' + goal.request + (due.pockets ? ', from the pockets' : '') + (returnTo ? ', then back to ' + returnTo.name : ''));
-      bot.chat("I have no sword, so I'm making a " + said + (returnTo && !due.pockets ? '. Back soon, ' + returnTo.name : '') + '.');
+      bot.chat(arms.errandLine(bot, due.item, { pockets: due.pockets, returnTo }));
       launch(goal);
     } catch (err) {
       console.log('[weapon] the errand was not begun: ' + err.message);
+      armsFailed++;
       if (run) ledger.close(run.id, 'blocked');
       setAside(survival, 'weapon_errand', 'sword', String(err.message).slice(0, 160), arms.ERRAND_REST_MS); saveSurvival();
     } finally { launchingArms = false; }
@@ -609,13 +620,15 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   // JEV_IDLE=wait: when the waiting bot was last in its shelter or in a hole (company.js routine).
   let lastSheltered = 0;
   // JEV_WEAPON=keep: the waiting bot's errand for a sword (keep-armed.js).
-  let launchingArms = false, armsCheckedAt = 0;
+  let launchingArms = false, armsCheckedAt = 0, armsFailed = 0;
   const idleTimer = setInterval(() => {
     const now = Date.now();
-    // JEV_WEAPON=keep: an errand for a sword still at it after its eight minutes is ended, and rests (keep-armed.js).
-    if (active && !active.idle && active.goal?.weaponErrand && now > (active.goal.errandUntil || Infinity) && !active.goal.errandStopped) {
-      console.log('[weapon] the errand took too long; ended');
-      stop('interrupted').catch(console.error);
+    // JEV_WEAPON=keep: an errand for a sword is ended after its eight minutes, and one gathering for it at nightfall;
+    // either way the bot then walks back to the player it waited with (keep-armed.js).
+    if (active && !active.idle && active.goal?.weaponErrand && !active.goal.errandEnded && !active.goal.errandStopped) {
+      const over = now > (active.goal.errandUntil || Infinity) ? 'it took too long'
+        : !active.goal.errandPockets && require('./company').darkNow(bot) ? 'night fell' : null;
+      if (over) { active.goal.errandEnded = over; console.log(`[weapon] the errand was ended: ${over}`); stop('interrupted').catch(console.error); }
     }
     if (ready && !pendingRequests && !launchingDream && (!active || active.idle) && now - waitCheckedAt > 5000) {
       waitCheckedAt = now;
@@ -706,8 +719,11 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     const say = bot.chat.bind(bot);
     bot.chat = message => {
       try {
-        const at = Date.now();
-        for (const [name, last] of talkPartners) { if (at - last <= TALK_PARTNER_MS) guide.note(name, 'bot', String(message)); else talkPartners.delete(name); }
+        const at = Date.now(), text = String(message), lower = text.toLowerCase();
+        for (const [name, last] of [...talkPartners]) if (at - last > TALK_PARTNER_MS) talkPartners.delete(name);
+        // To the player it names, or else to the one who spoke to it last: with two talking, one's answer is not the other's.
+        const recent = [...talkPartners].sort((a, b) => b[1] - a[1]), named = recent.filter(([name]) => lower.includes(String(name).toLowerCase()));
+        for (const [name] of named.length ? named : recent.slice(0, 1)) guide.note(name, 'bot', text);
       } catch (_) { /* the talk is for the guide; the line is said either way */ }
       return say(message);
     };
@@ -796,6 +812,9 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         guideQueue = { sender: data.sender, from, rest: pick.requests.slice(1), useBuildings: !!offered.useBuildings, workSite: offered.workSite };
         inject(data.sender, pick.requests[0], guideQueue);
         return;
+      }
+      if (offered.until > Date.now() && !literal && require('./guide').declines(address.text)) {
+        noteHeard(); clarifying.delete(from); bot.chat('Okay, never mind.'); return;
       }
       if (address.explicit || offered.until <= Date.now()) clarifying.delete(from);
     }

@@ -61,7 +61,7 @@ How to decide:
 6. Something the engine cannot do: say so in "say" and name the nearest thing it can do. No requests. A number is never the reason: the counts, sizes and distances in a request on the list are the player's to choose.
 7. A job for idle time ("when you have nothing to do, collect coal"): that is a dream. Emit "your dream is to get me <N> <item>" yourself, with a sensible amount such as one stack, and say what you set. Never tell the player how to phrase something you can emit yourself.
 ${built ? `8. What someone built is left alone by the engine: it takes wood, stone and the rest from the wild, and never from a house, a village, a fence, a wall or anything else made by players or villagers. When the only source in view is built it says so and looks further. "use_buildings" is false unless the player clearly allows taking from buildings, in this message or in a standing rule ("take the wood from that house", "you can break the village houses", "use the buildings"): then true. With requests in the answer it covers those requests; with none it covers the work in hand (status.doing), and "say" confirms it. A plain request ("get wood") never sets it, and you never set it because it would be quicker. A standing rule that allows it ("you may always take wood from buildings") is stored like any other and applied to each request. Asked not to touch buildings: say that is how ${bot} works already, no rule needed.
-` : ''}Choices: when a wish could mean two or three different things the engine can do, or the nearest thing it can do is not quite what was asked, do not guess. Offer them in "options", each {"label": a few words, "requests": what it runs}, with only the question in "say" (the options are listed after it by number and the player answers with the number), and no requests. A single likely meaning is one option, answered with yes. A clear request is acted on, never offered back as a choice.
+` : ''}Choices: when a wish could mean two or three different jobs the engine can do, or the nearest job it can do is not quite what was asked, offer them rather than pick one: put them in "options", each {"label": a few words, "requests": what it runs}, with only the question in "say" (the options are listed after it by number and the player answers with the number), and no requests. A single likely meaning is one option, answered with yes. Details are never choices: an amount, a kind of wood or anything else a request leaves open is filled in as rule 1 and the facts say. A clear request is acted on, never offered back as a choice.
 Never write anything that starts with "/". Never promise what the engine cannot do. "say" is plain text, friendly and brief, in the player's language.${PERSONALITIES[personality] ? ` ${PERSONALITIES[personality]} The manner is for "say" only: it never changes the requests.` : ''}`;
 
 function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_API_KEY,
@@ -187,6 +187,10 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
 // The player's pick among the choices offered (out.options): the option, or null when the line is not a pick. A
 // number, "the second", the label itself, or yes to a single one; a long line that starts with a number is not one.
 const ORDINAL = { first: 0, one: 0, second: 1, two: 1, third: 2, three: 2 };
+// Yes and nothing else: "ok get me 16 oak logs" is a new request, not a yes (the whole line, so it runs through).
+const CONSENT = /^(?:(?:yes|yeah|yep|yup|ya|sure|ok|okay|please|do it|go ahead|go for it|sounds good|that one|right|correct|alright|all right)[\s,!.]*)+$/;
+// No to every choice offered: the bot lets the question go.
+const declines = text => /^(?:no|nope|nah|neither|neither of them|none|none of them|never ?mind|forget it|no thanks?(?: you)?)$/.test(String(text || '').toLowerCase().trim().replace(/[.!?,]+$/, '').trim());
 function pickOption(text, options = []) {
   const s = String(text || '').toLowerCase().trim().replace(/[.!?]+$/, '').trim();
   if (!s || !options.length) return null;
@@ -194,8 +198,8 @@ function pickOption(text, options = []) {
   if (m) return options[Number(m[1]) - 1] || null;
   m = /^(?:the )?(first|second|third)(?: one)?(?: please)?$/.exec(s) || /^(one|two|three)$/.exec(s);
   if (m) return options[ORDINAL[m[1]]] || null;
-  if (options.length === 1 && /^(?:yes|yeah|yep|yup|sure|ok|okay|please|do it|go ahead|right|correct)\b/.test(s)) return options[0];
+  if (options.length === 1 && CONSENT.test(s)) return options[0];
   return options.find(o => o.label.toLowerCase() === s) || null;
 }
 
-module.exports = { createGuide, SYSTEM, PERSONALITIES, pickOption };
+module.exports = { createGuide, SYSTEM, PERSONALITIES, pickOption, declines };

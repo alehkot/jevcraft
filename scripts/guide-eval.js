@@ -1,4 +1,4 @@
-// Scripted cases for the language layer (src/guide.js): the standard set, 19 cases. Each case is a chat line, the
+// Scripted cases for the language layer (src/guide.js): the standard set, 20 cases. Each case is a chat line, the
 // player's standing rules and the bot's status, sent through guide.consult() to the real model,
 // with a check on what comes back. Costs a few cents a run. The key is read from
 // JEV_GUIDE_API_KEY or OPENAI_API_KEY and never printed.
@@ -15,7 +15,9 @@ const cases = [
   ['plain request passes unchanged', [], 'follow me', {}, o => eq(o, ['follow me']) && noRule(o)],
   ['rule applied to a vague request', [WOOD], 'get me some wood', {}, o => o && o.requests.length === 1 && /8 birch logs?/i.test(o.requests[0])],
   ['standing rule is stored', [], 'from now on, when I ask for wood I mean birch, 8 logs at a time', {}, o => o && !!o.addedRule && /birch/i.test(o.addedRule) && none(o)],
-  ['impossible rule is declined', [], 'stay within 10 blocks of me at all times', {}, o => none(o) && noRule(o) && !!o.say],
+  // A stay-close distance is a control since 2026-11-23 (any distance the player names); this was declined before.
+  ['stay-close distance is a control', [], 'stay within 10 blocks of me at all times', {}, o => eq(o, ['stay within 10 blocks of me']) && noRule(o)],
+  ['impossible rule is declined', [], 'from now on, keep it daytime all the time', {}, o => none(o) && noRule(o) && !!o.say],
   ['two steps in order', [], 'come here and then follow me', {}, o => eq(o, ['come here', 'follow me'])],
   ['vague wish becomes 1-3 requests', [], 'help me get started, I have nothing', {}, o => o && o.requests.length >= 1 && o.requests.length <= 3 && o.requests.every(r => KNOWN.test(r))],
   ['question answered from facts', [], 'what are you carrying?', { carrying: { oak_log: 5, cobblestone: 12 } }, o => none(o) && /oak/i.test(o.say || '') && /cobble/i.test(o.say || '')],

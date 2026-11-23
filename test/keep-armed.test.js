@@ -143,3 +143,33 @@ test('after the errand the bot owes the player it waited with a walk back, by th
   assert.equal(company.backDue(bot, { now: t + 5000 }), null, 'already with them');
   assert.equal(company.oweBack(bot, null, t), null);
 });
+
+test('the errand: gathered for only with three minutes of daylight ahead; three that come to nothing and no more', () => {
+  const KEEP = { JEV_WEAPON: 'keep' };
+  const at = (timeOfDay, pockets = []) => Object.assign(botWith(pockets), { health: 20, food: 20, entity: {}, time: { timeOfDay } });
+  const due = (bot, opts = {}) => arms.errandDue(bot, { craftable: () => false, env: KEEP, ...opts });
+  assert.deepEqual(due(at(1000)), { item: 'stone_sword', pockets: false }, 'morning');
+  assert.deepEqual(due(at(8000)), { item: 'stone_sword', pockets: false }, 'afternoon: 4300 ticks of day left');
+  assert.equal(due(at(9000)), null, 'under three minutes of daylight: nothing gathered for');
+  assert.deepEqual(due(at(9000), { craftable: item => item === 'stone_sword' }), { item: 'stone_sword', pockets: true }, 'but from the pockets');
+  assert.deepEqual(due(at(23600)), { item: 'stone_sword', pockets: false }, 'dawn');
+  assert.equal(arms.dayLeft(at(13000)), 0);
+  assert.equal(arms.dayLeft(at(23600)), 400 + 12300);
+  assert.equal(due(at(1000), { failures: arms.ERRAND_TRIES }), null, 'three that came to nothing');
+  assert.deepEqual(due(at(1000), { failures: arms.ERRAND_TRIES - 1 }), { item: 'stone_sword', pockets: false });
+});
+
+test('the errand wants one sword more than is carried, and says what it has', () => {
+  const robin = { name: 'Robin', position: { x: 0, y: 64, z: 0 } };
+  assert.equal(arms.carried(botWith([['stone_sword', 1, 125], ['oak_log', 3]]), 'stone_sword'), 1, 'a worn one is still carried');
+  assert.equal(arms.errandLine(botWith([]), 'stone_sword', { returnTo: robin }), "I have no sword, so I'm making a stone sword. Back soon, Robin.");
+  assert.equal(arms.errandLine(botWith([]), 'stone_sword', { returnTo: robin, pockets: true }), "I have no sword, so I'm making a stone sword.");
+  assert.equal(arms.errandLine(botWith([['wooden_sword']]), 'stone_sword'), "I only have a wooden sword, so I'm making a stone sword.");
+  assert.equal(arms.errandLine(botWith([['stone_sword', 1, 125]]), 'stone_sword'), "My stone sword is nearly broken, so I'm making a new one.");
+  assert.equal(arms.errandLine(botWith([['stone_sword', 1, 125]]), 'iron_sword'), "My stone sword is nearly broken, so I'm making an iron sword.");
+  assert.equal(arms.errandRequest('iron_sword'), 'craft an iron sword');
+  assert.equal(require('../src/speech').completion({ kind: 'craft', item: 'iron_sword', count: 1, deliver: false, weaponErrand: true }), "I've made an iron sword to carry.");
+  const { completion } = require('../src/speech');
+  assert.equal(completion({ kind: 'craft', item: 'stone_sword', count: 2, deliver: false, weaponErrand: true }), "I've made a stone sword to carry.");
+  assert.equal(completion({ kind: 'craft', item: 'stone_sword', count: 1, deliver: false, weaponErrand: true, errandPockets: true }), '');
+});

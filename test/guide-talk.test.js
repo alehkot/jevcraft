@@ -79,7 +79,20 @@ test('the pick: a number, "the second", the label, or yes to a single choice; no
     assert.equal(pickOption(said, options), null, said);
   assert.equal(pickOption('yes', options.slice(0, 1))?.label, 'stay within 50 blocks');
   assert.equal(pickOption('sure, go ahead', options.slice(0, 1))?.label, 'stay within 50 blocks');
+  for (const said of ['yes please', 'ok do it', 'Yeah!', 'okay.'])
+    assert.equal(pickOption(said, options.slice(0, 1))?.label, 'stay within 50 blocks', said);
+  // A yes with more after it is a new request or a no, not a pick (the pick is read before the guide).
+  for (const said of ['ok get me 16 oak logs', "please don't", 'yes but get wood first', 'sure, follow me', 'ok stop'])
+    assert.equal(pickOption(said, options.slice(0, 1)), null, said);
   assert.equal(pickOption('1', []), null);
+});
+
+test('no to the choices lets the question go; a longer no is a message of its own', () => {
+  const { declines } = require('../src/guide');
+  for (const said of ['no', 'Nope.', 'neither', 'none of them', 'never mind', 'nevermind', 'no thanks', 'forget it'])
+    assert.equal(declines(said), true, said);
+  for (const said of ['no, get me oak logs', 'cancel', 'stop', '1', 'not now, later', 'yes'])
+    assert.equal(declines(said), false, said);
 });
 
 test('the instructions say how the talk is read and how choices are offered', () => {

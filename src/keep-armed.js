@@ -3,8 +3,10 @@
 // "jev should always try to carry some weapons and for the very first night getting stone sword at least".
 //   pockets  at work on a request, a sword the pockets make with crafts alone is made before the next step (workSword)
 //   keep     that, and between requests a waiting bot (JEV_IDLE=wait) with no stone sword or better goes and makes one:
-//            by day gathering for it as a request would, by night only from what its pockets make there and then;
-//            then back to the player it waited with (errandDue here, launchArms in session.js)
+//            by day gathering for it as a request would (with three minutes of daylight ahead, and ended at
+//            nightfall), by night only from what its pockets make there and then; then back to the player it
+//            waited with, whatever came of it, unless a player stopped it or asked for something else. Three that
+//            come to nothing and it stops trying until it next connects (errandDue here, launchArms in session.js)
 // Unset: the bot fights with what it happens to carry, as before.
 //
 // Ready is a stone sword or better (stone, copper, iron, diamond, netherite) with ten uses or more left. An axe does
@@ -18,6 +20,9 @@ const REST_MS = 10 * 60000;
 const ERRAND_MS = 8 * 60000;        // an errand still at it after this is ended
 const ERRAND_REST_MS = 10 * 60000;  // after an errand that failed, was ended, or left the bot with no sword ready
 const ERRAND_HEALTH = 12, ERRAND_FOOD = 6;
+const ERRAND_TRIES = 3;             // errands that came to nothing in one connection, then none until the next
+// Gathered for only with three minutes of daylight ahead (company.js darkNow: dark from 12300 to 23500).
+const DUSK = 12300, DAWN = 23500, ERRAND_DAY_LEFT = 3600;
 // Not made at: a come or a follow is the player's to wait on (a guard makes its own first, work.js), and the idle
 // loop and the dream's ladder keep their own.
 const NOT_AT = new Set(['come', 'follow', 'visit', 'climb_ladder', 'survive', 'win']);
@@ -65,6 +70,8 @@ function pocketSword(bot, craftable, spare = () => true) {
   return !armed(bot) && bot?.registry?.itemsByName?.wooden_sword && spare('wooden_sword') && craftable('wooden_sword') ? 'wooden_sword' : null;
 }
 const words = s => String(s || '').replaceAll('_', ' ');
+// "a stone sword", "an iron sword".
+const a = s => (/^[aeiou]/i.test(words(s)) ? 'an ' : 'a ') + words(s);
 const overworld = bot => /overworld$/.test(String(bot?.game?.dimension || 'overworld'));
 
 // At work on a request: a sword the pockets make is made before the next step, the step in hand kept. One that
@@ -100,18 +107,33 @@ function pocketsMake(bot, item) {
   return Array.isArray(steps) && steps.length > 0 && steps.every(st => st.action === 'craft');
 }
 
+const carried = (bot, item) => items(bot).reduce((n, i) => n + (i.name === item ? i.count : 0), 0);
+// Daylight ahead, in ticks: none in the dark.
+function dayLeft(bot) {
+  const t = bot?.time?.timeOfDay;
+  if (typeof t !== 'number') return Infinity;
+  return t < DUSK ? DUSK - t : t >= DAWN ? 24000 - t + DUSK : 0;
+}
+
 // The waiting bot's errand for a sword, or null: { item, pockets }. By day a stone sword, or the iron or copper one
-// the pockets make, gathered for as the request would be; in the dark only one the pockets make there and then.
-// Never while stopped, hurt, hungry, in the water, with a monster in sight, or resting after an errand.
-function errandDue(bot, { survival, dark = false, paused = false, threatened = false, craftable = item => pocketsMake(bot, item), isSetAside = () => false, env = process.env } = {}) {
-  if (mode(env) !== 'keep' || paused || threatened) return null;
+// the pockets make, gathered for as the request would be; in the dark, or with under three minutes of daylight
+// ahead, only one the pockets make there and then. Never while stopped, hurt, hungry, in the water, with a monster
+// in sight, resting after an errand, or after three that came to nothing (failures, in this connection).
+function errandDue(bot, { survival, dark = false, paused = false, threatened = false, failures = 0, craftable = item => pocketsMake(bot, item), isSetAside = () => false, env = process.env } = {}) {
+  if (mode(env) !== 'keep' || paused || threatened || failures >= ERRAND_TRIES) return null;
   if (bot?.game?.gameMode !== 'survival' || !overworld(bot) || bot?.entity?.isInWater) return null;
   if ((bot.health ?? 20) < ERRAND_HEALTH || (bot.food ?? 20) < ERRAND_FOOD) return null;
   if (ready(bot) || (survival && isSetAside(survival, 'weapon_errand', 'sword'))) return null;
   const pocket = pocketSword(bot, craftable);
-  if (dark) return pocket ? { item: pocket, pockets: true } : null;
+  if (dark || dayLeft(bot) < ERRAND_DAY_LEFT) return pocket ? { item: pocket, pockets: true } : null;
   return pocket && pocket !== 'wooden_sword' ? { item: pocket, pockets: true } : { item: 'stone_sword', pockets: false };
 }
-const errandRequest = item => 'craft a ' + words(item);
+const errandRequest = item => 'craft ' + a(item);
+// What the bot says as it sets out: what it has, what it makes, and whether it walks off.
+function errandLine(bot, item, { pockets = false, returnTo = null } = {}) {
+  const have = bestSword(bot), worn = !have && items(bot).find(i => /_sword$/.test(i.name));
+  const why = have ? 'I only have a ' + words(have.name) : worn ? 'My ' + words(worn.name) + ' is nearly broken' : 'I have no sword';
+  return why + ", so I'm making " + (worn?.name === item ? 'a new one' : a(item)) + (returnTo && !pockets ? '. Back soon, ' + returnTo.name : '') + '.';
+}
 
-module.exports = { mode, bestSword, ready, armed, spareFor, pocketSword, workSword, pocketsMake, errandDue, errandRequest, READY, MIN_USES, REST_MS, ERRAND_MS, ERRAND_REST_MS };
+module.exports = { mode, bestSword, ready, armed, spareFor, pocketSword, workSword, pocketsMake, carried, dayLeft, errandDue, errandRequest, errandLine, a, READY, MIN_USES, REST_MS, ERRAND_MS, ERRAND_REST_MS, ERRAND_TRIES, ERRAND_DAY_LEFT };
