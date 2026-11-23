@@ -19,6 +19,13 @@ function companionAction(text, workSite) {
       ask
     );
   if (boat) return { kind: boat[1] === 'follow me' ? 'follow' : 'come', byBoat: true };
+  // Taking up again the work set aside (agenda.js; asked for 2026-11-22): "continue", "finish the house".
+  const going = require('./agenda').continueAsk(ask);
+  if (going) return { kind: 'continue_work', what: going.what };
+  // Guarding the speaker (guard.js; asked for 2026-11-22): a follow that fights what comes at them.
+  if (/^(?:protect|guard|defend|cover|shield) me(?: (?:from|against) (?:the |all the |any )?(?:monsters?|mobs?|zombies?|skeletons?|spiders?|endermen|enderman|creepers?|enemies|baddies|bad guys))?(?: now)?$/.test(ask) ||
+      /^(?:keep me safe|watch my back|watch over me|look after me|be my (?:body ?guard|guard|protector)|(?:fight|kill|attack) (?:the |any )?(?:monsters?|mobs?) (?:around|near|by|next to|attacking|that attack) me)$/.test(ask))
+    return { kind: 'follow', guard: true };
   const ladder =
     /^(?:climb|go|head) (?:(up|down) )?(?:the |this |that |a |the nearest |the closest )?ladder(?: (up|down))?$/.exec(
       ask
@@ -31,6 +38,9 @@ function companionAction(text, workSite) {
       return { kind: 'place_at_site', item: placement[2].startsWith('torch') ? 'torch' : 'chest', count, workSite };
     }
   }
+  // The ground within sixteen blocks lit, so nothing spawns there (asked for 2026-11-22): a base or a house's yard.
+  if (/^(?:light up (?:the whole (?:area|place)|everything(?: around (?:here|me))?|(?:the |this |our |my )?(?:base|camp|village|yard)|(?:the area )?around (?:the |our |my |this )?(?:house|home|base|camp))|make (?:this|the) (?:area|place) (?:safe|lit)(?: for the night)?|(?:put|place) torches (?:all )?around (?:the |our |my |this )?(?:house|home|base|camp))$/.test(ask))
+    return { kind: 'light_area', radius: 16 };
   if (
     /^(?:light (?:up (?:this (?:area|room)|the area|around (?:me|here)|here)|(?:this (?:area|room)|the area) up)|(?:put|place|add|set up) (?:some |a few )?torches (?:around (?:here|me)|here|in this (?:area|room)))$/.test(
       ask
@@ -173,10 +183,10 @@ async function lightArea(bot, task, goal, save, { acquireStep, place, navigate }
     goal.lightCentre = { ...centre };
     save();
   }
-  if (bot.entity.position.distanceTo(centre) > 11) {
+  if (bot.entity.position.distanceTo(centre) > (goal.radius || 6) + 5) {
     await navigate(bot, task, new goals.GoalNear(centre.x, centre.y, centre.z, 3));
   }
-  const cells = connectedGround(bot, centre, 6);
+  const cells = connectedGround(bot, centre, goal.radius || 6);
   if (!cells.length) throw blocked('I need solid ground nearby with room above it to place torches.');
   const dark = darkCells(bot, cells);
   if (!dark.length) return true;

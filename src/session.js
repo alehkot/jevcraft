@@ -226,9 +226,13 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   // The old goal's copy only where it can be this world's: with a world id
   // the goal store is still per server.
   const survival = createSurvival(bot, { state: survivalStore.read() || (memoryIdentity === identity ? store.read()?.survival : undefined), client: routed });
+  // The stance kept from the last connection is not this one's (recovery.js newConnection).
+  { const dropped = require('./recovery').newConnection(survival.state); if (dropped.length) console.log(`[join] the last connection's fight left behind: ${dropped.join(', ')}`); }
   // JEV_IDLE=wait: between requests, wait where it stands and only defend itself.
   const waitMode = process.env.JEV_IDLE === 'wait';
   console.log(`[company] at night: ${require('./company').nightMode() ? `up while a player is within ${require('./company').STAY_UP} blocks, sheltering when alone (JEV_NIGHT=company)` : 'sheltering from dusk to dawn (JEV_NIGHT is not set)'}`);
+  // Who hurt which player, for a guard (guard.js): from the server's damage events.
+  require('./guard').watch(bot);
   const reactiveWait = waitMode ? createReactiveWait({ bot, survival, save: () => saveSurvival(),
     isReady: () => ready && !ended, isBusy: () => Boolean(active) || relaunching || launchingDream }) : null;
   // To bed when the players go (bedtime.js): the waiting bot's own move, like the reactive wait, and ended by whatever that would answer.
@@ -351,6 +355,11 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         return;
       }
       if (!goal.dream && ['complete', 'blocked'].includes(goal.status)) ledger.close(goal.ledgerRun, goal.status);
+      // An errand done with work still set aside under it: said how to get the bot back on that work (agenda.js).
+      if (goal.status === 'complete' && !ended && !guideQueue?.rest?.length) {
+        const line = require('./agenda').reminder(goal, { username: bot.username });
+        if (line) bot.chat(line);
+      }
       // A custom dream is one request: done when it completes.
       if (goal.dream === 'custom' && goal.status === 'complete' && !ended) settleCustom(dreamStore.read(), goal);
     });
@@ -513,7 +522,10 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     }
     delete saved.waitingOn;
     if (saved.kind === 'build' && !saved.design) saved.designAttempts = 0;
-    if (saved !== current) bot.chat(`Back to your earlier task: ${saved.request}.`);
+    if (saved !== current || options?.say) {
+      const agenda = require('./agenda'), them = bot.players[options?.from || saved.from]?.entity?.position;
+      bot.chat(`Back to ${saved !== current ? 'your earlier task' : 'it'}: ${agenda.said(saved, bot.username)}${agenda.whereSaid(saved, them)}.`);
+    }
     launch(saved);
   }
   // The flight recording: what the bot sees and decides, for the audits.
@@ -635,6 +647,14 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       doing: active && !active.idle ? { request: active.goal.request, for: active.goal.from, ...(require('./built').allowed(active.goal) && { mayUseBuildings: true }) } : active?.idle ? 'looking after itself' : 'waiting for a request',
       // The request before, and how it ended: what "carry on" and "did you finish?" are about.
       lastRequest: (saved => saved?.request ? { request: clean(saved.request), for: saved.from, ended: saved.status } : null)(store.read()),
+      // The work set aside and the buildings begun and not finished, with where they are (agenda.js): what "continue"
+      // and "finish the house" are about.
+      ...((agenda => {
+        const setAside = agenda.setAside(store.read(), { username: bot.username, point: them });
+        const unfinishedBuilds = agenda.unfinishedBuilds(builds, bot, { from, point: them || me, dimension: bot.game?.dimension }).slice(0, 4)
+          .map(b => ({ name: b.name, request: clean(b.request), for: b.from, at: b.origin, blocksFromPlayer: b.distance, standingPercent: b.standing }));
+        return { ...(setAside.length && { setAside }), ...(unfinishedBuilds.length && { unfinishedBuilds }) };
+      })(require('./agenda'))),
       blocksFromPlayer: me && them ? Math.round(me.distanceTo(them)) : 'out of sight',
       dream: dreamStore.read()?.dream || null,
       // Which wood stands free near the bot, for a wish for wood that names none (built.js woodInView).
@@ -730,7 +750,9 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       return;
     }
     const directDiscovery = data.workSite && discoveryAt(address.text, bot.registry);
-    const action = address.explicit && !literal && require('./companion-actions').companionAction(address.text, data.workSite);
+    // "Continue" with nothing set aside to continue is the guide's and the interpreter's to make sense of, as before (agenda.js).
+    const action = (a => a?.kind === 'continue_work' && !require('./agenda').hasWork(store.read(), builds, bot, a.what, { active: active && !active.idle ? active.goal : null, from }) ? null : a)(
+      address.explicit && !literal && require('./companion-actions').companionAction(address.text, data.workSite));
     const knownVisit = locationIntent?.startsWith('visit_');
     const visitLocation = async () => {
       if (locationIntent === 'visit_respawn') await locations.refresh();
@@ -917,6 +939,24 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         if (stopped && require('./built').refuse(stopped)) { saveGoal(stopped); console.log(`[built] ${from} stopped the last resort for: ${stopped.request}`); }
         bot.chat('Stopped.'); return;
       }
+      // Back to the work set aside, by what it is: the newest such request in the stack, where it stands; or a
+      // building of its own left unfinished, finished from its saved plan (agenda.js, 2026-11-22).
+      if (spec.kind === 'continue_work') {
+        const agenda = require('./agenda');
+        const prefer = spec.what === 'build' ? agenda.isBuild : agenda.notErrand;
+        if (active && !active.idle && prefer(active.goal)) { bot.chat(`I'm on it: ${agenda.said(active.goal, bot.username)}.`); return; }
+        if (resumeSaved(store.read(), { prefer })) {
+          if (active && !active.idle) await stop('replaced');
+          if (revision !== generation || ended) return;
+          await resume(revision, { prefer, say: true, from }); return;
+        }
+        const entry = spec.what === 'build' && agenda.unfinishedBuilds(builds, bot, { from, point: requestPosition.speakerPosition || bot.entity.position, dimension: bot.game.dimension })[0];
+        if (!entry) { bot.chat("There's nothing I was in the middle of. What should I do?"); return; }
+        Object.assign(spec, { kind: 'build', continueBuild: { id: entry.id, mode: 'finish' },
+          buildContinuation: { mode: 'finish', target: entry.id, name: entry.name, placement: 'anywhere', judgments: { rule: 'continue_work' } } });
+        delete spec.what;
+        bot.chat(`The ${entry.name} at ${entry.origin.x}, ${entry.origin.y}, ${entry.origin.z}${entry.distance != null ? `, ${entry.distance} blocks from you` : ''}${entry.standing != null ? `, ${entry.standing}% built` : ''}.`);
+      }
       if (spec.kind === 'resume') {
         if (data.useBuildings) { const saved = store.read(); if (saved && !active) { require('./built').permit(bot, saved, from); saveGoal(saved); } }
         await resume(revision); return;
@@ -955,11 +995,12 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         spec.kind === 'find' ? `I will look for ${spec.discoveryTarget.name.replaceAll('_', ' ')} and tell you where I find it.` :
         spec.kind === 'house' ? `Building a small ${spec.material} house with a floor, doorway and roof.` :
         ['obtain', 'craft'].includes(spec.kind) ? `I'll get ${spec.count} ${spec.item.replaceAll('_', ' ')}${spec.deliver ? ` for ${from}` : ''}.` :
-        spec.kind === 'light_area' ? "I'll check the ground for dark spots and light them." :
+        spec.kind === 'light_area' ? (spec.radius > 6 ? `I'll light the ground within ${spec.radius} blocks so nothing spawns there.` : "I'll check the ground for dark spots and light them.") :
         spec.kind === 'place_at_site' ? `I'll place the ${spec.item} beside the ${spec.workSite.name.replaceAll('_', ' ')}.` :
         spec.kind === 'climb_ladder' ? `I'll climb ${spec.direction} the nearby ladder.` :
         spec.kind === 'visit' ? `I'll head to ${spec.destination.label}.` :
-        spec.kind === 'come' ? `Coming to ${spec.target}.` : spec.kind === 'follow' ? `Following ${spec.target}; say Jev stop to stop.` :
+        spec.kind === 'come' ? `Coming to ${spec.target}.` : spec.kind === 'follow' && spec.guard ? `I'll stay by you and fight off what comes at you, ${spec.target}. Say Jev stop to stop.` :
+        spec.kind === 'follow' ? `Following ${spec.target}; say Jev stop to stop.` :
         spec.kind === 'win' ? "Let's beat the dragon! I'll gather supplies and take it one step at a time." :
         "I'll get a Nether portal working, then go through to check it.");
       launch(goal); launched = true;
@@ -1008,7 +1049,14 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         // save lay unplayed (a restart, a trial begun from a stage's save).
         require('./tried').resumed(saved, { savedAt: Date.parse(saved.updatedAt) });
         launch(saved);
-      } else bot.chat('Call me Jev: "Jev come here", "Jev follow me", "Jev craft a chest", or "Jev get me 8 birch stairs".');
+      } else {
+        // Work set aside from before this start is said, not started unasked (agenda.js).
+        const waiting = saved && resumeSaved(saved);
+        const { playerWork, errand } = require('./suspended-tasks');
+        if (waiting && waiting.status !== 'complete' && playerWork(waiting) && !errand(waiting) && !waiting.dream)
+          bot.chat(`I'm back. I still have ${require('./agenda').said(waiting, bot.username)} to finish; say "${bot.username} continue" when you want me on it.`);
+        else bot.chat('Call me Jev: "Jev come here", "Jev follow me", "Jev craft a chest", or "Jev get me 8 birch stairs".');
+      }
     } catch (err) { console.error('[bot] spawn:', err); bot.quit('Could not initialize the world'); }
   });
   // The game's death message for this bot, kept for the death record: the

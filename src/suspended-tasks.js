@@ -21,18 +21,40 @@ const unfinished = goal => goal.status !== 'complete' && goal.kind !== 'survive'
 const IMPOSSIBLE_ERROR = /No supported survival acquisition|does not spawn in Peaceful|Unsupported mob source|Please request at most|spans too many catalog branches/;
 const impossible = goal => goal.impossible || (goal.status === 'blocked' && IMPOSSIBLE_ERROR.test(goal.lastError || ''));
 const playerWork = goal => unfinished(goal) && !goal.dream && !impossible(goal);
+// A come, a follow, a walk to a place or up a ladder: an errand, not the work it interrupted (agenda.js).
+const ERRANDS = new Set(['come', 'follow', 'visit', 'climb_ladder']);
+const errand = goal => ERRANDS.has(goal?.kind);
+const strip = ({ suspendedTasks, ...goal }) => goal;
 
-function resumeSaved(saved, { currentOnly = false } = {}) {
+function resumeSaved(saved, { currentOnly = false, prefer = null } = {}) {
   // Maintenance may unpause an idle companion after a reconnect. It must not
   // turn a completed request into permission to start older suspended work.
   if (currentOnly || !saved) return saved;
-  if (playerWork(saved)) return saved;
+  const tasks = [...(saved.suspendedTasks || [])];
+  // Work asked for by what it is ("continue building the house", agenda.js): the newest that is it, wherever it
+  // lies in the stack; the rest kept, and the work on top kept under it unless it was an errand. Null for none.
+  if (prefer) {
+    if (playerWork(saved) && prefer(saved)) return saved;
+    for (let i = tasks.length - 1; i >= 0; i--) {
+      if (!playerWork(tasks[i]) || !prefer(tasks[i])) continue;
+      // An errand left in the stack is not taken up later in place of work: it was a moment's.
+      const rest = [...tasks.slice(0, i), ...tasks.slice(i + 1)].filter(t => !errand(t));
+      if (playerWork(saved) && !errand(saved)) rest.push(strip(saved));
+      return { ...tasks[i], suspendedTasks: rest.slice(-8) };
+    }
+    return null;
+  }
+  // An errand on top of the work it interrupted is not what a resume takes up (2026-11-22: a house build was set
+  // aside by "come to me"); the work under it is.
+  if (playerWork(saved) && !(errand(saved) && tasks.some(t => playerWork(t) && !errand(t)))) return saved;
+  for (let i = tasks.length - 1; i >= 0; i--) {
+    if (playerWork(tasks[i]) && !errand(tasks[i])) return { ...tasks[i], suspendedTasks: tasks.slice(0, i) };
+  }
   // The newest player work under whatever is on top. "Get me bedrock"
   // replaced a build and was parked as impossible, and "resume" retried the
   // bedrock forever; the dream started over a stopped build, and "resume"
   // answered that it was already working. Both buried the build where
   // nothing could reach it.
-  const tasks = [...(saved.suspendedTasks || [])];
   for (let i = tasks.length - 1; i >= 0; i--) {
     if (playerWork(tasks[i])) return { ...tasks[i], suspendedTasks: tasks.slice(0, i) };
   }
@@ -55,4 +77,4 @@ function waitingCleared(bot, goal) {
   return !!block && block.name !== w.name;
 }
 
-module.exports = { suspendPrevious, resumeSaved, waitingCleared };
+module.exports = { suspendPrevious, resumeSaved, waitingCleared, playerWork, errand, ERRANDS };

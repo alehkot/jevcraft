@@ -370,6 +370,9 @@ function hunted(bot, entity) {
 // struck by the hunt, not fled from or bunkered against. Any other mob that
 // comes is still the encounter's.
 function nightHunted(bot, entity) {
+  // The mob a guard goes for (guard.js) is the guard's, as the night's kind is the hunt's.
+  const guard = bot._guardTarget;
+  if (guard && guard.until > Date.now() && entity?.id === guard.id) return true;
   const hunt = bot._nightHunt;
   return !!hunt && hunt.until > Date.now() && entity?.name === hunt.name;
 }
@@ -1051,4 +1054,4 @@ async function waitOutFight(bot, task, { ms = Number(process.env.JEV_FIGHT_WAIT_
   return { first, waitedMs: now() - start, still };
 }
 
-module.exports = { walledRound, markCreeper, creeperMarked, CREEPER_MARK_MS, noteNoRun, noRunTo, standsOff, reachSays, fightOn, waitOutFight, FIGHT_WAIT_MS, FIGHT_HURT_MS, FIGHT_FLIER_NEAR, blocksRay, closingOn, atItsReach, atReach, holdsSpear, deadlyDropBeside, pushOverDrop, SPEAR_MOB_REACH, noWayIds, cannotGetToTheBot, unseenClose, UNSEEN_CLOSE, pushersAbout, PUSH_REACH, lineClear, UNPROVOKED, stanceHeld, standHeld, huntAnswerJustNow, stanceMobs, stanceReach, soloRangedThreat, STANCE_HOLD_MS, STANCE_HEALTH, STANCE_NEWCOMER, holdLoss, pacedLoss, unseenNote, nightHunted, hostileEntities, threats, immediateThreat, checkThreats, safeFromHostiles, NeedsSafety, combatTarget, provoked, provokedEnderman, hunted, claimed, followers, coming, COMING };
+module.exports = { hostileNames, walledRound, markCreeper, creeperMarked, CREEPER_MARK_MS, noteNoRun, noRunTo, standsOff, reachSays, fightOn, waitOutFight, FIGHT_WAIT_MS, FIGHT_HURT_MS, FIGHT_FLIER_NEAR, blocksRay, closingOn, atItsReach, atReach, holdsSpear, deadlyDropBeside, pushOverDrop, SPEAR_MOB_REACH, noWayIds, cannotGetToTheBot, unseenClose, UNSEEN_CLOSE, pushersAbout, PUSH_REACH, lineClear, UNPROVOKED, stanceHeld, standHeld, huntAnswerJustNow, stanceMobs, stanceReach, soloRangedThreat, STANCE_HOLD_MS, STANCE_HEALTH, STANCE_NEWCOMER, holdLoss, pacedLoss, unseenNote, nightHunted, hostileEntities, threats, immediateThreat, checkThreats, safeFromHostiles, NeedsSafety, combatTarget, provoked, provokedEnderman, hunted, claimed, followers, coming, COMING };

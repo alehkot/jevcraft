@@ -49,7 +49,8 @@ const call = (over = {}) => ({ kind: 'come', request: 'Jev come here', from: 'Ca
   await check('a call holds while its player is in view and it is minutes old', async () => {
     const { bot } = scene();
     assert.equal(company.calledOver(call(), bot), true);
-    assert.equal(company.calledOver(call({ kind: 'follow' }), bot), false, 'following is not a call');
+    assert.equal(company.calledOver(call({ kind: 'follow' }), bot), true, 'following its player in view holds as a call does (2026-11-22)');
+    assert.equal(company.calledOver(call({ kind: 'follow', from: 'Other', target: 'Other' }), bot), false, 'a follow whose player is out of view is no call');
     assert.equal(company.calledOver(call({ kind: 'obtain' }), bot), false);
     assert.equal(company.calledOver(call({ from: 'Other', target: 'Other' }), bot), false, 'the player is not in view');
     assert.equal(company.calledOver(call({ createdAt: new Date(Date.now() - company.CALL_HOLDS_MS - 1000).toISOString() }), bot), false, 'a call of long ago');
@@ -223,7 +224,8 @@ const call = (over = {}) => ({ kind: 'come', request: 'Jev come here', from: 'Ca
   await check('at night the shelter claims the turn from other work, and not from a call', async () => {
     assert.equal(claimAt(16000, { kind: 'survive', request: 'Stay alive' })?.action, 'secure_shelter');
     assert.equal(claimAt(16000, call({ kind: 'obtain', request: 'Jev get me 8 planks' }))?.action, 'secure_shelter');
-    assert.equal(claimAt(16000, call({ kind: 'follow', request: 'Jev follow me' }))?.action, 'secure_shelter', 'following is as it was');
+    assert.notEqual(claimAt(16000, call({ kind: 'follow', request: 'Jev follow me' }))?.action, 'secure_shelter', 'following its player in view: as a call (2026-11-22)');
+    assert.equal(claimAt(16000, call({ kind: 'follow', request: 'Jev follow me' }), { players: { Caller: { entity: null } } })?.action, 'secure_shelter', 'following a player out of view: the shelter, as before');
     assert.equal(claimAt(16000, call()), null, 'a call in hand, its player in view');
   });
   await check('a call whose player is gone, or of long ago, does not keep the bot out in the dark', async () => {
@@ -273,7 +275,10 @@ const call = (over = {}) => ({ kind: 'come', request: 'Jev come here', from: 'Ca
     assert.equal((await inPocket(call(), { entities: zombie })).did, 'asked', 'a zombie four blocks from the lid');
     assert.equal((await inPocket(call(), { players: {} })).did, 'asked', 'the player gone');
     assert.equal((await inPocket(call({ kind: 'obtain', request: 'Jev get me 8 planks' }))).did, 'asked', 'other work');
-    assert.equal((await inPocket(call({ kind: 'follow', request: 'Jev follow me' }))).did, 'asked', 'following is as it was');
+    assert.equal((await inPocket(call({ kind: 'follow', request: 'Jev follow me' }), { players: { Caller: { entity: null } } })).did, 'asked', 'following a player out of view');
+  });
+  await check('sealed in for the night, following a player in view: the pocket is opened as for a call (2026-11-22)', async () => {
+    assert.equal((await inPocket(call({ kind: 'follow', request: 'Jev follow me' }))).did, 'leave');
   });
 
   await check('inside the pocket on record, and not when out of it or with none on record', async () => {
@@ -366,7 +371,10 @@ const call = (over = {}) => ({ kind: 'come', request: 'Jev come here', from: 'Ca
     await withNight(() => {
       for (const goal of [{ kind: 'survive', request: 'Stay alive' }, call({ kind: 'obtain', request: 'Jev get me 8 planks' }), call({ kind: 'follow', request: 'Jev follow me' })]) {
         assert.notEqual(claimAt(16000, goal)?.action, 'secure_shelter', `${goal.kind}, the player 10 blocks off`);
-        assert.equal(claimAt(16000, goal, { players: playerAt(10.5 + 40) })?.action, 'secure_shelter', `${goal.kind}, the player 40 blocks off`);
+        // Far off, the bot looks after itself (2026-11-22: "if player is far away jev should take cover if it's not safe");
+        // a player followed is kept with while in view, as a call is.
+        if (goal.kind === 'follow') assert.notEqual(claimAt(16000, goal, { players: playerAt(10.5 + 40) })?.action, 'secure_shelter', 'follow, the player 40 blocks off in view');
+        else assert.equal(claimAt(16000, goal, { players: playerAt(10.5 + 40) })?.action, 'secure_shelter', `${goal.kind}, the player 40 blocks off`);
         assert.equal(claimAt(16000, goal, { players: {} })?.action, 'secure_shelter', `${goal.kind}, nobody`);
       }
       const zombie = { 7: { id: 7, name: 'zombie', type: 'hostile', kind: 'Hostile mobs', displayName: 'Zombie', position: new Vec3(12.5, 64, 0.5), velocity: new Vec3(0, 0, 0), height: 1.95, width: 0.6, isValid: true, metadata: [] } };
@@ -921,6 +929,73 @@ const call = (over = {}) => ({ kind: 'come', request: 'Jev come here', from: 'Ca
     assert.ok(bot._scare, 'the scare is kept for when the monster is gone');
     assert.equal(company.backDue(bot, { now: at, dark: false, chased: () => false, hostileNear: () => true }), null);
     assert.equal(company.backDue(bot, { now: at, dark: false, chased: () => false, hostileNear: () => false }), bot._scare);
+  });
+
+  // ---------------------------------------------------------------- 8. mirrored: no cover while a player near has none (2026-11-22)
+  const mob = (id, name, x, y = 64, z = 0.5) => ({ [id]: { id, name, type: 'hostile', kind: 'Hostile mobs', displayName: name, position: new Vec3(x, y, z), velocity: new Vec3(0, 0, 0), height: 1.95, width: 0.6, isValid: true, metadata: [] } });
+  await check('a roof over the player is cover; open sky or leaves overhead is not', async () => {
+    const s = scene();
+    assert.equal(company.underCover(s.bot, s.caller), false, 'the lawn');
+    s.set(0, 67, 0, 'oak_leaves');
+    assert.equal(company.underCover(s.bot, s.caller), false, 'under a tree');
+    s.set(0, 70, 0, 'stone');
+    assert.equal(company.underCover(s.bot, s.caller), true, 'a stone roof six blocks up');
+    assert.equal(company.underCover(s.bot, null), false);
+  });
+  await check('at night the hiding ways are left off a fight while a player within 32 blocks is out in the open; under a roof, farther off, by day or at 8 health they are not', async () => {
+    const goal = { kind: 'survive', request: 'Stay alive' };
+    const night = (setup = () => {}) => { const s = scene({ at: [10.5, 64, 0.5] }); s.bot.time.timeOfDay = 16000; setup(s); return s; };
+    assert.equal(company.keepsOut(night().bot, goal), null, 'JEV_NIGHT not set');
+    await withNight(() => {
+      const out = company.keepsOut(night().bot, goal);
+      assert.equal(out?.player, 'Caller'); assert.match(out.why, /out in the open 10 blocks off/);
+      assert.equal(company.keepsOut(night(s => s.set(0, 67, 0, 'stone')).bot, goal), null, 'the player under a roof: mirrored, the bot may take cover');
+      assert.equal(company.keepsOut(night(s => { s.bot.players = playerAt(10.5 + 40); }).bot, goal), null, 'the player 40 blocks off: the bot looks after itself');
+      assert.equal(company.keepsOut(night(s => { s.bot.time.timeOfDay = 6000; }).bot, goal), null, 'by day');
+      assert.equal(company.keepsOut(night(s => { s.bot.health = 8; }).bot, goal), null, 'at 8 health it may save itself');
+      assert.ok(company.keepsOut(night(s => { s.bot.health = 9; }).bot, goal), 'at 9 it fights on');
+      // Two players near, one under a roof: the one out in the open is mirrored.
+      const two = night(s => { s.set(0, 67, 0, 'stone'); s.bot.players.Robin = { entity: { position: new Vec3(14.5, 64, 0.5), id: 3, type: 'player' } }; });
+      assert.equal(company.keepsOut(two.bot, goal)?.player, 'Robin');
+    });
+  });
+  await check('the hiding ways are taken out of a fight while another way stays; with none left they all stay', async () => {
+    const options = { fight: {}, retreat: {}, pillar: {}, seal: {}, nook: {}, dig_in: {} };
+    assert.deepEqual(company.withhold(options, { why: 'x' }).sort(), ['dig_in', 'nook', 'pillar', 'seal']);
+    assert.deepEqual(Object.keys(options).sort(), ['fight', 'retreat']);
+    const hidesOnly = { pillar: {}, seal: {}, none_good: {} };
+    assert.deepEqual(company.withhold(hidesOnly, { why: 'x' }), [], 'nothing else on offer: left as they were');
+    assert.deepEqual(Object.keys(hidesOnly).sort(), ['none_good', 'pillar', 'seal']);
+    assert.deepEqual(company.withhold({ pillar: {}, fight: {} }, null), [], 'not kept out');
+  });
+  await check('the night mine is not dug with a player near, nor while following one in view', async () => {
+    await withNight(() => {
+      const s = scene({ at: [10.5, 64, 0.5] }); s.bot.time.timeOfDay = 16000; s.bot.entities = {};
+      s.bot.inventory = { slots: [], items: () => [{ name: 'iron_pickaxe', count: 1, type: 1, durabilityUsed: 0, maxDurability: 250, slot: 36 }], count: () => 0 };
+      const survival = createSurvival(s.bot, { state: {}, client: null });
+      assert.equal(survival.canNightMine({ kind: 'survive', request: 'Stay alive' }), false, 'the player 10 blocks off');
+      assert.equal(survival.canNightMine(call({ kind: 'follow', request: 'Jev follow me' })), false, 'following');
+      s.bot.players = playerAt(10.5 + 60);
+      const company60 = company.staysUp(s.bot, Date.now() + 10 * company.ALONE_MS);
+      assert.equal(company60, false, 'the player 60 blocks off is no company');
+    });
+  });
+  await check('guarding: a monster at the player is the survival claim, the work not weighed against it; at 8 health, or not guarding, it is not', async () => {
+    const guardGoal = call({ kind: 'follow', guard: true, request: 'Jev protect me' });
+    const at = (goal, setup = () => {}) => { const s = scene({ at: [10.5, 64, 0.5] }); s.bot.time.timeOfDay = 6000; s.bot.entities = mob(7, 'zombie', 3.5); setup(s); return { s, claim: survival.claim(s.bot, goal, null) }; };
+    const { s, claim } = at(guardGoal);
+    assert.equal(claim?.action, 'guard', JSON.stringify(claim || null).slice(0, 200));
+    assert.equal(claim.facts.player, 'Caller'); assert.equal(claim.facts.target, 'zombie'); assert.equal(claim.facts.toPlayer, 3);
+    assert.equal(s.bot._guardTarget?.id, 7, 'the zombie is the guard\'s: no threat to run from');
+    assert.equal(require('../src/danger').nightHunted(s.bot, s.bot.entities[7]), true);
+    assert.equal(require('../src/guard').first(s.bot, guardGoal, [claim, { layer: 'work', action: 'step', urgency: 'routine' }]), true);
+    assert.equal(require('../src/guard').first(s.bot, call({ kind: 'follow' }), [claim]), false, 'a plain follow');
+    assert.notEqual(at(guardGoal, x => { x.bot.health = 8; }).claim?.action, 'guard', 'at 8 health');
+    assert.notEqual(at(call({ kind: 'follow', request: 'Jev follow me' })).claim?.action, 'guard', 'following only');
+    assert.notEqual(at(guardGoal, x => { x.bot.entities = mob(7, 'creeper', 3.5); }).claim?.action, 'guard', 'a creeper is not gone for');
+    assert.equal(at(guardGoal, x => { x.bot.entities = mob(7, 'zombie', 0.5, 64, 12.5); }).claim?.action === 'guard', false, 'a zombie twelve blocks from the player');
+    const says = require('../src/arbiter').claimSays(claim);
+    assert.match(says, /Guard Caller: the zombie 3 blocks from them/);
   });
 
   console.log(`\n${passed} checks passed`);

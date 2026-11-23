@@ -126,7 +126,7 @@ function friendlyProblem(error, { known = null } = {}) {
   if (REPLAN.test(text)) {
     const w = error?.waitOn;
     const thing = String(w?.name || 'block').replaceAll('_', ' ');
-    return w ? `There's ${/^[aeiou]/.test(thing) ? 'an' : 'a'} ${thing} at ${w.x}, ${w.y}, ${w.z} where I'm building, and I didn't put it there.` : 'Something new is in the way where I planned to build, so that plan no longer fits.';
+    return w ? `There's ${/^[aeiou]/.test(thing) ? 'an' : 'a'} ${thing} at ${w.x}, ${w.y}, ${w.z}${w.why ? ` in ${w.why}, and the building needs that spot clear` : " where I'm building, and I didn't put it there"}.` : 'Something new is in the way where I planned to build, so that plan no longer fits.';
   }
   if (/No supported survival acquisition|bedrock/i.test(text)) return 'I don\'t know a way to get that in Survival.';
   if (/Chest handover is unconfirmed/i.test(text)) return text;

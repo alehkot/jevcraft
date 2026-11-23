@@ -110,14 +110,24 @@ class Blocked extends Error { constructor(message) { super(message); this.name =
 // Creative bot tried an oak slab in its chicken house 5,630 times over a day
 // and a half, saying so every seventy-five seconds (2026-09-25). The block
 // is watched, and the build goes on by itself once it is gone.
-function siteChanged(bot, p) {
+// Only a block where the building needs the spot clear comes here now (build-around.js): `why` says what the spot is
+// for; anything else of a player's is built around.
+function siteChanged(bot, p, why) {
   const name = bot.blockAt(p)?.name;
-  return Object.assign(new Blocked(`The building site changed at ${p}; preserving the unexpected ${name}. Clear it or request a new build`),
-    { needsPlayer: true, waitOn: { x: p.x, y: p.y, z: p.z, name, dimension: String(bot.game?.dimension || 'overworld') } });
+  return Object.assign(new Blocked(`The building site changed at ${p}; preserving the unexpected ${name}${why ? ` in ${why}` : ''}. Clear it or request a new build`),
+    { needsPlayer: true, waitOn: { x: p.x, y: p.y, z: p.z, name, dimension: String(bot.game?.dimension || 'overworld'), ...(why ? { why } : {}) } });
 }
 
 function inventory(bot) {
   return bot.inventory.items().reduce((o, i) => { o[i.name] = (o[i.name] || 0) + i.count; return o; }, {});
+}
+
+// Made from what is carried by crafts alone, as bedFromPockets plans a bed below (a guard's sword, guard.js).
+function craftableFromPack(bot, item) {
+  if (!bot.registry?.itemsByName?.[item]) return false;
+  let plan; try { plan = planCatalog(bot.registry, item, 1, inventory(bot)); } catch (_) { return false; }
+  const steps = Array.isArray(plan) ? plan : plan?.steps;
+  return Array.isArray(steps) && steps.length > 0 && steps.every(st => st.action === 'craft');
 }
 
 // A bed the pockets make with crafts alone (note 2059): its colour as woolCarried picks it (mixed wool dyed white
@@ -5310,16 +5320,33 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
   }
   if (goal.starterBeds && require('./starter-house').acceptPlacedBeds(bot, goal)) save();
   if (verifyHouse(bot, blueprint).ok && !schematicScaffolding(bot, goal).length) return true;
-  const missing = blueprint.blocks.filter(p => !p.companion && !buildCellComplete(bot, p));
+  let missing = blueprint.blocks.filter(p => !p.companion && !buildCellComplete(bot, p));
   const blockedParts = missing.flatMap(p => buildFootprint(p).slice(1).filter(part => !air(bot.blockAt(pos(part))) &&
     (bot.blockAt(pos(p))?.name !== p.material || !matchesBuildBlock(bot.blockAt(pos(part)), part))));
-  const obstructions = [...new Map([...blueprint.empty.filter(p => !air(bot.blockAt(pos(p)))), ...blockedParts, ...schematicScaffolding(bot, goal)]
+  let obstructions = [...new Map([...blueprint.empty.filter(p => !air(bot.blockAt(pos(p)))), ...blockedParts, ...schematicScaffolding(bot, goal)]
     .map(p => [`${p.x},${p.y},${p.z}`, p])).values()];
-  const changed = [...missing.flatMap(buildFootprint), ...obstructions].find(p => {
+  // A player's block on the site (build-around.js, 2026-11-22): asked about where the building needs the spot clear,
+  // built around anywhere else, and taken into the building once nothing else is left to do.
+  const around = require('./build-around');
+  const foreign = [...missing.flatMap(buildFootprint), ...obstructions].filter(p => {
     const block = bot.blockAt(pos(p));
     return block && !canClearSchematicBlock(blueprint, goal.buildOwned, block);
   });
-  if (changed) throw siteChanged(bot, pos(changed));
+  const sorted = around.classify(bot, goal, foreign);
+  if (sorted.ask) throw siteChanged(bot, pos(sorted.ask), sorted.ask.why);
+  const freshAround = around.note(goal, bot, sorted.defer);
+  if (freshAround.length) { save(); bot.chat(`I'll build around your ${around.said(freshAround)} and leave ${freshAround.length === 1 ? 'it where it is' : 'them where they are'}.`); }
+  const leftAround = around.deferredKeys(bot, goal, canClearSchematicBlock);
+  if (leftAround.size) {
+    const cellKey = p => `${p.x},${p.y},${p.z}`;
+    missing = missing.filter(p => !buildFootprint(p).some(part => leftAround.has(cellKey(part))));
+    obstructions = obstructions.filter(p => !leftAround.has(cellKey(p)));
+    if (!missing.length && !obstructions.length) {
+      const names = around.accept(bot, goal, canClearSchematicBlock);
+      if (names.length) { bot.buildRegistry?.remember(goal, { dimension: dimensionName(bot) }); bot.chat(`I built around your ${around.said(names)}.`); }
+      save(); return false;
+    }
+  }
   // Recover our own wrongly oriented piece before gathering another copy.
   // This also repairs a door whose server-created upper half is missing.
   const repairs = missing.filter(p => bot.blockAt(pos(p))?.name === p.material)
@@ -5437,7 +5464,15 @@ async function executeConstructionWork(bot, task, goal, save, work) {
   }
   const face = await approachConstruction(bot, task, goal, p, work.operation, work);
   const footprint = buildFootprint({ ...p, material: work.material, properties: work.properties });
-  for (const part of footprint) if (!canClearSchematicBlock(goal.blueprint, goal.buildOwned, bot.blockAt(pos(part)))) throw new Blocked(`Building site changed at ${pos(part)}`);
+  // A player's block come since the work was chosen (build-around.js): asked about where the building needs the spot,
+  // else left for now, the next step planned without it.
+  const foreignParts = footprint.filter(part => !canClearSchematicBlock(goal.blueprint, goal.buildOwned, bot.blockAt(pos(part))));
+  if (foreignParts.some(part => !bot.blockAt(pos(part)))) throw new Blocked(`Building site changed at ${pos(foreignParts[0])}`);
+  if (foreignParts.length) {
+    const around = require('./build-around'), sorted = around.classify(bot, goal, foreignParts.map(pos));
+    if (sorted.ask) throw siteChanged(bot, pos(sorted.ask), sorted.ask.why);
+    around.note(goal, bot, sorted.defer); delete goal.buildBatch; save(); return;
+  }
   if (work.operation === 'dig') {
     // dig() first updates the local world optimistically. Keep ownership until
     // the server confirms air, otherwise a rejected dig looks like a player's
@@ -5491,10 +5526,22 @@ function terrainShortage(bot, toFill) {
 async function prepareBuildTerrain(bot, task, goal, save) {
   task.check();
   const { blueprint } = goal, terrain = blueprint.terrain;
-  const toClear = terrain.clear.filter(p => !air(bot.blockAt(pos(p))));
-  const toFill = terrain.fill.filter(p => !matchesBuildBlock(bot.blockAt(pos(p)), p));
-  for (const p of [...toClear, ...toFill]) if (!canClearSchematicBlock(blueprint, goal.buildOwned, bot.blockAt(pos(p))))
-    throw siteChanged(bot, pos(p));
+  let toClear = terrain.clear.filter(p => !air(bot.blockAt(pos(p))));
+  let toFill = terrain.fill.filter(p => !matchesBuildBlock(bot.blockAt(pos(p)), p));
+  // A player's block in the ground works (build-around.js): asked about where the building needs the spot, else the
+  // ground is levelled around it.
+  const foreignGround = [...toClear, ...toFill].filter(p => !canClearSchematicBlock(blueprint, goal.buildOwned, bot.blockAt(pos(p))));
+  const unseenGround = foreignGround.find(p => !bot.blockAt(pos(p)));
+  if (unseenGround) throw siteChanged(bot, pos(unseenGround));
+  if (foreignGround.length) {
+    const around = require('./build-around'), sorted = around.classify(bot, goal, foreignGround);
+    if (sorted.ask) throw siteChanged(bot, pos(sorted.ask), sorted.ask.why);
+    const fresh = around.note(goal, bot, sorted.defer);
+    if (fresh.length) { save(); bot.chat(`I'll level the ground around your ${around.said(fresh)}.`); }
+    const left = new Set(foreignGround.map(p => `${p.x},${p.y},${p.z}`));
+    toClear = toClear.filter(p => !left.has(`${p.x},${p.y},${p.z}`));
+    toFill = toFill.filter(p => !left.has(`${p.x},${p.y},${p.z}`));
+  }
   if (!toClear.length && !toFill.length) {
     terrain.prepared = true; terrain.preparedAt = new Date().toISOString(); save(); return;
   }
@@ -5643,6 +5690,35 @@ async function movementStep(bot, task, goal, save) {
   }
   if (!target) throw new Blocked(`Cannot see ${goal.target || goal.from}. Come within view so I can find a route.`);
   goal.requesterPosition = { ...target.position };
+  // Guarding with no sword or axe (guard.js): one made first from what is carried, in a few crafting
+  // steps; with nothing to make one from, said once, and it fights with what it has.
+  if (goal.guard && bot.game.gameMode !== 'creative') {
+    const { defenseWeapon } = require('./combat');
+    const armed = () => /_(?:sword|axe)$|^trident$/.test(defenseWeapon(bot)?.name || '');
+    if (!goal.armChecked) {
+      goal.armChecked = true;
+      if (!armed()) {
+        const sword = ['stone_sword', 'wooden_sword'].find(item => craftableFromPack(bot, item));
+        const held = defenseWeapon(bot)?.name.replaceAll('_', ' ');
+        if (sword) { goal.arming = { item: sword, steps: 0 }; bot.chat(`Let me make a ${sword.replaceAll('_', ' ')} first.`); }
+        else bot.chat(`I have no sword, so it's ${held ? `my ${held}` : 'my fists'}. Ask me to get a stone sword and I'll hit harder.`);
+      }
+      save();
+    }
+    if (goal.arming) {
+      let done = armed() || goal.arming.steps >= 8;
+      if (!done) {
+        goal.arming.steps++; save();
+        try { done = await acquireStep(bot, task, goal.arming.item, 1, goal, save); }
+        catch (err) {
+          task.check(); if (['NeedsAir', 'NeedsSafety', 'Cancelled'].includes(err?.name)) throw err;
+          bot.chat("I couldn't make the sword, so I'll fight with what I have."); done = true;
+        }
+      }
+      if (done) { delete goal.arming; save(); }
+      return false;
+    }
+  }
   // To bed with the players (bedtime.js): the one followed lies in a bed, and so does every other player in the game.
   if (goal.kind === 'follow' && require('./bedtime').due(bot)) {
     goal.step = { action: 'bedtime', target: goal.target || goal.from }; save();
@@ -10841,6 +10917,8 @@ async function liveTurn(bot, task, goal, activeWork, survival, saveWork, { clien
     read(() => require('./mob-hunt').claim(bot, activeWork)), workClaim(goal, bot)].map(c => c && { ...c, run: () => runs[c.layer](c) });
   // Waiting for a player, in a pocket that is to be left: the pocket's turn is not weighed against the routine's own work (company.js pocketFirst).
   if (read(() => require('./company').pocketFirst(bot, goal, claims))) claims = claims.map(c => c?.layer === 'work' ? null : c);
+  // Guarding a player: the fight for them is not weighed against the follow it is part of (guard.js first).
+  if (read(() => require('./guard').first(bot, goal, claims))) claims = claims.map(c => c?.layer === 'work' ? null : c);
   return require('./arbiter').take(bot, claims, { task, goal, save, client, backstop: runs.survival, backstopFor });
 }
 // The layer an action reported during the survival step belongs to: the

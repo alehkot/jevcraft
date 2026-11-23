@@ -26,6 +26,15 @@ function observeAliveInventory(bot, now = Date.now()) {
 // "remove that check for all runs").
 // The stance and its book, kept on the survival state while it holds.
 const STANCE_KEYS = ['stance', 'stanceFailed', 'stanceIdle', 'stanceWhy', 'stanceScene', 'stanceScenesRecent', 'stanceTakeCoverNoRoute', 'standing', 'creeperStandoff', 'retreatScout', 'lethalLine', 'mealCutAt'];
+// A new connection: the stance and its book are the last connection's (its mobs by the ids they had there, its run
+// from where the bot stood then), not this one's. Dropped as the session starts (session.js). They were kept in the
+// saved state and let go only when the first mob came: 'retreat let go after 75446.5 s' in the trial of 2026-11-22,
+// a stance from the day before. -> the keys dropped.
+function newConnection(state) {
+  const had = STANCE_KEYS.filter(k => state?.[k] !== undefined);
+  for (const k of had) delete state[k];
+  return had;
+}
 function recordDeath(bot, state, now = Date.now()) {
   // 26.1 can clear inventory before Mineflayer emits the health-based death
   // event. Preserve the last observed alive inventory, with its evidence time.
@@ -193,4 +202,4 @@ async function recoverItems(bot, task, recovery, save, navigate) {
   }
 }
 
-module.exports = { recordDeath, recoverItems, observeAliveInventory, STANCE_KEYS };
+module.exports = { recordDeath, recoverItems, observeAliveInventory, newConnection, STANCE_KEYS };

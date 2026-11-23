@@ -48,6 +48,12 @@ OFFLINE_SUITES=(
   test/perception.test.js
   test/voice.test.js
   test/furnishings.test.js
+  test/guard.test.js
+  test/agenda.test.js
+  test/build-around.test.js
+  test/night-light.test.js
+  test/held-choices.test.js
+  test/wait-ground.test.js
 )
 for suite in "${OFFLINE_SUITES[@]}"; do
   echo "== $suite"

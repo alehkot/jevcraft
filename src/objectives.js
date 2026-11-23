@@ -54,7 +54,7 @@ async function interpret(client, request, from, username, context = {}) {
   const numbers = quantityCandidates(address.text);
   const registry = context.registry || require('minecraft-data')('26.1');
   const action = address.explicit && (context.action || require('./companion-actions').companionAction(address.text, context.workSite));
-  if (action) return { ...action, request, from, ...(action.byBoat && { target: from }) };
+  if (action) return { ...action, request, from, ...((action.byBoat || action.guard) && { target: from }) };
   const houses = require('./house-details');
   const houseIntent = address.explicit && (context.houseIntent || houses.houseRequest(address.text, registry));
   if (houseIntent) return houses.houseSpec(houseIntent, request, from, { ...context, registry });

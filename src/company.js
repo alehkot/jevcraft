@@ -147,19 +147,34 @@ function routine({ dark, sheltered, sinceSheltered, out = false }) {
 }
 
 // What the waiting reads each half second (session.js), for routine():
-// whether the dark is the bot's to shelter from alone, and whether it stands
+// whether the dark is the bot's to shelter from alone (not on lit ground: litAbout below), and whether it stands
 // in the ground where it is not to wait. By day that is any shelter or hole;
 // at night, with JEV_NIGHT=company, one a player has come close to.
 // A pocket the bot has opened it is to be out of, unless the dark is its own
 // again (inLeftPocket); `out` is the climb saying it has finished (climbOut).
-function standing(bot, survival, dark, now = Date.now()) {
+// Alone in the dark on ground lit about it (night-light.js) the routine has no shelter to make, and run there it went
+// on to its own work: on the private copy (2026-11-22, scene litnight) the waiting bot, alone at midnight on lit
+// ground, went to a chest and opened it ("Opened the chest's chest; nothing in it I can use"), the gathering the
+// waiting is there to prevent. Such a night is waited out like the day, the bot answering what would hurt it where it
+// stands; off the lit ground the dark is its own again. Asked at most once in five seconds here: the survey is kept
+// a minute where the bot stands and worked out anew eight blocks on, which a walk covers every two seconds.
+const LIT_ASKED_MS = 5000;
+function litAbout(bot, now = Date.now(), read = (b, t) => require('./night-light').wellLit(b, t)) {
+  const kept = bot?._litAsked;
+  if (kept && now >= kept.at && now - kept.at < LIT_ASKED_MS) return kept.lit;
+  let lit = false;
+  try { lit = !!read(bot, now); } catch (_) { lit = false; }
+  if (bot) bot._litAsked = { at: now, lit };
+  return lit;
+}
+function standing(bot, survival, dark, now = Date.now(), { lit = litAbout } = {}) {
   const kept = dark && staysUp(bot, now), drawn = dark && comesOut(bot), alone = dark && !kept;
   // The climb in hand is the routine's to finish (afterLeave): the second run
   // with a player (2026-11-21) had a pocket built on the grass opened, its
   // record gone, and the walk into the player's view stopped three seconds on.
   const climbing = !!bot?._climbing && now - bot._climbing < CLIMB_MS;
   const sheltered = ((!dark || drawn) && (holedUp(bot) || inShelter(bot, survival))) || (!alone && inLeftPocket(bot, survival, now)) || climbing;
-  return { dark: alone, sheltered, out: !sheltered && !!bot?._outAt && now - bot._outAt < 5000 };
+  return { dark: alone && !lit(bot, now), sheltered, out: !sheltered && !!bot?._outAt && now - bot._outAt < 5000 };
 }
 
 // ---- Whose turn it is in a pocket that is to be left --------------------------
@@ -333,6 +348,10 @@ function lapsed(goal, bot, now = Date.now()) {
 // player has left or gone out of sight, or one of long ago taken up again
 // after a restart, does not keep the bot out in the dark.
 function calledOver(goal, bot, now = Date.now()) {
+  // Following a player in view, guarding one included, keeps the bot with them as a call does (2026-11-22:
+  // asked to follow, the bot cooked, mined for the night and walled itself in a cave 95 blocks behind its
+  // player, all of it with the player in its view). Out of view, a follow is no call, as a come is not.
+  if (goal?.kind === 'follow') return !!bot?.players?.[goal.target || goal.from]?.entity;
   if (goal?.kind !== 'come') return false;
   const at = Date.parse(goal.createdAt || '');
   if (Number.isFinite(at) && now - at > CALL_HOLDS_MS) return false;
@@ -459,5 +478,106 @@ function backDue(bot, { now = Date.now(), dark = darkNow(bot), chased = () => fa
   return scare;
 }
 
-module.exports = { calledOver, callerState, lapsed, here, inShelter, holedUp, routine, standing, darkNow, drawnOut, pocketFirst, CLIMB_MS, rimOf, openGround, inLeftPocket, climbOut, afterLeave, LEFT_MS, nightMode, staysUp, comesOut, nearestPlayer, STAY_UP, COME_OUT, ALONE_MS, OUT_MS, inView, spotsInView, standInView, standable, EYE, REACH, RISE, CALL_HOLDS_MS, GONE_MS,
+// ---- The night with a player out (asked for 2026-11-22) ---------------------
+// "at night if i'm not covering jev shouldn't covering", "but if player is far away jev should take cover if
+// it's not safe". A player once stood in the open thirteen blocks off while the bot, on a stillness detour,
+// dug a mine for the night and boxed itself in against a skeleton, and the player was shot there. So, with a
+// player within STAY_UP blocks:
+// - the night's shelter and the night's mine are not sought (staysUp, as since 2026-11-21, now also for the
+//   mine's stillness detour, survival.js canNightMine);
+// - in a fight, the ways that hide the bot (a pillar, a seal, a nook, a box, a hole) are left off the
+//   stance while that player is out in the open (keepsOut), unless the bot's health is down to HIDE_HEALTH:
+//   then it may save itself as ever. Fighting, running and the rest stay on offer. A player under cover
+//   is mirrored too: then the bot may take cover in a fight.
+// Farther off, the bot looks after itself: it takes cover where it is not safe, as before. Followed or
+// guarded, the player is kept with (calledOver, guard.js), not sheltered from.
+//
+// Under cover is a roof: a block that is not leaves within eighteen over the player's head (a house, a cave,
+// a mine). Under a tree a player is in the open, as monsters spawn there.
+const HIDE_HEALTH = 8;
+const HIDES = ['pillar', 'pillar_higher', 'bunker', 'out_of_sight', 'nook', 'seal', 'cap_fight', 'dig_down', 'low_ceiling', 'take_cover',
+  'box_here', 'box_at_spawner', 'dig_in', 'dig_in_and_fight', 'dig_in_at_spawner', 'build_hole_at_spawner'];
+function underCover(bot, entity) {
+  try {
+    if (!entity?.position || typeof bot?.blockAt !== 'function') return false;
+    return !skyOpen(bot, entity.position.floored());
+  } catch (_) { return false; }
+}
+// A player in the game by name, case aside: { name, entity } (entity null out of view), or null.
+function playerNamed(bot, name) {
+  const key = Object.keys(bot?.players || {}).find(p => p.toLowerCase() === String(name || '').toLowerCase());
+  return key ? { name: key, entity: bot.players[key]?.entity || null } : null;
+}
+// The other players in view within `within` blocks, nearest first: [{ name, entity, d }].
+function playersNear(bot, within = STAY_UP) {
+  const me = bot?.entity?.position, out = [];
+  for (const [name, player] of Object.entries(bot?.players || {})) {
+    const at = player?.entity?.position;
+    if (!me || !at || name === bot.username) continue;
+    const d = at.distanceTo(me);
+    if (d <= within) out.push({ name, entity: player.entity, d });
+  }
+  return out.sort((a, b) => a.d - b.d);
+}
+// Why the hiding ways are left off the fight now, or null: { why, player }.
+// The stance's ways to run from a fight (survival.js RUN_STANCES): left off too while the bot guards a player, except
+// from a creeper while the bot is within GUARD_TETHER blocks of the player. Live trial 2026-11-22: retreats and runs
+// took the guard 35 and then 95 blocks from the player it guarded. -> the keys for withhold.
+const RUNS = ['retreat', 'leave_reach', 'run_from'];
+const GUARD_TETHER = 12;
+function fightKeysOut(bot, out, danger = [], runs = RUNS) {
+  if (!out?.guarding) return HIDES;
+  const at = playerNamed(bot, out.player)?.entity?.position, me = bot?.entity?.position;
+  const fromCreeper = !!(at && me && at.distanceTo(me) <= GUARD_TETHER && (danger || []).some(t => t?.entity?.name === 'creeper'));
+  return fromCreeper ? HIDES : [...HIDES, ...runs];
+}
+// Waiting with a player, the bot holds its ground (asked for 2026-11-22: "should a waiting Jev hold its ground near
+// you?" "yes"). The waiting bot's run from a mob in reach (reactive-wait.js) took it 109 blocks from the player beside
+// it in under a minute that day, and by night a bot more than STAY_UP blocks from every player is alone and digs in.
+// So, waiting with a player (withPlayer): within WAIT_TETHER blocks of them it may still give ground; farther off the
+// run is left off and it fights where it stands, while its health holds above HIDE_HEALTH. The run is kept from a
+// creeper, and from a shooter out of the sword's reach (swinging where it stands lands nothing on one).
+// -> { player, distance, why } when the run is to be left off, or null.
+const WAIT_TETHER = 12, SWORD_REACH = 3.5;
+function holdsGround(bot, threats = [], now = Date.now()) {
+  const with_ = bot?._company, me = bot?.entity?.position;
+  if (!with_ || !me || now - with_.at > WITH_MS || (bot.health ?? 20) <= HIDE_HEALTH) return null;
+  const { shooter } = require('./mob-policy');
+  if ((threats || []).some(t => t?.entity?.name === 'creeper' || (shooter(t?.entity) && !(t.distance <= SWORD_REACH)))) return null;
+  const at = bot.players?.[with_.name]?.entity?.position || with_.position;
+  if (!at) return null;
+  const distance = Math.hypot(at.x - me.x, at.y - me.y, at.z - me.z);
+  return distance > WAIT_TETHER ? { player: with_.name, distance, why: `${with_.name} is ${Math.round(distance)} blocks off` } : null;
+}
+// The ways to food that walk off (food-plan.js's walks, the hunts and the far errands): left off while the bot guards
+// a player and hunger holds above six, where another way to food is left (that trial: a food plan at hunger 18 sent
+// the guard hunting). -> the keys taken out of the survival_priority tree's obtain_food.
+const FOOD_WALKS = /^(hunt_\w+|seen_food_\d+|search_food|go_home_for_food|village_food|return_for_food|hoglin_food|raid_bastion)$/;
+function guardFoodOut(tree, out, food) {
+  const kids = out?.guarding && (food ?? 20) > 6 ? tree?.obtain_food?.children : null;
+  if (!kids) return [];
+  const walks = Object.keys(kids).filter(k => FOOD_WALKS.test(k));
+  if (!walks.length || !Object.keys(kids).some(k => !walks.includes(k) && k !== 'none_good')) return [];
+  for (const k of walks) delete kids[k];
+  return walks;
+}
+function keepsOut(bot, goal) {
+  if (!bot?.entity?.position || (bot.health ?? 20) <= HIDE_HEALTH) return null;
+  const guarding = require('./guard').guarded(goal), g = guarding && playerNamed(bot, guarding);
+  if (g?.entity) return { why: `guarding ${g.name}`, player: g.name, guarding: true };
+  if (!nightMode() || !darkNow(bot)) return null;
+  const out = playersNear(bot, STAY_UP).find(p => !underCover(bot, p.entity));
+  return out ? { why: `${out.name} is out in the open ${Math.round(out.d)} blocks off`, player: out.name } : null;
+}
+// Takes the hiding ways out of a fight's options while another way stays: -> the keys taken out.
+function withhold(options, out, keys = HIDES) {
+  if (!out || !options) return [];
+  const gone = keys.filter(k => options[k]);
+  const left = Object.keys(options).filter(k => !gone.includes(k) && k !== 'none_good');
+  if (!gone.length || !left.length) return [];
+  for (const k of gone) delete options[k];
+  return gone;
+}
+
+module.exports = { HIDE_HEALTH, HIDES, RUNS, GUARD_TETHER, WAIT_TETHER, holdsGround, litAbout, LIT_ASKED_MS, FOOD_WALKS, fightKeysOut, guardFoodOut, underCover, playerNamed, playersNear, keepsOut, withhold, calledOver, callerState, lapsed, here, inShelter, holedUp, routine, standing, darkNow, drawnOut, pocketFirst, CLIMB_MS, rimOf, openGround, inLeftPocket, climbOut, afterLeave, LEFT_MS, nightMode, staysUp, comesOut, nearestPlayer, STAY_UP, COME_OUT, ALONE_MS, OUT_MS, inView, spotsInView, standInView, standable, EYE, REACH, RISE, CALL_HOLDS_MS, GONE_MS,
   withPlayer, gaveGround, letGo, backDue, WITH_MS, BACK_QUIET_MS, BACK_OFF, NEAR_PLAYER, BACK_HOLDS_MS, BACK_TRIES, BACK_RETRY_MS };

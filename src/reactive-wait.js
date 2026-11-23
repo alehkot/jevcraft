@@ -19,6 +19,32 @@ function emergency(bot) {
   return threat && !threat.projectile ? { kind: 'mob', threat } : null;
 }
 
+// What the waiting bot chose against a mob, in the log: once a mob and choice, again after five seconds of the same.
+// Its runs were written nowhere (the trial of 2026-11-22: 109 blocks from its player in under a minute, and not a
+// line of it), so what moved it had to be worked out afterwards.
+function said(bot, threat, choice, acted, now = Date.now(), held = null) {
+  const key = `${threat?.entity?.id}|${choice}|${acted}|${!!held}`;
+  if (bot._waitSaid?.key === key && now - bot._waitSaid.at < 5000) return null;
+  bot._waitSaid = { key, at: now };
+  const name = bot._company?.name, at = name && bot.players?.[name]?.entity?.position, me = bot.entity?.position;
+  const off = Number.isFinite(threat?.distance) ? ` ${Math.round(threat.distance * 10) / 10} blocks off` : '';
+  const line = `[wait] the ${threat?.entity?.name || 'mob'}${off}: ${choice || 'nothing chosen'}${held ? ', no run offered' : ''}${acted ? '' : ', not acted on'}${name ? `; ${name} ${at && me ? `${Math.round(at.distanceTo(me))} blocks off` : 'out of sight'}` : ''}`;
+  console.log(line);
+  return line;
+}
+
+// The waiting bot's ways against a mob in reach. Waiting with a player more than company.WAIT_TETHER blocks off, the
+// run is left off (company.js holdsGround), and the one way left is taken without asking.
+function mobWays(bot, survival, task, goal, save, threats, now = Date.now()) {
+  const tree = {
+    retreat: { description: 'Escape the immediate attackers using nearby safe footing; do not gather or prepare supplies.', run: () => survival.runAway(task, goal, save, threats) },
+    fight: { description: 'Defend against attackers already in reach with the equipment currently carried, for one second.', run: () => survival.swingFor(task, goal, save, 1000) },
+  };
+  const held = require('./company').holdsGround(bot, threats, now);
+  if (held) delete tree.retreat;
+  return { tree, held };
+}
+
 async function respond(bot, survival, task, goal, save, event, fresh) {
   task.check();
   event = emergency(bot);
@@ -48,15 +74,15 @@ async function respond(bot, survival, task, goal, save, event, fresh) {
   } else {
     const threats = danger.threats(bot).filter(t => t.visible || t.distance <= 3);
     if (!threats.length) threats.push(event.threat);
-    const tree = {
-      retreat: { description: 'Escape the immediate attackers using nearby safe footing; do not gather or prepare supplies.', run: () => survival.runAway(task, goal, save, threats) },
-      fight: { description: 'Defend against attackers already in reach with the equipment currently carried, for one second.', run: () => survival.swingFor(task, goal, save, 1000) },
-    };
-    const decision = await survival.decide(task, goal, save, { id: 'encounter_stance', tree,
+    const { tree, held } = mobWays(bot, survival, task, goal, save, threats);
+    // Holding its ground, the one way left is taken at once: nothing is asked.
+    const decision = held ? { path: ['fight'] } : await survival.decide(task, goal, save, { id: 'encounter_stance', tree,
       state: { health: bot.health, food: bot.food, waitingForPlayer: true, threats: threats.map(t => ({ name: t.entity.name, distance: t.distance })) },
       isFresh: () => fresh() && emergency(bot)?.threat?.entity?.id === event.threat.entity.id });
     task.check();
-    if (!decision?.stale && fresh() && emergency(bot)?.threat?.entity?.id === event.threat.entity.id && Object.hasOwn(tree, decision?.path?.[0])) await tree[decision.path[0]].run();
+    const acts = !decision?.stale && fresh() && emergency(bot)?.threat?.entity?.id === event.threat.entity.id && Object.hasOwn(tree, decision?.path?.[0]);
+    said(bot, event.threat, decision?.path?.[0], acts, Date.now(), held);
+    if (acts) await tree[decision.path[0]].run();
   }
   task.check();
   return true;
@@ -91,4 +117,4 @@ function createReactiveWait({ bot, survival, save = () => {}, isReady = () => tr
   };
 }
 
-module.exports = { createReactiveWait, emergency };
+module.exports = { createReactiveWait, emergency, said, mobWays };

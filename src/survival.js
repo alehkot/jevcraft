@@ -2673,6 +2673,22 @@ function sealedWaitSays(bot, { underground = false } = {}) {
   const day = t >= DAY.DAWN || t < DAY.DUSK;
   return { ticks, minutes, day, says: `Seal a pocket (the way is asked next) and wait in it for daylight, about ${minutes} real minutes off${day ? `: it is day now, so the wait runs through dusk and the whole night, and daylight is what the bot already has` : ''}. ${Math.round(bot.health * 10) / 10} health, which does not come back meanwhile (hunger ${bot.food}, below eighteen), and standing still in it spends no hunger: it falls with moving, mining, fighting and healing, so the wait costs minutes, not food. At dawn the mobs in the open burn; eating to eighteen ends the wait, health coming back.` };
 }
+// Whether the wait for daylight chosen sealed still holds. Its end was real time alone (`until`, counted from the
+// ticks left to dawn when it was chosen) and hunger eighteen: players sleeping the night away, or the time set,
+// brought the morning and the bot waited on sealed, up to eight minutes into the day (found 2026-11-22). So the
+// world's own clock ends it too: for a wait chosen at night, the day come; for one chosen by day, which runs through
+// dusk and the night, the clock's count come to the dawn it waited for. And it does not hold while the bot is to
+// stay out with a player (company.js keepsOut). Read by the pocket's question, the step, the pocket's held answer
+// and the claim, so that none of them carries on with a wait another has let go: three of the four did not ask
+// whether the bot was to stay out.
+function sealedWaitHolds(bot, state, goal = null, now = Date.now()) {
+  const w = state?.sealedWait;
+  if (!w || !(w.until > now) || (bot.food ?? 20) >= 18) return false;
+  const total = bot.time?.time, t = bot.time?.timeOfDay;
+  if (Number.isFinite(w.dawnAt) && Number.isFinite(total) && total >= w.dawnAt) return false;
+  if (w.night && Number.isFinite(t) && (t >= DAY.DAWN || t < DAY.DUSK)) return false;
+  return !require('./company').keepsOut(bot, goal);
+}
 // The cap over a shaft pocket (shaftPocket puts it two over the floor):
 // the block its way out is dug through. Null when the column over the head
 // holds nothing solid to dig, or a liquid or a falling block sits on it.
@@ -3737,7 +3753,7 @@ class Survival {
         if (!swung && !canStrike(bot, enderman.entity)) await this.charge(task, goal, save, enderman, false);
         return;
       }
-      if (await this.sealHere(task, goal, save, danger)) return;
+      if (!require('./company').keepsOut(bot, goal) && await this.sealHere(task, goal, save, danger)) return;
     }
     // Within a sword's reach, not an arm's: a wither skeleton hits from
     // three blocks, and at two and a half the bot was searching for a
@@ -7312,6 +7328,13 @@ class Survival {
     // The builds are left off where they would save nothing (stance-scene.js idleBuilds, note 910).
     const idleB = scenes.idleBuilds(bot, danger, options);
     if (idleB) for (const k of idleB.keys) delete options[k];
+    // With a player out in the open beside the bot at night, or the bot guarding one, the ways that hide it
+    // are left off while its health holds (company.js keepsOut; asked for 2026-11-22).
+    // Guarding, the runs from the fight are left off too, except from a creeper within 12 blocks of the player
+    // (company.js fightKeysOut).
+    const keptOut = require('./company').keepsOut(bot, goal);
+    const hidden = require('./company').withhold(options, keptOut, require('./company').fightKeysOut(bot, keptOut, danger, [...RUN_STANCES]));
+    if (hidden.length && !(Date.now() - (this.keptOutSaidAt || 0) < 30000)) { this.keptOutSaidAt = Date.now(); console.log(`[company] not offered in this fight: ${hidden.join(', ')} (${keptOut.why})`); }
     const quiet = scenes.quietOf(bot, danger, options);
     let choice = holding && options[held.choice] ? held.choice : null;
     // One stance possible is no choice: it is taken without asking.
@@ -7931,7 +7954,7 @@ class Survival {
     for (const t of targets) tree[`shoot_${t.entity.id}`] = { description: { action: 'Shoot this mob with the bow from where the bot stands. It is in clear view at bow range and shoots back; each arrow takes about a second to draw, standing still.' + creeperShot + unseen,
       entity: t.entity.name, distance: Math.round(t.distance), arrowsCarried: countOf(bot, 'arrow') }, run: () => this.shootAt(task, goal, save, t) };
     tree.retreat = { description: 'Run for footing out of its range and out of its sight; the mob keeps shooting while the bot runs.' + NO_ROUTE_YET + unseen, run: () => this.escape(task, goal, save, danger, armed) };
-    if (shelter.materialStock(bot) >= 12) tree.dig_in = { description: 'Seal a two-block pocket where the bot stands and wait for it to lose interest.' + (creeper ? ` A creeper ${Math.round(creeper.distance)} blocks off walks up to a pocket and goes off before it closes.` : '') + unseen, run: () => this.sealHere(task, goal, save, danger) };
+    if (shelter.materialStock(bot) >= 12 && !require('./company').keepsOut(bot, goal)) tree.dig_in = { description: 'Seal a two-block pocket where the bot stands and wait for it to lose interest.' + (creeper ? ` A creeper ${Math.round(creeper.distance)} blocks off walks up to a pocket and goes off before it closes.` : '') + unseen, run: () => this.sealHere(task, goal, save, danger) };
     const about = [...danger];
     for (const t of threats(bot, 16)) if (!about.some(a => a.entity.id === t.entity.id)) about.push(t);
     const state = { health: bot.health, food: bot.food, arrowsCarried: countOf(bot, 'arrow'), recentSurvivalAction: goal.survivalAction,
@@ -10884,6 +10907,10 @@ class Survival {
   canNightMine(goal) {
     const bot = this.bot;
     if (bot.game?.dimension !== 'overworld' || !shelterNeeded(bot) || bot.game.difficulty === 'peaceful') return false;
+    // Not with a player near, called over or followed (company.js; a dig-in thirteen blocks from a player
+    // out in the open came this way, a stillness detour, work.js detourWork).
+    const company = require('./company');
+    if (company.staysUp(bot) || company.calledOver(goal, bot)) return false;
     // Health is Jev's to weigh (riskNow, deathWouldCost), not a floor here:
     // trial 34 sat a night in a pocket at seven health with nothing to eat,
     // Jev choosing the mine every five seconds and this refusing it.
@@ -12587,7 +12614,7 @@ class Survival {
         // dawn there waits for nothing the pocket can use. 25588 (20:02:29 to
         // 20:10:37Z) sat walled in underground eight minutes before the
         // pocket's question came (note 752i).
-        || (this.state.sealedWait?.until > Date.now() && (bot.food ?? 20) < 18 && options.stay && !below ? 'stay' : null)
+        || (sealedWaitHolds(bot, this.state, goal) && options.stay && !below ? 'stay' : null)
         // The bed beside chosen at dusk is carried out unasked only while
         // nothing hostile is within sixteen blocks: with one there the pocket
         // is asked about, the bed among its ways. 25589 (19:29Z) chose it
@@ -12677,7 +12704,11 @@ class Survival {
     if (require('./company').calledOver(goal, bot)) {
       if (this.state.nightPlan?.plan === 'hunt' && !this.state.nightPlan.food) { delete this.state.nightPlan; delete bot._nightHunt; }
       delete this.state.nightMine;
-    }
+    // Nor is the night mine gone on with a player near (company.js staysUp, 2026-11-22): the bot stays up
+    // with them.
+    } else if (require('./company').staysUp(bot)) delete this.state.nightMine;
+    // Guarding a player (guard.js): what comes at them is gone for while nothing else is on the bot.
+    if (require('./guard').due(bot, goal) && !immediateThreat(bot) && await require('./guard').step(this, task, goal, save)) { onStep(goal); return true; }
     // The hunt Jev chose for the night, while it holds.
     const hunt = this.state.nightPlan?.plan === 'hunt' ? this.state.nightPlan : null;
     // A hunt for food (foodHunt) is not a night's: day or Nether, it runs its time.
@@ -12823,7 +12854,9 @@ class Survival {
     // Before bedtime, a bed anywhere in reach (a walk that just failed
     // included) means no sealing in yet: the walk is retried in two minutes
     // and the shelter thirty blocks from the bed was the worse night.
-    const needsShelter = nightNow && !stayingUp && plan?.plan !== 'hunt' && !(this.state.nightRecover?.until > Date.now());
+    // The ground about lit (night-light.js, 2026-11-22): nothing spawns near, so the night's shelter is not sought there.
+    const litAround = nightNow && !stayingUp && plan?.plan !== 'hunt' && require('./night-light').wellLit(bot);
+    const needsShelter = nightNow && !stayingUp && plan?.plan !== 'hunt' && !(this.state.nightRecover?.until > Date.now()) && !litAround;
     // A shelter once chosen is a plan, not a question for every tick: the
     // second run climbed its shaft for a shelter, was asked again at the
     // top, went back down to the mine, and was asked again at the bottom.
@@ -12834,7 +12867,11 @@ class Survival {
     // pocket is made here until it is sealed, then held in the pocket's step
     // until dawn. It ends when health comes back (hunger eighteen or more),
     // its reason gone, or when there is no way to shelter here.
-    if (this.state.sealedWait && !(this.state.sealedWait.until > Date.now() && (bot.food ?? 20) < 18)) delete this.state.sealedWait;
+    if (this.state.sealedWait && !sealedWaitHolds(bot, this.state, goal)) {
+      const out = require('./company').keepsOut(bot, goal);
+      if (out) console.log(`[company] the wait for daylight chosen sealed is let go (${out.why})`);
+      delete this.state.sealedWait;
+    }
     if (this.state.sealedWait) {
       if (await this.refugeStep(task, goal, save) !== false) { onStep(goal); return true; }
       delete this.state.sealedWait;
@@ -12900,7 +12937,7 @@ class Survival {
     // carried, often under rock. 163 of the 259 spells with none that began
     // with the last food eaten had no food answer while the food ran down
     // from under twelve; 50 of 177 low-health moments had nothing that heals.
-    const stockDriven = !offWorld && (goal.stockFood || expeditionFood || (goal.kind === 'survive' && bot.game.difficulty !== 'peaceful') || reserve.short(bot, goal, foodSupply(bot)));
+    const stockDriven = !offWorld && goal.kind !== 'follow' && (goal.stockFood || expeditionFood || (goal.kind === 'survive' && bot.game.difficulty !== 'peaceful') || reserve.short(bot, goal, foodSupply(bot)));
     const now = Date.now();
     // Stocked is stocked: the flag that asked for a reserve was never taken
     // down, so the stock-driven search ran for the rest of the goal.
@@ -13408,7 +13445,8 @@ class Survival {
         // By day, daylight is what it has: not offered (waits.js, note 698).
         waits: require('./waits').daylight(bot),
         run: async () => {
-          this.state.sealedWait = { until: Date.now() + sealedWait.ticks * 50, at: new Date().toISOString() };
+          this.state.sealedWait = { until: Date.now() + sealedWait.ticks * 50, at: new Date().toISOString(), ...(sealedWait.day ? {} : { night: true }),
+            ...(Number.isFinite(bot.time?.time) ? { dawnAt: bot.time.time + sealedWait.ticks } : {}) };
           require('./seal-reason').noteSeal(this.state, sealWhy, { how: 'wait_for_day_sealed', health: bot.health });
           this.report(goal, save, { action: 'wait_for_day_sealed', health: bot.health, food: bot.food, minutes: sealedWait.minutes });
           await this.refugeStep(task, goal, save);
@@ -13485,6 +13523,18 @@ class Survival {
     // 25589 (2026-09-30 23:57:55 to 00:00:11Z) chose search_food five times
     // standing at (205, 36, 416), each run going nowhere.
     let heldLeaf = planHeld?.choice === 'food' && planHeld.key ? String(planHeld.key).split('/').at(-1) : null;
+    // Guarding, a walk off for food chosen before the guard began is not carried on with while hunger holds above six
+    // and another way to food is left (company.js guardFoodOut). The walks are taken out here, ahead of the held
+    // answer: the same rule further down came after it, and the walk held went on unasked.
+    const keptOut = require('./company').keepsOut(bot, goal);
+    const foodWalksOut = require('./company').guardFoodOut(tree, keptOut, bot.food);
+    if (heldLeaf && foodWalksOut.includes(heldLeaf)) {
+      foodPlan.end(this.state, `${keptOut.why}: no walk off for food while another way to it is left`);
+      heldLeaf = null;
+      if (continueRequest) tree.continue_request = continueRequest;
+      delete state.foodChoiceHeld;
+      { const ended = foodPlan.endedSays(this.state, now); if (ended) state.lastFoodChoice = ended; }
+    }
     // Not held up by a threat out of sight and past arm's reach (note 2326): no stance is asked for it, so the held walk
     // waiting on it waited on nothing. full-13 (25587, 2026-10-28 02:44 to 02:48Z), food plan return_for_food held, a
     // blaze 5.3 blocks off out of sight, was given the turn every ten seconds and 'acted in 6 ms with nothing reported',
@@ -13509,6 +13559,13 @@ class Survival {
       if (!ok) foodPlan.end(this.state, 'the way chosen rests');
       onStep(goal); return true;
     }
+    // With a player out in the open at night, or the bot guarding one, no sealed wait and no shelter while another
+    // answer is left (company.js keepsOut). Live trial 2026-11-22: the guard, hungry, chose wait_for_day_sealed and
+    // sealed itself in with the player it guarded out in the night.
+    // Guarding, no walk off for food while hunger holds above six and another way to food is left (company.js
+    // guardFoodOut).
+    { const gone = [...require('./company').withhold(tree, keptOut, ['wait_for_day_sealed', 'secure_shelter']), ...foodWalksOut];
+      if (gone.length) console.log(`[company] not offered: ${gone.join(', ')} (${keptOut.why})`); }
     // The food and the shelter answers, each said with the other's lately
     // (note 752i): a trial at 11 health with no food, no pickaxe and no
     // wood turned obtain_food and secure_shelter about eleven times in ten
@@ -13632,10 +13689,10 @@ function onPillarTop(bot, pillar, rise = 2) {
 // or null. The held answer is read as the step reads it, but for its key
 // (the options on offer), which only the step builds: said as held "while
 // the pocket and what is about stay as they were".
-function pocketHeldOf(bot, state, now = Date.now()) {
+function pocketHeldOf(bot, state, now = Date.now(), goal = null) {
   const left = until => Math.max(1, Math.round((until - now) / 1000));
   if (state.bedNookPlan?.until > now) return { choice: 'sleep_in_nook', forSeconds: left(state.bedNookPlan.until), why: 'the nook chosen for tonight when the pocket was sealed' };
-  if (state.sealedWait?.until > now && (bot.food ?? 20) < 18 && !(bot.game?.dimension === 'overworld' && !surfaceObserver(bot)(bot.entity.position))) return { choice: 'stay', forSeconds: left(state.sealedWait.until), why: 'the wait for daylight chosen sealed (survival priority), until dawn or hunger eighteen' };
+  if (sealedWaitHolds(bot, state, goal, now) && !(bot.game?.dimension === 'overworld' && !surfaceObserver(bot)(bot.entity.position))) return { choice: 'stay', forSeconds: left(state.sealedWait.until), why: 'the wait for daylight chosen sealed (survival priority), until dawn or hunger eighteen' };
   if (state.bedBesidePlan?.until > now) return { choice: 'sleep_beside', forSeconds: left(state.bedBesidePlan.until), why: 'the bed beside chosen for tonight' };
   const p = state.pocketPlan;
   // A stay held by the seal's hold (night-record.js, note 789): held until
@@ -13920,6 +13977,9 @@ function claim(bot, goal = {}, survival = null) {
   // A mob at its own reach, as stepOnce's atArm: arm's length, and a spear
   // holder's longer reach (danger.js atItsReach, note 586). In sight, or
   // within two.
+  // Guarding a player (guard.js): the mob it goes for is picked before any threat is read, so it is the
+  // guard's and no threat to run from (danger.js nightHunted); anything else on the bot is answered first.
+  const guardFacts = require('./guard').due(bot, goal, now);
   const atArm = require('./danger').atReach(bot, threats(bot, 8));
   if (atArm.length) return make('escape_threat', 'pressing', { atArm: atArm.slice(0, 3).map(t => ({ ...mob(t), ...(t.entity.heldItem?.name ? { held: t.entity.heldItem.name } : {}), canReach: 'at its reach of the bot now' })), ...edgeFact, ...pocket });
   // The work's turns stopped at once by its own threat check, again and again, with nothing claimed for the mob that
@@ -13955,7 +14015,7 @@ function claim(bot, goal = {}, survival = null) {
   // sealed at y 8 with nothing to eat, while the wait for daylight chosen
   // at 10:44:57 answered stay each pass and pocket_next was never asked
   // (note 752).
-  const pocketHeld0 = insideRefuge ? pocketHeldOf(bot, state, now) : null;
+  const pocketHeld0 = insideRefuge ? pocketHeldOf(bot, state, now, goal) : null;
   const pocketHeld = pocketHeld0 ? { ...pocketHeld0, noHitSeconds: noHitFor(state.pocketWait?.since || now - (pocketHeld0.secondsAgo || 0) * 1000) } : null;
   // Every way the pocket had resting, gone up to a question that asks
   // nothing about it (stepOnce's pocket branch, note 757): said, with when
@@ -13969,7 +14029,7 @@ function claim(bot, goal = {}, survival = null) {
       noFood: foodSupply(bot) === 0 && !(lastResortSupply(bot).points > 0), spawner: (() => { try { return survival?.placeAbout?.(goal)?.spawner || null; } catch (_) { return null; } })() })?.claim || {}) });
   const nightPlan = state.nightPlan?.until > now ? state.nightPlan : null;
   // The wait for daylight Jev chose, sealed, while it is being sealed.
-  if (state.sealedWait?.until > now && (bot.food ?? 20) < 18 && !underground) return make('wait_for_day_sealed', 'routine', { minutesToDawn: minutesToDawn(bot), healing: false, ...(underground ? { underground: true } : {}) });
+  if (sealedWaitHolds(bot, state, goal, now) && !underground) return make('wait_for_day_sealed', 'routine', { minutesToDawn: minutesToDawn(bot), healing: false, ...(underground ? { underground: true } : {}) });
   const hunting = nightPlan?.plan === 'hunt' && (nightPlan.food || shelterNeeded(bot));
   // A shooter is a threat as far as its own fire reaches (combat-estimate
   // RANGE, danger.js immediateThreat), hurt or not: being in its sight is
@@ -13985,6 +14045,7 @@ function claim(bot, goal = {}, survival = null) {
   // A hoglin hunt said with whether one can be won at this health and where
   // the nearest is: mid-235-q-nether-2-fortress-4 went on with one at 4
   // health, the hoglin 47 blocks off, told only "Health 4." (note 607).
+  if (guardFacts && !threat) return make('guard', 'pressing', guardFacts);
   if (hunting && !threat) {
     let hoglin = null;
     if (nightPlan.kind === 'hoglin') try {
@@ -14052,7 +14113,9 @@ function claim(bot, goal = {}, survival = null) {
   // Not while a player's "come here" is in hand, nor with a player near
   // (JEV_NIGHT=company), as the step reads it (company.js).
   const called = require('./company').calledOver(goal, bot) || require('./company').staysUp(bot);
-  const needsShelter = shelterNeeded(bot) && !nightFree && nightPlan?.plan !== 'stay_up' && nightPlan?.plan !== 'hunt' && !(state.nightRecover?.until > now) && !called;
+  // Nor with the ground about lit (night-light.js), as the step reads it.
+  const litAround = shelterNeeded(bot) && !nightFree && !called && nightPlan?.plan !== 'stay_up' && nightPlan?.plan !== 'hunt' && require('./night-light').wellLit(bot, now);
+  const needsShelter = shelterNeeded(bot) && !nightFree && nightPlan?.plan !== 'stay_up' && nightPlan?.plan !== 'hunt' && !(state.nightRecover?.until > now) && !called && !litAround;
   if (!needsShelter && state.recovery?.status === 'pending' && !(state.recovery.dimension && state.recovery.dimension !== bot.game?.dimension)) return make('recover_items', 'routine', { dropsAt: state.recovery.position || null });
   const expeditionFood = ((goal.preparingExpedition && goal.kind !== 'win') || goal.preparingEnd || goal.preparingNether) && bot.game?.difficulty !== 'peaceful';
   const reserve = require('./food-reserve');
@@ -14063,7 +14126,7 @@ function claim(bot, goal = {}, survival = null) {
   const noHeal = hp < 14 && bot.food < 18 && !chooseFood(bot) && !(offWorld && netherKeepOn(bot, goal));
   const hungry = bot.food <= hungerTrigger || noHeal;
   const supply = foodSupply(bot);
-  const stockDriven = !offWorld && (goal.stockFood || expeditionFood || (goal.kind === 'survive' && bot.game?.difficulty !== 'peaceful') || reserve.short(bot, goal, supply));
+  const stockDriven = !offWorld && goal.kind !== 'follow' && (goal.stockFood || expeditionFood || (goal.kind === 'survive' && bot.game?.difficulty !== 'peaceful') || reserve.short(bot, goal, supply));
   // As the layer reads it: resting, low hunger that what is carried fills is met by eating (note 702).
   const errands = require('./food-errand');
   const stockRests = rests('food_search', 'stock'), fills = errands.fillsHunger(bot, supply);
@@ -14148,4 +14211,4 @@ function claim(bot, goal = {}, survival = null) {
   return made;
 }
 
-module.exports = { bedSiteNear, runCellsAside, runLavaSays, blazeStanceSays, mobsMetHereSays, shooterCover, dropBesideSays, STANDING_WAYS, runGroundOf, bedAfterSleepTree, sealedWaitCostSays, bedLoopOf, caveBedSaysFor, wardenBoom, LEAVES_THE_BOOM, PUSH_RECORD, pushRecordOn, blockRecord, BLOCK_RECORD, bedClimbable, BED_CLIMB, pricedRunCell, runFromRecord, RUN_FROM_RECORD, spawnBedNear, homeBedReach, fleeFrom, furnaceFood, runFromCreeper, deadlyEdgeWalk, sprintByHeading, nightEnds, sealThreatNear, scoutBudget, SCOUT_MS, SCOUT_FAR_MS, mealSays, nightMinePickSays, bedSafetyAt, healWaitSays, WAITS_IN, wearGoldOf, piglinGoldClause, blowsLead, pastFollowOf, sealedWaitSaysFor: (bot, opts) => sealedWaitSays(bot, opts), lavaExitCost, nookSaysFor: (bot, nook, opts) => nookSays(bot, nook, opts), nightMineHolds, NIGHT_MINE_IDLE_MS, underRock, sleepRefusalSays, shellUnfinishedSays, spawnerMob, routeOf, shotsDue, shotChanceNow, routeEdge, pushCarries, pushFooting, blastPushesOver, blastOverSays, pushAtSays, shotPushers, BLAST_THROW, wallCells, wallStock, searchBudget, lavaTop, lavaFill, swimReach, pocketPlan, pocketRestsOf, pocketBiters, farBiters, piglinGoldSays, claim, chaseSays, chaseCost, groundBeside, onPillarTop, eatApple, LAVA_BLOCKS_A_SECOND, effectsSay, spawnerAbout, unseenBiters, fartherShootersSay, mobSourceAbout, shieldFacing, biterAtArm, pickaxeReserve, chargeSays, creeperSays, costSays, openCells, eatSays, mealHelps, EAT_AFTER, PILLAR_SECONDS, BLOCK_SECONDS, EAT_SECONDS, CLIMBERS, MOVING_STANCES, chargeStopsAt, usesToClimbOut, SLEEP_DEBT_TICKS, Survival, inLava, inWater, lavaExit, besideDrop, firmGround, night, shelterNeeded, lavaBeside, bedSite, bedNook, monstersByBed, monstersAtBed, refusalSays, nearbyHomeBed, observedBed, sleepable, SLEEP_FROM, keepShieldForStance, SHIELD_STANCES, ORE_YIELD, nightMineOn };
+module.exports = { RUN_STANCES, sealedWaitHolds, bedSiteNear, runCellsAside, runLavaSays, blazeStanceSays, mobsMetHereSays, shooterCover, dropBesideSays, STANDING_WAYS, runGroundOf, bedAfterSleepTree, sealedWaitCostSays, bedLoopOf, caveBedSaysFor, wardenBoom, LEAVES_THE_BOOM, PUSH_RECORD, pushRecordOn, blockRecord, BLOCK_RECORD, bedClimbable, BED_CLIMB, pricedRunCell, runFromRecord, RUN_FROM_RECORD, spawnBedNear, homeBedReach, fleeFrom, furnaceFood, runFromCreeper, deadlyEdgeWalk, sprintByHeading, nightEnds, sealThreatNear, scoutBudget, SCOUT_MS, SCOUT_FAR_MS, mealSays, nightMinePickSays, bedSafetyAt, healWaitSays, WAITS_IN, wearGoldOf, piglinGoldClause, blowsLead, pastFollowOf, sealedWaitSaysFor: (bot, opts) => sealedWaitSays(bot, opts), lavaExitCost, nookSaysFor: (bot, nook, opts) => nookSays(bot, nook, opts), nightMineHolds, NIGHT_MINE_IDLE_MS, underRock, sleepRefusalSays, shellUnfinishedSays, spawnerMob, routeOf, shotsDue, shotChanceNow, routeEdge, pushCarries, pushFooting, blastPushesOver, blastOverSays, pushAtSays, shotPushers, BLAST_THROW, wallCells, wallStock, searchBudget, lavaTop, lavaFill, swimReach, pocketPlan, pocketRestsOf, pocketBiters, farBiters, piglinGoldSays, claim, chaseSays, chaseCost, groundBeside, onPillarTop, eatApple, LAVA_BLOCKS_A_SECOND, effectsSay, spawnerAbout, unseenBiters, fartherShootersSay, mobSourceAbout, shieldFacing, biterAtArm, pickaxeReserve, chargeSays, creeperSays, costSays, openCells, eatSays, mealHelps, EAT_AFTER, PILLAR_SECONDS, BLOCK_SECONDS, EAT_SECONDS, CLIMBERS, MOVING_STANCES, chargeStopsAt, usesToClimbOut, SLEEP_DEBT_TICKS, Survival, inLava, inWater, lavaExit, besideDrop, firmGround, night, shelterNeeded, lavaBeside, bedSite, bedNook, monstersByBed, monstersAtBed, refusalSays, nearbyHomeBed, observedBed, sleepable, SLEEP_FROM, keepShieldForStance, SHIELD_STANCES, ORE_YIELD, nightMineOn };
