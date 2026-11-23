@@ -186,3 +186,15 @@ test('a running errand ends after eight minutes, or, gathering, with a minute of
   assert.equal(arms.errandOver(goal({ errandStopped: 'cancelled' }), at(6000), 1000001), null);
   assert.equal(arms.errandOver({ kind: 'craft' }, at(13000), 1000001), null, "a player's own craft");
 });
+
+test('pocketsMake with the real recipes (minecraft-data 26.1): a stone sword needs a table or the wood for one; nothing from empty pockets', () => {
+  const real = require('minecraft-data')('26.1');
+  const carrying = list => ({ registry: real, game: { gameMode: 'survival', dimension: 'overworld' }, inventory: { items: () => list.map(([name, count]) => ({ name, count, durabilityUsed: 0 })) } });
+  assert.equal(arms.pocketsMake(carrying([['cobblestone', 4], ['stick', 2]]), 'stone_sword'), false, 'no table and no wood for one');
+  assert.equal(arms.pocketsMake(carrying([['cobblestone', 4], ['stick', 2], ['crafting_table', 1]]), 'stone_sword'), true);
+  assert.equal(arms.pocketsMake(carrying([['cobblestone', 4], ['oak_planks', 8]]), 'stone_sword'), true, 'table and sticks from the planks');
+  assert.equal(arms.pocketsMake(carrying([['cobblestone', 4], ['oak_log', 3]]), 'stone_sword'), true);
+  assert.equal(arms.pocketsMake(carrying([['oak_planks', 8]]), 'stone_sword'), false, 'the stone has to be mined');
+  assert.equal(arms.pocketsMake(carrying([['oak_planks', 8]]), 'wooden_sword'), true);
+  assert.equal(arms.pocketsMake(carrying([]), 'wooden_sword'), false);
+});

@@ -41,16 +41,20 @@ test('the chat so far goes with a message: who said each line, oldest first, how
   assert.equal(sent[1].recentChat.filter(l => l.text === '50 blocks are fine').length, 1);
 });
 
-test("the same line again within three seconds is one line; the guide's own reply is in the chat under the bot's name", async () => {
+test("the same line again within three seconds is one line; the guide's reply is in the chat only as the session notes it said", async () => {
   const { guide, sent, tick } = stubbed({ say: 'ok', requests: [] });
   guide.note('Jev', 'Coming back to you, Robin.', { bot: true });
   tick(1000); guide.note('Jev', 'Coming back to you, Robin.', { bot: true });
   tick(4000); guide.note('Jev', 'Coming back to you, Robin.', { bot: true });
   await ask(guide, 'where are you');
   assert.equal(sent[0].recentChat.length, 2);
-  tick(2000); guide.note('Jev', 'ok', { bot: true });
+  tick(2000);
   await ask(guide, 'and now?');
-  assert.deepEqual(sent[1].recentChat.slice(-1), [{ from: 'Jev', text: 'ok', secondsAgo: 2 }], 'the reply, once though said too');
+  assert.equal(sent[1].recentChat.some(l => l.text === 'ok'), false, 'a reply speech.js may drop is not taken as said');
+  guide.note('Jev', 'ok', { bot: true });
+  tick(2000);
+  await ask(guide, 'and now?');
+  assert.deepEqual(sent[2].recentChat.slice(-1), [{ from: 'Jev', text: 'ok', secondsAgo: 2 }]);
 });
 
 test('the chat kept: twenty-four lines at most, none older than a quarter hour', async () => {
@@ -118,24 +122,25 @@ test('the instructions say how the talk is read and how choices are offered', ()
   assert.match(text, /answers with the number/);
 });
 
-test('a look over the chat: no call with nothing said by a player; an offer by number under the bot name; a look a minute and a half at most', async () => {
-  const { guide, sent, tick } = stubbed({ say: 'Robin, want some food?', options: [{ label: 'get you cooked beef', requests: ['get me 8 cooked beef'] }] });
+test('the look after a failure: no call with nothing said by a player; an offer by number for that player; a look a minute and a half at most', async () => {
+  const { guide, sent, tick } = stubbed({ say: 'Robin, want 16 oak logs instead?', options: [{ label: 'oak logs', requests: ['get me 16 oak logs'] }] });
   guide.note('Jev', 'Back to work.', { bot: true });
-  assert.equal(await guide.observe({ botName: 'Jev', players: ['Robin'] }), null, 'only the bot has spoken: no call');
+  assert.equal(await guide.observe({ botName: 'Jev', players: ['Robin'], player: 'Robin' }), null, 'only the bot has spoken: no call');
   assert.equal(sent.length, 0);
-  tick(5000); guide.note('Robin', 'im so hungry', {});
-  const out = await guide.observe({ botName: 'Jev', status: { doing: 'waiting for a request' }, players: ['Robin', 'Sky'] });
-  assert.equal(out.say, 'Robin, want some food? (say yes)');
-  assert.deepEqual(out.options.map(o => o.requests), [['get me 8 cooked beef']]);
+  tick(5000); guide.note('Robin', 'get me 64 dark oak logs', { toBot: true });
+  tick(30000); guide.note('Jev', "I couldn't find any dark oak trees nearby.", { bot: true });
+  const out = await guide.observe({ botName: 'Jev', status: { doing: 'waiting for a request' }, players: ['Robin', 'Sky'], player: 'Robin' });
+  assert.equal(out.say, 'Robin, want 16 oak logs instead? (say yes)');
+  assert.deepEqual(out.options.map(o => o.requests), [['get me 16 oak logs']]);
+  assert.equal(sent[0].player, 'Robin');
   assert.deepEqual(sent[0].players, ['Robin', 'Sky']);
-  assert.deepEqual(sent[0].recentChat.map(l => l.from), ['Jev', 'Robin']);
+  assert.deepEqual(sent[0].recentChat.map(l => l.from), ['Jev', 'Robin', 'Jev']);
   assert.equal(guide.observeReady(), false, 'a minute and a half between looks');
-  assert.equal(await guide.observe({ botName: 'Jev', players: ['Robin'] }), null);
+  assert.equal(await guide.observe({ botName: 'Jev', players: ['Robin'], player: 'Robin' }), null);
   assert.equal(sent.length, 1);
   tick(91000); assert.equal(guide.observeReady(), true);
-  guide.note('Sky', 'nice', {});
-  await guide.observe({ botName: 'Jev', players: ['Robin'] });
-  assert.deepEqual(sent[1].recentChat.map(l => l.text), ['Back to work.', 'im so hungry', 'Robin, want some food? (say yes)', 'nice'], "the offer is in the chat under the bot's name");
+  await guide.observe({ botName: 'Jev', players: ['Robin'], player: 'Robin' });
+  assert.equal(sent[1].recentChat.some(l => /instead/.test(l.text)), false, 'the offer is noted by the session as it is said, not here');
 });
 
 test('a look that finds nothing to say says nothing; commands never come out of one; twelve an hour', async () => {
@@ -153,13 +158,66 @@ test('a look that finds nothing to say says nothing; commands never come out of 
   assert.equal(many.sent.length, calls);
 });
 
-test('JEV_GUIDE_HEAR=all and JEV_GUIDE_SPEAK=unasked, anything else is off; the look is told to stay quiet unless it is clear', () => {
+test('JEV_GUIDE_HEAR=all and JEV_GUIDE_SPEAK=unasked, anything else is off; the look comes only after a failure and stays out of the players talk', () => {
   const { hearsAll, speaksUnasked, OBSERVE } = require('../src/guide');
   assert.equal(hearsAll({ JEV_GUIDE_HEAR: ' ALL ' }), true); assert.equal(hearsAll({}), false); assert.equal(hearsAll({ JEV_GUIDE_HEAR: 'yes' }), false);
   assert.equal(speaksUnasked({ JEV_GUIDE_SPEAK: 'unasked' }), true); assert.equal(speaksUnasked({ JEV_GUIDE_SPEAK: 'on' }), false);
   const text = OBSERVE('Jev');
   assert.match(text, /Most of the time it should not/);
-  assert.match(text, /never a request to Jev/);
+  assert.match(text, /has just failed/);
+  assert.match(text, /Never answer, join or comment on what the players say to each other/);
+  assert.doesNotMatch(text, /we need more wood|starving/);
   assert.match(text, /The engine understands these requests/);
+  assert.doesNotMatch(text, /undefined/);
+});
+
+test('the judge: a line said without the name, read against the chat; only a clear yes is a yes; its own budget, apart from the messages to the bot', async () => {
+  const { guide, sent, tick } = stubbed(n => n === 1 ? { forBot: true, why: 'continues the talk about distance' } : n === 2 ? { forBot: false, why: 'said to Sky' } : n === 3 ? { forBot: 'yes' } : { say: 'ok', requests: ['come here'] });
+  guide.note('Robin', 'stay close to me', { toBot: true });
+  tick(1000); guide.note('Jev', "I aim to stay within 12 blocks of Robin. We're 13 blocks apart.", { bot: true });
+  tick(3000); guide.note('Robin', '50 blocks are fine', {});
+  const yes = await guide.judge({ from: 'Robin', text: '50 blocks are fine', botName: 'Jev', players: [{ name: 'Robin', blocks: 13.4 }, { name: 'Sky' }] });
+  assert.deepEqual(yes, { forBot: true, why: 'continues the talk about distance' });
+  assert.equal(sent[0].said, '50 blocks are fine');
+  assert.deepEqual(sent[0].players, [{ name: 'Robin', blocksFromBot: 13 }, { name: 'Sky' }]);
+  assert.deepEqual(sent[0].recentChat.map(l => l.text), ['stay close to me', "I aim to stay within 12 blocks of Robin. We're 13 blocks apart."], 'the line itself is not in its own chat');
+  assert.equal((await guide.judge({ from: 'Robin', text: 'come see my house Sky', botName: 'Jev', players: ['Robin', 'Sky'] })).forBot, false);
+  assert.equal((await guide.judge({ from: 'Robin', text: 'maybe', botName: 'Jev', players: ['Robin'] })).forBot, false, 'anything but true is no');
+  assert.ok(await ask(guide, 'come here'), 'a message to the bot right after: the judge does not take its calls');
+});
+
+test('the judge fails closed: no key, no answer, or its budget for the hour spent is no call and no yes; its own model when set', async () => {
+  const none = createGuide({ apiKey: '', file: null });
+  assert.equal(await none.judge({ from: 'Robin', text: 'and coal', botName: 'Jev' }), null);
+  const broken = createGuide({ apiKey: 'k', file: null, reasoning: '', built: false, personality: '', fetchImpl: async () => ({ ok: false, status: 500, json: async () => ({ error: { message: 'down' } }) }) });
+  const log = console.log; console.log = () => {};
+  try { assert.equal(await broken.judge({ from: 'Robin', text: 'and coal', botName: 'Jev' }), null); } finally { console.log = log; }
+  let t = 0; const bodies = [];
+  const few = createGuide({ apiKey: 'k', file: null, now: () => t, reasoning: 'low', built: false, personality: '', judgePerHour: 3, judgeModel: 'cheap-model', judgeReasoning: '',
+    fetchImpl: async (url, opts) => { bodies.push(JSON.parse(opts.body)); return { ok: true, json: async () => ({ choices: [{ message: { content: '{"forBot": false}' }, finish_reason: 'stop' }] }) }; } });
+  for (let n = 0; n < 5; n++) await few.judge({ from: 'Robin', text: 'line ' + n, botName: 'Jev' });
+  assert.equal(bodies.length, 3, 'three an hour');
+  assert.equal(bodies[0].model, 'cheap-model');
+  assert.equal('reasoning_effort' in bodies[0], false, 'its own reasoning, none');
+  t += 3600001;
+  await few.judge({ from: 'Robin', text: 'later', botName: 'Jev' });
+  assert.equal(bodies.length, 4, 'an hour on, again');
+});
+
+test('which lines go to the judge: not one for another player by name, or one that asks nothing; only from a player talking with the bot, alone with it, or naming it', () => {
+  const { mayBeForBot, JUDGE } = require('../src/guide');
+  const two = { botNames: ['Jev'], others: ['Sky'] };
+  assert.equal(mayBeForBot('50 blocks are fine', { ...two, talking: true }), true);
+  assert.equal(mayBeForBot('50 blocks are fine', two), false, 'two players, no talk with the bot lately');
+  assert.equal(mayBeForBot('come here jev', two), true, 'the name in the line');
+  assert.equal(mayBeForBot('can someone get wood', { botNames: ['Jev'], others: [] }), true, 'alone with the bot');
+  assert.equal(mayBeForBot('Sky, come here', { ...two, talking: true }), false);
+  assert.equal(mayBeForBot('@sky look', { ...two, talking: true }), false);
+  assert.equal(mayBeForBot('daddy look at this', { ...two, talking: true }), true, 'a longer word is not the name');
+  for (const line of ['lol', 'haha', 'ok', 'thanks!', 'brb', '?!', '👍']) assert.equal(mayBeForBot(line, { botNames: ['Jev'], others: [], talking: true }), false, line);
+  const text = JUDGE('Jev');
+  assert.match(text, /When unsure, it is not meant for Jev/);
+  assert.match(text, /the players' talk among themselves/);
+  assert.match(text, /"forBot"/);
   assert.doesNotMatch(text, /undefined/);
 });

@@ -84,22 +84,51 @@ const hearsAll = (env = process.env) => String(env?.JEV_GUIDE_HEAR || '').trim()
 const speaksUnasked = (env = process.env) => String(env?.JEV_GUIDE_SPEAK || '').trim().toLowerCase() === 'unasked';
 
 // The look over the chat (observe): whether the bot should speak up unasked, and with what offer.
-const OBSERVE = (bot, { personality = null } = {}) => `You are the language layer of ${bot}, a companion bot in Minecraft survival, and you keep an eye on the game chat. ${bot} plays honest survival: no commands, no cheats; everything it has, it gathered, mined, smelted or crafted.
+const OBSERVE = (bot, { personality = null } = {}) => `You are the language layer of ${bot}, a companion bot in Minecraft survival. ${bot} plays honest survival: no commands, no cheats; everything it has, it gathered, mined, smelted or crafted.
 
-You never act yourself. A separate engine does the work, and ${bot} does only what a player asks or chooses. You are called now and then, when the chat has gone quiet for a moment, with recentChat (the game chat so far, oldest first: who said each line, ${bot}'s own under its name, how many seconds ago, and toBot when it was said to ${bot}), the players online with their standing rules, and ${bot}'s status.
+You never act yourself. A separate engine does the work, and ${bot} does only what a player asks or chooses. You are called when something a player asked of ${bot} has just failed: ${bot}'s last line in recentChat says what went wrong, and often what to try. You get that player ("player"), the players online with their standing rules, ${bot}'s status, and recentChat (the game chat so far, oldest first: who said each line, ${bot}'s own under its name, how many seconds ago, and toBot when it was said to ${bot}).
 
-Decide whether ${bot} should speak up unasked. Most of the time it should not: then answer {"say": null, "options": null}. It speaks up only when the chat makes one of these clear:
-- A player wants or needs something the engine can do and has not asked ${bot} for it ("we need more wood", "I'm starving", "I wish we had a house"): offer it.
-- ${bot} and a player misunderstood each other, or a player could not get ${bot} to do something the engine can do: offer what was meant.
-- The players agreed on a plan ${bot} can help with: offer its next step.
-- Something in the status matters now and a player may not have seen it (night is coming and a player said they have no shelter or weapon; ${bot} carries food and a player is hungry): one short line, with an offer when there is one.
-Never offer what a player or ${bot} is already doing (status.doing), anything ${bot} offered or said in recentChat, or anything a player turned down. Never answer a line said to ${bot} (toBot): it has had its answer. What the players say to each other is never a request to ${bot}: you only offer, and a player chooses.
+Decide whether ${bot} should add anything. Most of the time it should not: its own line has said what went wrong and what to try, and the player can ask again. Then answer {"say": null, "options": null}. Speak up only when the engine can clearly do what the player wanted, or something close to it (a smaller count, another material, another way to the same end), that ${bot}'s line did not offer: offer it to that player, by name, as a choice. Not something else instead, and nothing once the players have moved on to other things. Never offer what a player or ${bot} is already doing (status.doing), anything ${bot} offered or said in recentChat, or anything a player turned down; after a player has turned an offer down, offer nothing more. Never answer, join or comment on what the players say to each other.
 
 ${ENGINE(bot)}
 
 Answer with JSON only:
 {"say": string or null, "options": [{"label": a few words, "requests": [requests from the list above, at most ${MAX_REQUESTS}, done in order]}, at most ${MAX_OPTIONS}] or null}
-"say" is one short line, at most 140 characters, friendly and plain, in the players' language, naming the player it is for. With options "say" is only the question: the options are listed after it by number and a player answers with the number; a single option is a yes question. Apply a player's standing rules to what is offered to them. Never write anything that starts with "/". Never promise what the engine cannot do.${PERSONALITIES[personality] ? ` ${PERSONALITIES[personality]}` : ''}`;
+"say" is one short line, at most 140 characters, friendly and plain, in the player's language, naming the player. With options "say" is only the question: the options are listed after it by number and the player answers with the number; a single option is a yes question. Apply the player's standing rules to what is offered. Never write anything that starts with "/". Never promise what the engine cannot do.${PERSONALITIES[personality] ? ` ${PERSONALITIES[personality]}` : ''}`;
+
+// JEV_GUIDE_SPEAK=unasked: whether a line a player said without the bot's name in front is meant for the bot anyway
+// (judge, called by session.js hearOut). Asked for 2026-11-23: the bot answers only what is meant for it, a reply or a
+// follow-up to its talk with a player included, and leaves the players' talk among themselves alone.
+const JUDGE = bot => `You watch the game chat of a Minecraft server for ${bot}, a companion bot that plays with the players and does what they ask of it. A player has just said a line that does not start with the bot's name. Decide whether the line is meant for ${bot}.
+
+It is meant for ${bot} when the player is talking to it without its name:
+- the line answers or follows up what ${bot} just said or asked that player ("50 blocks are fine" after ${bot} said how close it stays; "why not?" after ${bot} said it can't; "the birch one" after ${bot} asked which wood);
+- it carries on the player's own talk with ${bot} ("and some coal too" after asking ${bot} for wood; "no, the other one"; "where did you go?" after ${bot} went off);
+- the player is alone with ${bot} and asks something of whoever hears it, or the line names ${bot} somewhere other than at its start ("come here jev").
+
+It is not meant for ${bot} when:
+- it is said to another player: their name is in it, or it answers what another player said or asked after ${bot}'s last line;
+- it is the players' talk among themselves: plans, jokes, comments, news, even about things ${bot} could do ("we need more wood", "lets build a tower");
+- it talks about ${bot} rather than to it ("is jev ok? he is so slow");
+- it asks nothing of anyone.
+When unsure, it is not meant for ${bot}: a line left alone costs nothing (the player can say the name), and a line taken wrongly sets ${bot} to work nobody asked for.
+
+You get the line ("said"), the player who said it, the players online (blocksFromBot when in sight), and recentChat: the game chat before the line, oldest first, who said each line (${bot}'s own under its name), how many seconds ago, and toBot when it was said to ${bot}.
+Answer with JSON only: {"forBot": true or false, "why": "at most 12 words"}`;
+
+// Which lines the judge reads at all (session.js): none plainly for another player (their name first, or @name) or
+// asking nothing ("lol", "ok": a yes to the bot's own question is read before this), and only from a player who has
+// talked with the bot lately (talking), is alone with it (no others), or names it somewhere in the line.
+const ASKS_NOTHING = /^(?:lol|lmao|rofl|ha(?:ha)+h?|he(?:he)+|xd+|omg|wow|nice|cool|gg|brb|afk|bye|hi|hey|hello|ok|okay|k+|yes|yeah|yep|no|nope|nah|ty|thx|thanks|thank you|np|oops|ugh|hm+|wait|what|ah|oh)[\s!.?]*$/i;
+const escRe = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function mayBeForBot(text, { botNames = ['Jev'], others = [], talking = false } = {}) {
+  const line = String(text || '').trim();
+  if (!/\p{L}{2}/u.test(line) || ASKS_NOTHING.test(line)) return false;
+  const lead = line.toLowerCase().replace(/^@/, '');
+  if (others.some(name => { const n = String(name || '').toLowerCase(); return n && lead.startsWith(n) && !/[\p{L}\p{N}_]/u.test(lead.charAt(n.length)); })) return false;
+  if (talking || !others.length) return true;
+  return new RegExp(`(^|[^\\p{L}\\p{N}_])(?:${botNames.filter(Boolean).map(escRe).join('|')})(?![\\p{L}\\p{N}_])`, 'iu').test(line);
+}
 
 function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_API_KEY,
   url = process.env.JEV_GUIDE_URL || 'https://api.openai.com/v1/chat/completions',
@@ -112,6 +141,10 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
   minGapMs = 1500, perHour = Number(process.env.JEV_GUIDE_PER_HOUR || 60),
   // JEV_GUIDE_SPEAK=unasked: looks over the chat, at most one a minute and a half and twelve an hour.
   observeGapMs = 90000, observePerHour = Number(process.env.JEV_GUIDE_LOOKS_PER_HOUR || 12),
+  // JEV_GUIDE_SPEAK=unasked: the judge of lines without the name, on a budget of its own so that chatter never takes
+  // the calls of the lines said to the bot; its own model and reasoning when set, else the guide's.
+  judgePerHour = Number(process.env.JEV_GUIDE_JUDGE_PER_HOUR || 120), judgeModel = process.env.JEV_GUIDE_JUDGE_MODEL || model,
+  judgeReasoning = process.env.JEV_GUIDE_JUDGE_REASONING ?? reasoning,
   // Whether the engine leaves built things alone (built.js): the layer is told so, and may pass on a player's leave.
   built = require('./built').on(), personality = process.env.JEV_PERSONALITY } = {}) {
   const manner = String(personality || '').trim().toLowerCase();
@@ -126,7 +159,7 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(`${file}.tmp`, JSON.stringify(state) + '\n'); fs.renameSync(`${file}.tmp`, file);
   };
-  const chat = [], calls = new Map(), looks = [], refused = new Set();
+  const chat = [], calls = new Map(), looks = [], judged = [], refused = new Set();
   const rulesFor = from => state.rules.filter(rule => owner(rule.from) === owner(from));
   // The game chat as the bot hears it (session.js notes the players' lines and the bot's own, and the replies are
   // noted here too): who said each line, toBot when it was said to the bot, bot when the bot said it. With
@@ -155,7 +188,7 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
   }
 
   // One call to the model: -> the JSON object it answered, or null (said in the log, with what follows from it: failing).
-  async function ask(system, user, failing) {
+  async function ask(system, user, failing, { model: m = model, reasoning: r = reasoning } = {}) {
     const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs);
     const fallsThrough = why => { console.log(`[guide] ${why}; ${failing}`); return null; };
     // The service's own words for a refusal, for the log. A refused key is quoted back in part by
@@ -164,9 +197,9 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
       .replace(/[A-Za-z0-9_*-]{12,}/g, word => (word.includes('*') || (word.length >= 20 && /\d/.test(word) && /[A-Za-z]/.test(word)) ? '<key>' : word)).slice(0, 160);
     let parsed;
     try {
-      const body = { model, max_completion_tokens: maxTokens, response_format: { type: 'json_object' },
+      const body = { model: m, max_completion_tokens: maxTokens, response_format: { type: 'json_object' },
         ...(temperature !== undefined && temperature !== '' && { temperature: Number(temperature) }),
-        ...(reasoning && { reasoning_effort: reasoning }),
+        ...(r && { reasoning_effort: r }),
         messages: [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(user) }] };
       let reply;
       // A setting this model does not take is left out from then on and the call made again, so one
@@ -181,17 +214,17 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
         const param = ['temperature', 'reasoning_effort'].find(name => problem?.error?.param === name || reason.includes(name));
         if (response.status === 400 && param && !refused.has(param) && param in body) {
           refused.add(param);
-          console.log(`[guide] ${model} does not take ${param} as set (${reason}); left out from now on`);
+          console.log(`[guide] ${m} does not take ${param} as set (${reason}); left out from now on`);
           continue;
         }
-        return fallsThrough(`${model} answered ${response.status} (${reason})`);
+        return fallsThrough(`${m} answered ${response.status} (${reason})`);
       }
       const choice = reply?.choices?.[0];
-      if (!choice?.message?.content) return fallsThrough(`${model} gave no answer (finish: ${choice?.finish_reason || 'none'})`);
-      if (choice.finish_reason === 'length') return fallsThrough(`${model}'s answer was cut off at ${maxTokens} tokens (JEV_GUIDE_MAX_TOKENS)`);
+      if (!choice?.message?.content) return fallsThrough(`${m} gave no answer (finish: ${choice?.finish_reason || 'none'})`);
+      if (choice.finish_reason === 'length') return fallsThrough(`${m}'s answer was cut off at ${maxTokens} tokens (JEV_GUIDE_MAX_TOKENS)`);
       try { parsed = JSON.parse(choice.message.content); }
-      catch (_) { return fallsThrough(`${model}'s answer was not JSON`); }
-    } catch (err) { return fallsThrough(`${model} not reached (${err.name === 'AbortError' ? `no answer in ${timeoutMs / 1000} s` : err.name})`); }
+      catch (_) { return fallsThrough(`${m}'s answer was not JSON`); }
+    } catch (err) { return fallsThrough(`${m} not reached (${err.name === 'AbortError' ? `no answer in ${timeoutMs / 1000} s` : err.name})`); }
     finally { clearTimeout(timer); }
     return parsed && typeof parsed === 'object' ? parsed : null;
   }
@@ -223,8 +256,7 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
     if (Number.isInteger(n) && n >= 1 && n <= rules.length) {
       state.rules.splice(state.rules.indexOf(rules[n - 1]), 1); save(); out.forgotRule = rules[n - 1].text;
     }
-    // The player's line is noted by session.js as it is said; the reply here, and again (as one) as it is said.
-    if (out.say) note(botName, out.say, { bot: true });
+    // What the bot says is noted by session.js as it is said (a line speech.js quietRepeats drops was never said).
     if (!out.say && !requests.length && !out.addedRule && !out.forgotRule && !out.useBuildings) return null;
     return out;
   }
@@ -232,24 +264,37 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
   // JEV_GUIDE_SPEAK=unasked: whether a look over the chat may be had now (at most one in observeGapMs, observePerHour an hour).
   const observeReady = () => { const t = now(); return looks.filter(at => t - at < 3600000).length < observePerHour && !(looks.length && t - looks.at(-1) < observeGapMs); };
   // A look over the chat when it has gone quiet (session.js): what the bot might say unasked. -> { say, options? } or null.
-  async function observe({ botName, status = {}, players = [] }) {
+  async function observe({ botName, status = {}, players = [], player = null }) {
     if (!apiKey || !observeReady()) return null;
     const lines = recentChat();
     if (!lines.some(l => owner(l.from) !== owner(botName))) return null;
     const t = now(); looks.push(t); while (looks.length && t - looks[0] >= 3600000) looks.shift();
     const online = players.map(p => clean(p, 64)).filter(Boolean);
-    const user = { players: online, standingRules: state.rules.filter(r => online.some(p => owner(p) === owner(r.from))).map(r => r.from + ': ' + r.text),
+    const user = { player: clean(player || '', 64) || null, players: online,
+      standingRules: state.rules.filter(r => online.some(p => owner(p) === owner(r.from))).map(r => r.from + ': ' + r.text),
       recentChat: lines, status };
-    const parsed = await ask(OBSERVE(botName, { personality: manner }), user, 'nothing is said unasked');
+    const parsed = await ask(OBSERVE(botName, { personality: manner }), user, 'nothing is added');
     if (!parsed) return null;
     const options = optionsOf(parsed.options), say = clean(clean(parsed.say, 240).replace(/^[\s/]+/, ''), 160) || null;
     if (!say && !options.length) return null;
-    const out = options.length ? { say: withOptions(say, options), options } : { say };
-    note(botName, out.say, { bot: true });
-    return out;
+    return options.length ? { say: withOptions(say, options), options } : { say };
   }
 
-  return { available: Boolean(apiKey), consult, observe, observeReady, rulesFor, model, note };
+  // JEV_GUIDE_SPEAK=unasked: whether a line said without the bot's name is meant for it (JUDGE), read against the chat.
+  // { forBot, why }, or null with no key, no budget left or no answer: the line is then left alone.
+  const judgeReady = () => { const t = now(); while (judged.length && t - judged[0] >= 3600000) judged.shift(); return judged.length < judgePerHour; };
+  async function judge({ from, text, botName, players = [] }) {
+    if (!apiKey || !judgeReady()) return null;
+    judged.push(now());
+    const user = { player: clean(from, 64), said: clean(text, 300),
+      players: players.map(p => typeof p === 'string' ? { name: clean(p, 64) } : { name: clean(p?.name, 64), ...(Number.isFinite(p?.blocks) && { blocksFromBot: Math.round(p.blocks) }) }).filter(p => p.name),
+      recentChat: recentChat(lineOf(from, text)) };
+    const parsed = await ask(JUDGE(botName), user, 'the line is left alone', { model: judgeModel, reasoning: judgeReasoning });
+    if (!parsed || typeof parsed !== 'object') return null;
+    return { forBot: parsed.forBot === true, why: clean(parsed.why, 100) || null };
+  }
+
+  return { available: Boolean(apiKey), consult, observe, observeReady, judge, judgeReady, rulesFor, model, judgeModel, note };
 }
 
 // The player's pick among the choices offered (out.options): the option, or null when the line is not a pick. A
@@ -270,4 +315,4 @@ function pickOption(text, options = []) {
   return options.find(o => o.label.toLowerCase() === s) || null;
 }
 
-module.exports = { createGuide, SYSTEM, OBSERVE, PERSONALITIES, pickOption, declines, hearsAll, speaksUnasked, withOptions };
+module.exports = { createGuide, SYSTEM, OBSERVE, JUDGE, PERSONALITIES, pickOption, declines, hearsAll, speaksUnasked, withOptions, mayBeForBot };
