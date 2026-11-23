@@ -15,7 +15,9 @@ const SPRUCE = 'I prefer spruce for anything wooden.';
 const all = (o, ...res) => o && res.every(re => re.test(o.requests.join(' | ')));
 const cases = [
   ['Russian request with a rule', [WOOD], 'принеси мне немного дерева', {}, o => o && o.requests.length === 1 && /8 birch logs?/i.test(o.requests[0])],
-  ['shorthand, two steps', [], 'pls come 2 me then get 5 cobble', {}, o => o && o.requests.length === 2 && /^come here/i.test(o.requests[0]) && /5 cobblestone/i.test(o.requests[1])],
+  // "come to me" is read as a come by the request interpreter as "come here" is (decisions/intake.js); since the chat
+  // went with each message (2026-11-23) the model writes it in about half the runs.
+  ['shorthand, two steps', [], 'pls come 2 me then get 5 cobble', {}, o => o && o.requests.length === 2 && /^come (here|to me)\b/i.test(o.requests[0]) && /5 cobblestone/i.test(o.requests[1])],
   ['preference applied to two items', [SPRUCE], 'I need a door and a bed', {}, o => o && o.requests.length >= 1 && all(o, /spruce door/i, /bed/i)],
   ['ambiguous ask gets a question back', [], 'get it', {}, o => none(o) && noRule(o) && /\?/.test(o.say || '')],
   ['rambling wish becomes requests', [], "ok so we're gonna build a base later but first I guess we need tools, can you sort out picks for both of us and maybe some torches", {}, o => o && o.requests.length >= 1 && o.requests.length <= 3 && all(o, /2 .*pickaxes?/i, /torch/i) && o.requests.every(r => KNOWN.test(r))],

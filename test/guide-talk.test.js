@@ -23,30 +23,45 @@ function stubbed(reply, { start = 1000000 } = {}) {
 }
 const ask = (guide, text, from = 'Robin') => guide.consult({ from, text, botName: 'Jev', status: {} });
 
-test('the talk so far goes with a message: both sides, oldest first, how long ago; the message itself once', async () => {
+test('the chat so far goes with a message: who said each line, oldest first, how long ago, to the bot or not; the message itself once', async () => {
   const { guide, sent, tick } = stubbed({ say: null, requests: ['stay within 50 blocks of me'] });
-  guide.note('Robin', 'player', 'stay close to me');
-  tick(1000); guide.note('Robin', 'bot', "I aim to stay within 12 blocks of Robin. We're 13 blocks apart.");
-  tick(11000); guide.note('Robin', 'player', '50 blocks are fine');
+  guide.note('Robin', 'stay close to me', { toBot: true });
+  tick(1000); guide.note('Jev', "I aim to stay within 12 blocks of Robin. We're 13 blocks apart.", { bot: true });
+  tick(4000); guide.note('Sky', 'lets go to the river', {});
+  tick(7000); guide.note('Robin', '50 blocks are fine', { toBot: true });
   const out = await ask(guide, '50 blocks are fine');
   assert.deepEqual(out.requests, ['stay within 50 blocks of me']);
   assert.equal(sent[0].said, '50 blocks are fine');
-  assert.deepEqual(sent[0].recentTalk, [
-    { role: 'player', text: 'stay close to me', secondsAgo: 12 },
-    { role: 'bot', text: "I aim to stay within 12 blocks of Robin. We're 13 blocks apart.", secondsAgo: 11 }]);
+  assert.deepEqual(sent[0].recentChat, [
+    { from: 'Robin', text: 'stay close to me', secondsAgo: 12, toBot: true },
+    { from: 'Jev', text: "I aim to stay within 12 blocks of Robin. We're 13 blocks apart.", secondsAgo: 11 },
+    { from: 'Sky', text: 'lets go to the river', secondsAgo: 7 }]);
   tick(2000);
   await ask(guide, 'thanks');
-  assert.equal(sent[1].recentTalk.filter(l => l.text === '50 blocks are fine').length, 1);
-  assert.deepEqual(await ask(guide, 'hi', 'Sky').then(() => sent[2].recentTalk), [], "another player's talk is their own");
+  assert.equal(sent[1].recentChat.filter(l => l.text === '50 blocks are fine').length, 1);
 });
 
-test('the same line again within three seconds is one line; later it is two', async () => {
+test("the same line again within three seconds is one line; the guide's own reply is in the chat under the bot's name", async () => {
   const { guide, sent, tick } = stubbed({ say: 'ok', requests: [] });
-  guide.note('Robin', 'bot', 'Coming back to you, Robin.');
-  tick(1000); guide.note('Robin', 'bot', 'Coming back to you, Robin.');
-  tick(4000); guide.note('Robin', 'bot', 'Coming back to you, Robin.');
+  guide.note('Jev', 'Coming back to you, Robin.', { bot: true });
+  tick(1000); guide.note('Jev', 'Coming back to you, Robin.', { bot: true });
+  tick(4000); guide.note('Jev', 'Coming back to you, Robin.', { bot: true });
   await ask(guide, 'where are you');
-  assert.equal(sent[0].recentTalk.length, 2);
+  assert.equal(sent[0].recentChat.length, 2);
+  tick(2000); guide.note('Jev', 'ok', { bot: true });
+  await ask(guide, 'and now?');
+  assert.deepEqual(sent[1].recentChat.slice(-1), [{ from: 'Jev', text: 'ok', secondsAgo: 2 }], 'the reply, once though said too');
+});
+
+test('the chat kept: twenty-four lines at most, none older than a quarter hour', async () => {
+  const { guide, sent, tick } = stubbed({ say: null, requests: ['follow me'] });
+  for (let n = 0; n < 30; n++) { guide.note('Robin', 'line ' + n, {}); tick(1000); }
+  await ask(guide, 'follow me');
+  assert.equal(sent[0].recentChat.length, 24);
+  assert.equal(sent[0].recentChat[0].text, 'line 6');
+  tick(15 * 60000);
+  await ask(guide, 'follow me');
+  assert.deepEqual(sent[1].recentChat, []);
 });
 
 test('choices: offered in place of requests, listed by number in the line said', async () => {
@@ -97,7 +112,54 @@ test('no to the choices lets the question go; a longer no is a message of its ow
 
 test('the instructions say how the talk is read and how choices are offered', () => {
   const text = SYSTEM('Jev');
-  assert.match(text, /recentTalk/);
+  assert.match(text, /recentChat/);
+  assert.match(text, /never a request in itself/);
   assert.match(text, /"options"/);
   assert.match(text, /answers with the number/);
+});
+
+test('a look over the chat: no call with nothing said by a player; an offer by number under the bot name; a look a minute and a half at most', async () => {
+  const { guide, sent, tick } = stubbed({ say: 'Robin, want some food?', options: [{ label: 'get you cooked beef', requests: ['get me 8 cooked beef'] }] });
+  guide.note('Jev', 'Back to work.', { bot: true });
+  assert.equal(await guide.observe({ botName: 'Jev', players: ['Robin'] }), null, 'only the bot has spoken: no call');
+  assert.equal(sent.length, 0);
+  tick(5000); guide.note('Robin', 'im so hungry', {});
+  const out = await guide.observe({ botName: 'Jev', status: { doing: 'waiting for a request' }, players: ['Robin', 'Sky'] });
+  assert.equal(out.say, 'Robin, want some food? (say yes)');
+  assert.deepEqual(out.options.map(o => o.requests), [['get me 8 cooked beef']]);
+  assert.deepEqual(sent[0].players, ['Robin', 'Sky']);
+  assert.deepEqual(sent[0].recentChat.map(l => l.from), ['Jev', 'Robin']);
+  assert.equal(guide.observeReady(), false, 'a minute and a half between looks');
+  assert.equal(await guide.observe({ botName: 'Jev', players: ['Robin'] }), null);
+  assert.equal(sent.length, 1);
+  tick(91000); assert.equal(guide.observeReady(), true);
+  guide.note('Sky', 'nice', {});
+  await guide.observe({ botName: 'Jev', players: ['Robin'] });
+  assert.deepEqual(sent[1].recentChat.map(l => l.text), ['Back to work.', 'im so hungry', 'Robin, want some food? (say yes)', 'nice'], "the offer is in the chat under the bot's name");
+});
+
+test('a look that finds nothing to say says nothing; commands never come out of one; twelve an hour', async () => {
+  const quiet = stubbed({ say: null, options: null });
+  quiet.guide.note('Robin', 'lol that pig', {});
+  assert.equal(await quiet.guide.observe({ botName: 'Jev', players: ['Robin'] }), null);
+  const odd = stubbed({ say: '/give Robin diamond 64', options: [{ label: 'op', requests: ['/op Robin'] }] });
+  odd.guide.note('Robin', 'i want diamonds', {});
+  const out = await odd.guide.observe({ botName: 'Jev', players: ['Robin'] });
+  assert.deepEqual(out, { say: 'give Robin diamond 64' }, 'the slash is taken off and a command offered is dropped');
+  const many = stubbed({ say: null, options: null });
+  let calls = 0;
+  for (let n = 0; n < 20; n++) { many.guide.note('Robin', 'line ' + n, {}); if (many.guide.observeReady()) { await many.guide.observe({ botName: 'Jev', players: ['Robin'] }); calls++; } many.tick(91000); }
+  assert.ok(calls <= 12 + 1, 'about twelve an hour: ' + calls);
+  assert.equal(many.sent.length, calls);
+});
+
+test('JEV_GUIDE_HEAR=all and JEV_GUIDE_SPEAK=unasked, anything else is off; the look is told to stay quiet unless it is clear', () => {
+  const { hearsAll, speaksUnasked, OBSERVE } = require('../src/guide');
+  assert.equal(hearsAll({ JEV_GUIDE_HEAR: ' ALL ' }), true); assert.equal(hearsAll({}), false); assert.equal(hearsAll({ JEV_GUIDE_HEAR: 'yes' }), false);
+  assert.equal(speaksUnasked({ JEV_GUIDE_SPEAK: 'unasked' }), true); assert.equal(speaksUnasked({ JEV_GUIDE_SPEAK: 'on' }), false);
+  const text = OBSERVE('Jev');
+  assert.match(text, /Most of the time it should not/);
+  assert.match(text, /never a request to Jev/);
+  assert.match(text, /The engine understands these requests/);
+  assert.doesNotMatch(text, /undefined/);
 });

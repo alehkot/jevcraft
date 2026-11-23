@@ -355,6 +355,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         goal.status = 'blocked'; goal.lastError = err.message; saveGoal(goal);
         observation?.sample('error', { message: err.message }, goal);
         console.error(err); bot.chat(`${friendlyProblem(err)} ${recoveryHint(err)}`);
+        // What the player may try instead: a look over the chat may offer it (JEV_GUIDE_SPEAK=unasked).
+        lookFor++;
       }
     }).finally(() => {
       if (active === session) active = null;
@@ -534,6 +536,28 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     } finally { launchingArms = false; }
   }
 
+  // JEV_GUIDE_SPEAK=unasked: the guide looks over the chat (guide.js observe) and the bot may say something unasked,
+  // with choices offered to every player online, read as any other pick. A line said to the bot meanwhile has its own
+  // answer, and the look's is let go.
+  async function lookOver() {
+    looking = true; lookFor = 0;
+    const asked = lastToBotAt;
+    try {
+      const humans = Object.values(bot.players).map(p => p.username).filter(name => name && name !== bot.username);
+      if (!humans.length) return;
+      const out = await guide.observe({ botName: bot.username, status: guideStatus(humans.includes(lastSpeaker) ? lastSpeaker : humans[0]), players: humans });
+      if (!out) { console.log('[observer] nothing to say'); return; }
+      if (ended || lastToBotAt !== asked || pendingRequests) return;
+      console.log('[observer] ' + JSON.stringify(out.say) + (out.options ? ' -> ' + JSON.stringify(out.options.map(o => o.requests)) : ''));
+      observation?.sample('guide', { observer: true, say: out.say, ...(out.options && { options: out.options.map(o => ({ label: o.label, requests: o.requests })) }) });
+      bot.chat(out.say);
+      if (out.options?.length) {
+        const offer = { kind: 'guide', options: out.options, until: Date.now() + CLARIFY_MS, unasked: true };
+        for (const name of humans) clarifying.set(name, offer);
+      }
+    } finally { looking = false; }
+  }
+
   function launchIdle() {
     bedtime?.cancel().catch(() => {});
     const retained = store.read();
@@ -614,6 +638,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   // One open question per player, answered within a minute and a half or
   // not at all.
   const clarifying = new Map();
+  // A choice offered to every player at once (lookOver) is let go by all when one of them answers it.
+  const dropOffer = offered => { for (const [name, q] of [...clarifying]) if (q === offered) clarifying.delete(name); };
 
   // A build parked on a block someone else put on its site is taken up
   // again by itself once that block is gone (siteChanged in work.js).
@@ -645,6 +671,12 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       if (clarifying.get(guideQueue.from)?.until > now || ['blocked', 'cancelled'].includes(last?.status)) guideQueue = null;
       else if (!last || last.status === 'complete') inject(guideQueue.sender, guideQueue.rest.shift(), guideQueue);
     }
+    // JEV_GUIDE_SPEAK=unasked: a look over the chat once players have talked among themselves (or a request failed) and
+    // the chat has been quiet for eight seconds. Not over a question still open, a message being read, a request in
+    // hand, or the guide's next step for a player (lookOver).
+    if (speakUnasked && guide && lookFor && !looking && !guideBusy && !pendingRequests && !guideQueue?.rest?.length && now - lastChatAt > LOOK_QUIET_MS
+        && !(active && !active.idle && active.goal && !active.goal.weaponErrand && !active.goal.back && !active.goal.dream)
+        && guide.observeReady() && !handoff?.pending?.() && ![...clarifying.values()].some(q => q.until > now)) lookOver().catch(err => console.error('[observer]', err));
     if (waitMode) {
       // JEV_IDLE=wait: nothing is done between requests but answering what would
       // hurt the bot where it stands; a standing dream is still launched, since
@@ -708,23 +740,23 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   // for comes back through this same handler as plain requests, marked so they are not read twice.
   const guide = process.env.JEV_GUIDE_API_KEY ? createGuide({ file: path.join(stateDirectory, `${memoryIdentity}-guide.json`) }) : null;
   const guided = new WeakSet();
-  // Who the bot is talking with: a player who spoke to it in the last three minutes hears its lines in the guide's
-  // talk (guide.js note), so a reply made without the guide ("I aim to stay within 12 blocks") is part of what that
-  // player's next message is read against (2026-11-23: "50 blocks are fine" was read without it).
-  const talkPartners = new Map(), TALK_PARTNER_MS = 180000, notedLines = new WeakSet();
+  // The game chat the guide reads (guide.js note): the bot's own lines as said, and the players' as heard (onPlayerChat):
+  // with JEV_GUIDE_HEAR=all every line, else those to the bot and the answers to its questions. notedLines: the line kept
+  // for each chat message, so that one read twice (a held request let through) is kept once.
+  const hearAll = require('./guide').hearsAll(), speakUnasked = require('./guide').speaksUnasked();
+  const notedLines = new WeakMap();
+  // JEV_GUIDE_SPEAK=unasked: the look over the chat (lookOver): lookFor counts what came since the last look (lines
+  // among the players, a request that failed); lastToBotAt is when a player last spoke to the bot.
+  let lastChatAt = 0, lastToBotAt = 0, lastSpeaker = null, lookFor = 0, looking = false, guideBusy = 0;
+  const LOOK_QUIET_MS = 8000;
   // Inside quietRepeats (spawn): a line it drops was never said.
   function noteOwnLines() {
     if (!guide || typeof bot.chat !== 'function' || bot._notesTalk) return;
     bot._notesTalk = true;
     const say = bot.chat.bind(bot);
     bot.chat = message => {
-      try {
-        const at = Date.now(), text = String(message), lower = text.toLowerCase();
-        for (const [name, last] of [...talkPartners]) if (at - last > TALK_PARTNER_MS) talkPartners.delete(name);
-        // To the player it names, or else to the one who spoke to it last: with two talking, one's answer is not the other's.
-        const recent = [...talkPartners].sort((a, b) => b[1] - a[1]), named = recent.filter(([name]) => lower.includes(String(name).toLowerCase()));
-        for (const [name] of named.length ? named : recent.slice(0, 1)) guide.note(name, 'bot', text);
-      } catch (_) { /* the talk is for the guide; the line is said either way */ }
+      try { guide.note(bot.username, String(message), { bot: true }); lastChatAt = Date.now(); }
+      catch (_) { /* the chat is kept for the guide; the line is said either way */ }
       return say(message);
     };
   }
@@ -784,13 +816,22 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     try { literal = requestedCommand(request, bot.username); }
     catch (err) { console.error(err); bot.chat('I could not use that command. Please check what you asked me to do.'); return; }
     let address = parseAddress(request, bot.username);
-    // What the guide reads the next message against (guide.js note): the player's lines to the bot, addressed or
-    // answering a question it asked, once each, and not the requests the guide itself fed in. Other chat is not kept.
-    const noteHeard = () => {
-      if (!guide || literal || guided.has(data) || notedLines.has(data)) return;
-      notedLines.add(data); talkPartners.set(from, Date.now()); guide.note(from, 'player', address.text);
+    // The game chat the guide reads (guide.js note), each message once: every player's line with JEV_GUIDE_HEAR=all, else
+    // the lines to the bot; an answer to a question the bot asked is marked as said to it (noteHeard). Not the requests
+    // the guide itself fed in.
+    const noteLine = toBot => {
+      if (!guide || literal || guided.has(data)) return;
+      const kept = notedLines.get(data);
+      if (kept) { if (toBot) kept.toBot = true; }
+      else { const entry = guide.note(from, address.text, { toBot }); if (entry) notedLines.set(data, entry); }
+      lastChatAt = Date.now(); lastSpeaker = from;
+      // Said to the bot, it has its answer coming, and no look over the chat is wanted for what came before it. Said
+      // among the players, it is what a look is for (JEV_GUIDE_SPEAK=unasked).
+      if (toBot) { lastToBotAt = Date.now(); lookFor = 0; } else lookFor++;
     };
-    if (address.explicit) noteHeard();
+    const noteHeard = () => noteLine(true);
+    if (address.explicit) noteLine(true);
+    else if (hearAll) noteLine(false);
     // The answer to "may I switch?": yes lets the held request through as it was said.
     const handed = handoff?.answer(from, address.text);
     if (handed) {
@@ -806,7 +847,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       const pick = offered.until > Date.now() && !literal ? require('./guide').pickOption(address.text, offered.options) : null;
       if (pick) {
         noteHeard();
-        clarifying.delete(from);
+        dropOffer(offered); clarifying.delete(from);
         console.log(`[guide] ${from} chose ${JSON.stringify(pick.label)}: ${JSON.stringify(pick.requests)}`);
         observation?.sample('guide', { from, said: address.text, chose: pick.label, requests: pick.requests });
         guideQueue = { sender: data.sender, from, rest: pick.requests.slice(1), useBuildings: !!offered.useBuildings, workSite: offered.workSite };
@@ -814,7 +855,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         return;
       }
       if (offered.until > Date.now() && !literal && require('./guide').declines(address.text)) {
-        noteHeard(); clarifying.delete(from); bot.chat('Okay, never mind.'); return;
+        noteHeard(); dropOffer(offered); clarifying.delete(from); bot.chat('Okay, never mind.'); return;
       }
       if (address.explicit || offered.until <= Date.now()) clarifying.delete(from);
     }
@@ -911,6 +952,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     if (guide && !directDiscovery && !houseIntent && !action && !knownVisit && !guided.has(data) && !literal && !answer && address.explicit && !control.test(address.text)) {
       guideQueue = null;
       bot.swingArm?.('right');
+      guideBusy++;
       guide.consult({ from, text: address.text, botName: bot.username, status: guideStatus(from) }).then(out => {
         if (ended) return;
         if (!out) { passOn(data); return; }
@@ -930,7 +972,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
           const line = useBuildingsNow(from);
           if (!out.say || !/^All right/.test(line)) bot.chat(line);
         }
-      }).catch(err => { console.error('[guide]', err); if (!ended) passOn(data); });
+      }).catch(err => { console.error('[guide]', err); if (!ended) passOn(data); }).finally(() => { guideBusy--; });
       return;
     }
     // Acknowledge instantly. Everything below can wait on the model, and a
