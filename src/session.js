@@ -795,8 +795,9 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   const passOn = data => { guided.add(data); onPlayerChat(data); };
   // `useBuildings`: the player's leave to take from what is built (built.js), carried by the request itself so that
   // one held for a "may I switch?" or waiting its turn in the queue keeps it.
-  // `judged`: from a line taken for the bot without its name (hearOut), which never runs a server command.
-  const inject = (sender, text, { useBuildings = false, workSite, judged = false } = {}) => passOn({ sender, plainMessage: `${bot.username} ${text}`, workSite, ...(useBuildings && { useBuildings: true }), ...(judged && { judged: true }) });
+  // `fromJudged`: fed in from a line taken for the bot without its name (hearOut): never a server command. Not `judged`
+  // itself, which would ask about a chosen build all over again.
+  const inject = (sender, text, { useBuildings = false, workSite, fromJudged = false } = {}) => passOn({ sender, plainMessage: `${bot.username} ${text}`, workSite, ...(useBuildings && { useBuildings: true }), ...(fromJudged && { fromJudged: true }) });
   // The work in hand may use them, said by a player while it runs. -> the line for chat.
   const useBuildingsNow = from => {
     const goal = active && !active.idle ? active.goal : null;
@@ -849,7 +850,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     try { literal = requestedCommand(request, bot.username); }
     catch (err) { console.error(err); bot.chat('I could not use that command. Please check what you asked me to do.'); return; }
     // A slash command runs only as said with the name, never from a line taken for the bot without it (hearOut).
-    if (literal && data.judged) { console.log(`[hear] ${from}: a command said without my name is not run`); return; }
+    if (literal && (data.judged || data.fromJudged)) { console.log(`[hear] ${from}: a command said without my name is not run`); return; }
     let address = parseAddress(request, bot.username);
     // The game chat the guide reads (guide.js note), each message once: every player's line with JEV_GUIDE_HEAR=all, else
     // the lines to the bot; an answer to a question the bot asked is marked as said to it (noteHeard). Not the requests
@@ -887,7 +888,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
           if (no) { bot.chat('Okay, never mind.'); return; }
           console.log(`[guide] ${from} chose ${JSON.stringify(pick.label)}: ${JSON.stringify(pick.requests)}`);
           observation?.sample('guide', { from, said: address.text, chose: pick.label, requests: pick.requests });
-          guideQueue = { sender: data.sender, from, rest: pick.requests.slice(1), useBuildings: !!offered.useBuildings, workSite: offered.workSite, ...(offered.judged && { judged: true }) };
+          guideQueue = { sender: data.sender, from, rest: pick.requests.slice(1), useBuildings: !!offered.useBuildings, workSite: offered.workSite, ...(offered.judged && { fromJudged: true }) };
           inject(data.sender, pick.requests[0], guideQueue);
         };
         // Said without the name after another player has spoken since the offer, a yes or a number may be their answer:
@@ -1036,7 +1037,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         if (out.options?.length) {
           if (said) clarifying.set(from, { kind: 'guide', options: out.options, until: Date.now() + CLARIFY_MS, at: Date.now(), workSite: data.workSite, useBuildings, ...(data.judged && { judged: true }) });
         } else if (out.requests.length) {
-          guideQueue = { sender: data.sender, from, rest: out.requests.slice(1), useBuildings, workSite: data.workSite, ...(data.judged && { judged: true }) };
+          guideQueue = { sender: data.sender, from, rest: out.requests.slice(1), useBuildings, workSite: data.workSite, ...(data.judged && { fromJudged: true }) };
           inject(data.sender, out.requests[0], guideQueue);
         } else if (useBuildings && !out.addedRule) {
           // No request with it: the leave is for the work in hand (a standing rule just stored is for the
@@ -1088,7 +1089,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         if (spec.tasks) for (const child of spec.tasks) child.workSite = data.workSite;
       }
       if (spec.kind === 'operator_command') {
-        if (data.judged) { bot.chat(`Say my name with that one, ${from}.`); return; }
+        if (data.judged || data.fromJudged) { bot.chat(`Say my name with that one, ${from}.`); return; }
         const allowed = (process.env.MC_COMMAND_USERS || '').split(',').map(name => name.trim().toLowerCase());
         if (!allowed.includes(from.toLowerCase())) { bot.chat(`${from} is not enabled for Jev's operator commands`); return; }
         const resolution = literal ? { command: literal } : await classifyCommand(requestClient, bot, request, from);

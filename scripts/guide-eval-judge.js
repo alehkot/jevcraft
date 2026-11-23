@@ -4,13 +4,19 @@
 // real model. A line taken wrongly (false positive) sets the bot to work nobody asked for and counts first; a line
 // missed is left for the player to say again with the name. Costs a cent or two a run. The key is read from
 // JEV_GUIDE_API_KEY or OPENAI_API_KEY and never printed.
-// 26 cases scored, 4 shown only.
+// 30 cases scored (four after a busy afternoon of chat), 4 shown only.
 // usage: node scripts/guide-eval-judge.js <model> <reasoning effort, or - for none sent> <runs per case>
 const { createGuide } = require('../src/guide.js');
 const [model, effort, reps = '3'] = process.argv.slice(2);
 const P = (who, text, toBot) => [who, text, toBot ? { toBot: true } : {}], J = text => ['Jev', text, { bot: true }];
 const TWO = [{ name: 'Sky', blocks: 9 }, { name: 'Robin', blocks: 6 }], ONE = [{ name: 'Robin', blocks: 6 }];
 // [label, meant for the bot (true, false, or null when either is fine), players, chat before the line, [who, line]]
+// Twenty lines of an afternoon before the busy cases: requests and answers, the players' own talk.
+const BUSY = [P('Robin', 'stop', true), J('Stopped. I saved our progress. Say "Jev resume" to keep going.'), P('Robin', 'come here', true), J('Coming to Robin.'), J("I'm here with Robin!"),
+  P('Sky', 'Robin where are you?'), P('Robin', 'at the big tree, come over'), P('Sky', 'ok coming'), P('Robin', 'lets build a tower here later'), P('Robin', 'stay close to me', true),
+  J("I aim to stay within 12 blocks of Robin. We're 3 blocks apart."), P('Robin', '50 blocks are fine', true), J("I aim to stay within 50 blocks of Robin. We're 3 blocks apart."),
+  P('Sky', 'lol the pig is stuck'), P('Robin', 'haha'), P('Robin', 'get me 2 oak logs', true), J("I'll get 2 oak log for Robin."), J('Climbing back up top.'), P('Robin', 'stop', true),
+  J('Stopped. I saved our progress. Say "Jev resume" to keep going.')];
 const cases = [
   ['continues: 50 blocks are fine', true, TWO, [P('Robin', 'stay close to me', true), J("I aim to stay within 12 blocks of Robin. We're 13 blocks apart.")], ['Robin', '50 blocks are fine']],
   ['why not, after a refusal', true, TWO, [P('Sky', 'stay max 50 bloxks away', true), J("Sorry, I can't do that. I can stay close to you (12 blocks).")], ['Sky', 'why not?']],
@@ -37,6 +43,10 @@ const cases = [
   ["answers Sky's question with an order", false, TWO, [P('Robin', 'follow me', true), J('Following you, Robin.'), P('Sky', 'what should I do?')], ['Robin', 'get the wood']],
   ['to Sky too, his name last, while asking the bot', false, TWO, [P('Robin', 'get me 8 oak logs', true), J('On it: 8 oak logs.')], ['Robin', 'you come too dad']],
   ["answers the bot's question past Sky's lol", true, TWO, [J('Which wood, Robin: oak or birch?'), P('Sky', 'lol')], ['Robin', 'birch']],
+  ["busy: yes after Sky's question, the bot's build offer open", false, TWO, [...BUSY, P('Robin', 'build me a house jev', true), J('Robin, shall I build a starter house for two people? (say yes)'), P('Sky', 'Robin are you coming mining?')], ['Robin', 'yes']],
+  ["busy: yes to the bot's build offer, nobody else spoke", true, TWO, [...BUSY, P('Robin', 'build me a house jev', true), J('Robin, shall I build a starter house for two people? (say yes)')], ['Robin', 'yes']],
+  ["busy: sure after Sky's question, the bot's food offer open", false, TWO, [...BUSY, J('Robin, want me to get you some food? (say yes)'), P('Sky', 'Robin, want to come see the cave?')], ['Robin', 'sure']],
+  ['busy: a follow-up to the bot after the players chatted', true, TWO, [...BUSY, P('Robin', 'get me 16 oak logs', true), J('On it: 16 oak logs.'), P('Sky', 'nice')], ['Robin', 'and some coal too']],
   ['alone and hungry', null, ONE, [], ['Robin', 'im so hungry']],
   ["Sky answers the bot's offer to Robin", null, TWO, [J('Robin, want me to get you some food? (say yes)')], ['Sky', 'yes he is hungry']],
   ['praise with the name in it', null, TWO, [J("I've made a stone sword to carry.")], ['Robin', 'nice one jev']],
