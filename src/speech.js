@@ -216,7 +216,8 @@ function completion(goal) {
   // Back with its player after monsters (company.js backDue): said when it set out, not again on arriving.
   if (goal.back) return '';
   // Its own errand for a sword (keep-armed.js): said as it set out; one made from the pockets is not said again.
-  if (goal.weaponErrand) return goal.errandPockets ? '' : `I've made ${/^[aeiou]/i.test(name(goal.item)) ? 'an' : 'a'} ${name(goal.item)} to carry.`;
+  // The first tools (first-tools.js) are quiet step by step: a line as they begin and one when all are made.
+  if (goal.weaponErrand) return goal.errandPockets || goal.mission ? '' : `I've made ${/^[aeiou]/i.test(name(goal.item)) ? 'an' : 'a'} ${name(goal.item)} to carry.`;
   const chest = [goal, ...(goal.tasks || [])].flatMap(g => g.deliveryEvidence || []).filter(e => e.method === 'chest');
   if (chest.length) {
     const places = [...new Set(chest.map(e => `${e.position.x}, ${e.position.y}, ${e.position.z}`))];

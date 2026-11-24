@@ -6,7 +6,9 @@
 //            by day gathering for it as a request would (with three minutes of daylight ahead, and ended while the
 //            daylight left covers a minute and the walk back), by night only from what its pockets make there and then; then back to the player it
 //            waited with, whatever came of it, unless a player stopped it or asked for something else. Three that
-//            come to nothing and it stops trying until it next connects (errandDue here, launchArms in session.js)
+//            come to nothing and it stops trying until it next connects (errandDue here, launchArms in session.js).
+//            While JEV_START=tools's first tools are under way they come first, the stone sword among them
+//            (first-tools.js).
 // Unset: the bot fights with what it happens to carry, as before.
 //
 // Ready is a stone sword or better (stone, copper, iron, diamond, netherite) with ten uses or more left. An axe does
@@ -160,4 +162,4 @@ function errandLine(bot, item, { pockets = false, returnTo = null } = {}) {
   return why + ", so I'm making " + (worn?.name === item ? 'a new one' : a(item)) + (returnTo && !pockets ? '. Back soon, ' + returnTo.name : '') + '.';
 }
 
-module.exports = { mode, bestSword, ready, armed, spareFor, pocketSword, workSword, pocketsMake, carried, dayLeft, errandDue, errandRequest, errandLine, errandOver, backBlocks, walkTicks, a, READY, MIN_USES, REST_MS, ERRAND_MS, ERRAND_REST_MS, ERRAND_TRIES, ERRAND_DAY_LEFT, ERRAND_END_LEFT, WALK_BLOCKS_PER_SECOND };
+module.exports = { mode, bestSword, ready, armed, spareFor, pocketSword, workSword, pocketsMake, carried, dayLeft, errandDue, errandRequest, errandLine, errandOver, backBlocks, walkTicks, usable, overworld, a, READY, MIN_USES, REST_MS, ERRAND_MS, ERRAND_REST_MS, ERRAND_TRIES, ERRAND_DAY_LEFT, ERRAND_END_LEFT, WALK_BLOCKS_PER_SECOND, ERRAND_HEALTH, ERRAND_FOOD };

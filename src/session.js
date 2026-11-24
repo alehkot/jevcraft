@@ -223,6 +223,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     ((bot.game?.dimension !== 'minecraft:overworld' && bot.game?.dimension !== 'overworld' || (bot.time?.timeOfDay ?? 0) < DAY.DUSK) &&
       (bot.health ?? 20) >= 14 && (bot.food ?? 20) >= 12 && !immediateThreat(bot));
   let launchingDream = false;
+  // JEV_START=tools: whether this world is new to the bot, from its survival file before anything is saved to it.
+  const firstJoin = !fs.existsSync(survivalStore.file) && !(memoryIdentity === identity && store.read()?.survival);
   // The old goal's copy only where it can be this world's: with a world id
   // the goal store is still per server.
   const survival = createSurvival(bot, { state: survivalStore.read() || (memoryIdentity === identity ? store.read()?.survival : undefined), client: routed });
@@ -241,6 +243,9 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     trouble: () => !!require('./reactive-wait').emergency(bot) }) : null;
   if (!survivalStore.read() && store.read()?.status === 'cancelled') survival.state.paused = true;
   const saveSurvival = () => { if (!ended) { survival.state.version = 1; survivalStore.save(survival.state); } };
+  // JEV_START=tools: the first tools owed to a world new to the bot, decided once a world (first-tools.js).
+  { const owed = require('./first-tools').onConnect(survival.state, { firstJoin });
+    if (owed) { console.log(owed.skipped ? `[mission] no first tools: ${owed.skipped}` : '[mission] first tools owed: this world is new to me'); saveSurvival(); } }
   const locations = require('./home-location').attachHomeLocation(bot, survival, memory, builds, saveSurvival);
   bot.homeLocation = locations;
   const saveGoal = goal => { if (!ended) { memory.recordGoal(goal, bot); world.harvest(goal); store.save(goal); } };
@@ -346,7 +351,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       if (err.name !== 'Cancelled' && goal.weaponErrand) {
         goal.status = 'complete'; goal.errandFailed = err.message; saveGoal(goal);
         observation?.sample('error', { message: err.message, weaponErrand: true }, goal);
-        console.log(`[weapon] the errand failed: ${err.message}`);
+        console.log(`${goal.mission ? '[mission] the step failed' : '[weapon] the errand failed'}: ${err.message}`);
       } else if (err.name !== 'Cancelled' && goal.back) {
         goal.status = 'complete'; goal.backFailed = err.message; saveGoal(goal);
         observation?.sample('error', { message: err.message, back: true }, goal);
@@ -364,8 +369,10 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       if (goal.back && goal.status === 'complete' && !goal.backFailed && !session.relaunch) require('./company').letGo(bot);
       // The errand for a sword, over. With no sword ready it rests, and counts as one that came to nothing unless a
       // player stopped it or asked for something else. Then back to the player it waited with, as after monsters,
-      // whatever came of it; not when a player stopped or replaced it: they have said what comes next.
-      if (goal.weaponErrand && !session.relaunch) {
+      // whatever came of it; not when a player stopped or replaced it: they have said what comes next. A step of the
+      // first tools has its own (missionStepOver).
+      if (goal.weaponErrand && goal.mission && !session.relaunch) missionStepOver(goal);
+      else if (goal.weaponErrand && !session.relaunch) {
         const arms = require('./keep-armed');
         if (arms.ready(bot)) { armsFailed = 0; attemptsFor(survival).clear('weapon_errand', 'sword'); saveSurvival(); }
         else {
@@ -472,7 +479,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   function launchBack(scare) {
     const seen = bot.players[scare.with]?.entity?.position;
     scare.tries++; scare.triedAt = Date.now();
-    const after = scare.errand ? 'the errand for a sword' : 'the monsters';
+    const after = typeof scare.errand === 'string' ? scare.errand : scare.errand ? 'the errand for a sword' : 'the monsters';
     const goal = { kind: 'come', back: true, request: `come back after ${after}`, from: scare.with, target: scare.with,
       version: 1, status: 'pending', createdAt: new Date().toISOString(), suspendedTasks: suspendPrevious(store.read()),
       requesterPosition: seen ? { ...seen } : { ...scare.position },
@@ -485,8 +492,45 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
 
   // JEV_WEAPON=keep: the waiting bot's errand for a sword (keep-armed.js), looked at every five seconds.
   function errandNow(dark) {
-    return require('./keep-armed').errandDue(bot, { survival, dark, paused: !!survival.state.paused, isSetAside, failures: armsFailed,
-      threatened: require('./danger').threats(bot, 16).some(t => t.visible) });
+    const opts = { survival, dark, paused: !!survival.state.paused, isSetAside, threatened: require('./danger').threats(bot, 16).some(t => t.visible) };
+    // JEV_START=tools: while the first tools are under way they are the errand, the sword among them (first-tools.js).
+    const tools = require('./first-tools');
+    missionCheck();
+    if (tools.underway(survival.state)) return tools.due(bot, opts);
+    return require('./keep-armed').errandDue(bot, { ...opts, failures: armsFailed });
+  }
+  // JEV_START=tools: begun once the world's age is known; done once every step is carried or left out.
+  function missionCheck() {
+    const tools = require('./first-tools'), state = survival.state, began = tools.begin(state, bot);
+    if (began) { console.log(began === 'begun' ? `[mission] first tools begun: the world is ${state.firstTools.age} ticks old` : `[mission] no first tools: ${state.firstTools.skipped}`); saveSurvival(); }
+    if (tools.underway(state) && !tools.left(bot, state).length) missionDone(null);
+  }
+  // All made, or left out: said if a step was begun, and back to the player it was with.
+  function missionDone(returnTo) {
+    const tools = require('./first-tools'), ft = survival.state.firstTools, short = tools.givenUp(bot, survival.state);
+    ft.done = new Date().toISOString(); saveSurvival();
+    const line = ft.said ? tools.doneLine(bot, survival.state) : null, to = returnTo || ft.returnTo;
+    console.log(`[mission] first tools done${short.length ? ', all but ' + short.join(', ') : ''}${line && to ? ', then back to ' + to.name : ''}`);
+    if (line) bot.chat(line);
+    if (line && to) { const scare = require('./company').oweBack(bot, to); if (scare) scare.errand = 'the first tools'; }
+  }
+  // A step over: one more that came to nothing unless it was made, or a player stopped it or asked for something else,
+  // and rested two minutes. The last one: said, and back to the player. One the night ended: back to the player now,
+  // the rest by day.
+  function missionStepOver(goal) {
+    const tools = require('./first-tools'), ft = survival.state.firstTools;
+    if (!ft) return;
+    if (!tools.covered(bot, goal.item) && !goal.errandStopped) {
+      ft.failed = { ...ft.failed, [goal.item]: (ft.failed?.[goal.item] || 0) + 1 };
+      const why = String(goal.errandFailed || goal.errandEnded || 'over without it').slice(0, 160);
+      setAside(survival, 'first_tools', goal.item, why, tools.STEP_REST_MS);
+      console.log(`[mission] no ${goal.item.replaceAll('_', ' ')} (${ft.failed[goal.item]} of ${tools.STEP_TRIES}): ${why}`);
+    }
+    saveSurvival();
+    if (tools.underway(survival.state) && !tools.left(bot, survival.state).length) missionDone(goal.returnTo);
+    else if (goal.errandEnded === 'night is near' && goal.returnTo && !goal.errandStopped) {
+      const scare = require('./company').oweBack(bot, goal.returnTo); if (scare) scare.errand = 'the first tools';
+    }
   }
   function armsDue(now, dark) {
     if (now - armsCheckedAt < 5000 || guideQueue?.rest?.length) return null;
@@ -505,7 +549,10 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       const company = require('./company');
       run = ledger.open({ kind: 'request', name: 'own errand: ' + arms.errandRequest(due.item) });
       const seen = bot._company, now = Date.now();
-      const returnTo = seen && now - seen.at <= company.WITH_MS ? { name: seen.name, position: { ...seen.position } } : null;
+      const withNow = seen && now - seen.at <= company.WITH_MS ? { name: seen.name, position: { ...seen.position } } : null;
+      // A step of the first tools: back, when all are made, to the player it was with when they began or since.
+      const ft = due.mission ? survival.state.firstTools : null;
+      const returnTo = ft ? withNow || ft.returnTo || null : withNow;
       const from = returnTo?.name || bot.username;
       const spec = await interpret(withRun(client, run.id), bot.username + ' ' + arms.errandRequest(due.item), from, bot.username, {
         registry: bot.registry, players: Object.keys(bot.players),
@@ -520,19 +567,35 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       if (!spec || !['craft', 'obtain'].includes(spec.kind) || spec.item !== due.item)
         throw new Error('read as ' + (spec?.kind || 'nothing') + (spec?.item ? ' ' + spec.item : '') + ', not ' + due.item);
       // The total wanted, as at work (workSword): one sword more than is carried, or a worn one would be enough.
-      const goal = { ...spec, count: arms.carried(bot, due.item) + 1, deliver: false, weaponErrand: true, errandPockets: !!due.pockets, returnTo, request: 'make ' + arms.a(due.item) + ' to carry',
+      const goal = { ...spec, count: arms.carried(bot, due.item) + 1, deliver: false, weaponErrand: true, ...(ft ? { mission: true } : {}), errandPockets: !!due.pockets, returnTo, request: 'make ' + arms.a(due.item) + (ft ? ' (my first tools)' : ' to carry'),
         errandUntil: Date.now() + arms.ERRAND_MS, ledgerRun: run.id, version: 1, status: 'pending', createdAt: new Date().toISOString(),
         suspendedTasks: suspendPrevious(store.read()), requesterPosition: null,
         initialInventory: bot.inventory.items().map(i => ({ name: i.name, count: i.count })) };
       saveGoal(goal);
-      console.log('[weapon] errand: ' + goal.request + (due.pockets ? ', from the pockets' : '') + (returnTo ? ', then back to ' + returnTo.name : ''));
-      bot.chat(arms.errandLine(bot, due.item, { pockets: due.pockets, returnTo }));
+      if (ft) {
+        const tools = require('./first-tools');
+        console.log('[mission] step: ' + goal.request + (due.pockets ? ', from the pockets' : '') + (returnTo ? ', back to ' + returnTo.name + ' when all are made' : ''));
+        if (returnTo) ft.returnTo = returnTo;
+        if (!ft.said) { ft.said = new Date().toISOString(); bot.chat(tools.startLine(tools.left(bot, survival.state))); }
+        saveSurvival();
+      } else {
+        console.log('[weapon] errand: ' + goal.request + (due.pockets ? ', from the pockets' : '') + (returnTo ? ', then back to ' + returnTo.name : ''));
+        bot.chat(arms.errandLine(bot, due.item, { pockets: due.pockets, returnTo }));
+      }
       launch(goal);
     } catch (err) {
-      console.log('[weapon] the errand was not begun: ' + err.message);
-      armsFailed++;
       if (run) ledger.close(run.id, 'blocked');
-      setAside(survival, 'weapon_errand', 'sword', String(err.message).slice(0, 160), arms.ERRAND_REST_MS); saveSurvival();
+      if (due.mission) {
+        // One more that came to nothing, as a step that failed (missionStepOver).
+        const tools = require('./first-tools'), ft = survival.state.firstTools;
+        if (ft) ft.failed = { ...ft.failed, [due.item]: (ft.failed?.[due.item] || 0) + 1 };
+        console.log('[mission] the step was not begun: ' + err.message);
+        setAside(survival, 'first_tools', due.item, String(err.message).slice(0, 160), tools.STEP_REST_MS); saveSurvival();
+      } else {
+        console.log('[weapon] the errand was not begun: ' + err.message);
+        armsFailed++;
+        setAside(survival, 'weapon_errand', 'sword', String(err.message).slice(0, 160), arms.ERRAND_REST_MS); saveSurvival();
+      }
     } finally { launchingArms = false; }
   }
 
@@ -677,7 +740,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         // Said with the daylight left and how far the player is, for the walk back after it.
         const arms = require('./keep-armed'), back = arms.backBlocks(active.goal, bot);
         active.goal.errandEnded = over;
-        console.log(`[weapon] the errand was ended: ${over} (${Math.round(Math.min(arms.dayLeft(bot), 24000) / 20)} s of daylight left; ${back == null ? 'nobody to go back to' : Math.round(back) + ' blocks from ' + active.goal.returnTo.name})`);
+        console.log(`${active.goal.mission ? '[mission] the step was ended' : '[weapon] the errand was ended'}: ${over} (${Math.round(Math.min(arms.dayLeft(bot), 24000) / 20)} s of daylight left; ${back == null ? 'nobody to go back to' : Math.round(back) + ' blocks from ' + active.goal.returnTo.name})`);
         stop('interrupted').catch(console.error);
       }
     }
