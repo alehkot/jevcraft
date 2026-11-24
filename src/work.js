@@ -3379,7 +3379,9 @@ function recallWorkstations(bot, goal) {
   for (const key of goal?.placedWorkstations || []) (bot._ownedWorkstations ||= new Set()).add(key);
 }
 
-async function workstation(bot, task, name, goal) {
+// `avoid`: a station's place to pass over, an existing one there and its
+// cell alike (setTableAfresh: a table that made nothing there).
+async function workstation(bot, task, name, goal, { avoid = null } = {}) {
   // Out of the water first. A furnace placed from a flooded pit at the base
   // could not be reached from where the bot floated, nor the table after
   // it: "I can't reach the furnace I placed", again and again.
@@ -3391,8 +3393,10 @@ async function workstation(bot, task, name, goal) {
   // walking back to a distant bench. Existing nearby player tables may still
   // be reused, but only tables placed by this session are collected afterward.
   if (goal?.workSite) await workSites.approach(bot, task, goal.workSite, navigate);
-  const candidates = goal?.workSite ? workSites.stations(bot, name, goal.workSite) :
-    find(bot, [name], name === 'crafting_table' && countOf(bot, name) ? 4 : 32, 8);
+  const avoided = q => !!avoid && q.x === avoid.x && q.y === avoid.y && q.z === avoid.z;
+  const cellOk = (q, options) => !avoided(q) && stationCellOk(bot, goal, q, options);
+  const candidates = (goal?.workSite ? workSites.stations(bot, name, goal.workSite) :
+    find(bot, [name], name === 'crafting_table' && countOf(bot, name) ? 4 : 32, 8)).filter(q => !avoided(q));
   const existing = await approachWorkstation(bot, task, name, candidates);
   if (existing) return existing;
   if (goal?.workSite?.name === name) throw Object.assign(new Blocked(`I cannot reach the ${name.replaceAll('_', ' ')} you chose.`), { needsPlayer: true });
@@ -3404,7 +3408,7 @@ async function workstation(bot, task, name, goal) {
   for (const dy of [0, -1, 1, -2, 2]) for (let dx = -2; dx <= 2 && !p && tries < 3; dx++) for (let dz = -2; dz <= 2 && !p && tries < 3; dz++) {
     if (!dx && !dz) continue;
     const q = o.offset(dx, dy, dz);
-    if (!stationCellOk(bot, goal, q)) continue;
+    if (!cellOk(q)) continue;
     tries++;
     try { await place(bot, task, q, name); }
     catch (err) {
@@ -3422,7 +3426,7 @@ async function workstation(bot, task, name, goal) {
   // placements. A station scope that starts a few blocks off, or a stand in
   // a doorway, had none in reach (rkhazh/jevcraft 45f4d5a3).
   if (!p && tries < 3) {
-    const sites = [], eligible = q => tries < 3 && air(bot.blockAt(q)) && stationCellOk(bot, goal, q, { visibility: false });
+    const sites = [], eligible = q => tries < 3 && air(bot.blockAt(q)) && cellOk(q, { visibility: false });
     for (let dy = -2; dy <= 2; dy++) for (let dx = -8; dx <= 8; dx++) for (let dz = -8; dz <= 8; dz++) {
       if (dx * dx + dz * dz > 64) continue;
       const q = o.offset(dx, dy, dz);
@@ -3435,7 +3439,7 @@ async function workstation(bot, task, name, goal) {
     sites.sort((a, b) => inSight.has(String(b)) - inSight.has(String(a)) || near(a) - near(b));
     if (sites.length) await require('./workstation-access').placeWorkstation(bot, task, name, sites, eligible, async (q, face) => {
       task.check();
-      if (!stationCellOk(bot, goal, q)) return false;
+      if (!cellOk(q)) return false;
       tries++;
       try { await place(bot, task, q, name, { face, stay: true }); }
       catch (err) {
@@ -3479,6 +3483,7 @@ async function workstation(bot, task, name, goal) {
 async function craft(bot, task, step, goal) {
   // A craft that made nothing twice in ten minutes rests, said (note 690).
   const { noteCraftFailure, noteCraftMade, craftRest, forRoom, clearCraftFailures } = require('./craft-failures');
+  const { startCraftTrace } = require('./craft-trace');
   // A craft that made nothing for want of a free slot is not a craft that
   // fails: the room is asked for, every time, before its rest is said
   // (note 754). 25597 (mid-241-ba, 12:12 to 12:19Z) was told "Crafting oak
@@ -3503,7 +3508,9 @@ async function craft(bot, task, step, goal) {
   // the pockets, and no planner path reproduces it offline.
   await settleCraftInventory(bot, task);
   if (!step.needs_table && workSites.forOutput(goal, step.item)) await workSites.approach(bot, task, goal.workSite, navigate);
-  const table = step.needs_table ? await workstation(bot, task, 'crafting_table', goal) : null;
+  let table = step.needs_table ? await workstation(bot, task, 'crafting_table', goal) : null;
+  // Another table is tried once a craft at most (craftAtAnotherTable).
+  let tableMoved = false;
   const id = bot.registry.itemsByName[step.item]?.id;
   const recipe = step.recipe ? new (require('prismarine-recipe')(bot.registry).Recipe)({ result: { id, count: step.recipe.count },
     ...(step.recipe.shape ? { inShape: step.recipe.shape.map(row => row.map(name => name ? bot.registry.itemsByName[name].id : null)) } :
@@ -3571,33 +3578,48 @@ async function craft(bot, task, step, goal) {
     task.check();
     const done = () => countOf(bot, step.item) >= before + recipe.result.count * (n + 1);
     await roomForOutput();
-    try { await openWindow(bot, task, () => bot.craft(recipe, 1, table), { block: table, what: 'the crafting table', timeoutMs: 10000 }); }
-    finally { task.check(); await settleCraftInventory(bot, task); }
-    // A craft whose ingredients were left on the cursor made nothing (both
-    // runs, every ten minutes or so: "cursor oak_planks"). Settled, it is
-    // clicked once more here rather than failing the whole step.
-    try { await waitFor(task, done, 4000); }
-    catch (err) {
-      task.check();
-      // A first try that timed out with no free slot for the output
-      // (a guess that an ingredient stack would empty its slot
-      // did not hold, or the room checked before the batch has since gone)
-      // will time out the same way again: made room first, or fail at once
-      // with that reason, rather than waiting out the same timeout twice
-      // (note 735; 25595's stone pickaxe timed out "after crafting... 0
-      // free slots" and was retried once more, unchanged).
-      if (!fits()) {
-        await makeRoom(bot, task, step.item, { count: made, goal, keep: new Set(Object.keys(step.consumes || {})), away: table?.position, room: fits,
-          purpose: `the craft in hand (${what}), after a first try timed out with no free slot for it` });
-        task.check();
-        if (!fits()) { noteCraftFailure(bot, step.item, `no free slot for the output (${bot.inventory.emptySlotCount?.() ?? '?'} free slots)`); throw new Blocked(`No free slot for the ${what}; the inventory is full`); }
-      }
-      const open = closeStrayWindow(bot);
+    // What the server answers to a table's clicks, said if they make nothing (craft-trace.js).
+    const trace = table ? startCraftTrace(bot) : null;
+    try {
       try { await openWindow(bot, task, () => bot.craft(recipe, 1, table), { block: table, what: 'the crafting table', timeoutMs: 10000 }); }
       finally { task.check(); await settleCraftInventory(bot, task); }
-      try { await waitFor(task, done, 4000, awaitedItem(bot, step.item, before + recipe.result.count * (n + 1), `crafting${table ? ' at a table' : ''}, twice${open ? `, a ${open} window found open between` : ''}`)); }
-      catch (failed) { task.check(); noteCraftFailure(bot, step.item, failed.message.replace(/^Timed out waiting for world\/inventory update: /, 'no output: ')); throw failed; }
-    }
+      // A craft whose ingredients were left on the cursor made nothing (both
+      // runs, every ten minutes or so: "cursor oak_planks"). Settled, it is
+      // clicked once more here rather than failing the whole step.
+      try { await waitFor(task, done, 4000); }
+      catch (err) {
+        task.check();
+        // A first try that timed out with no free slot for the output
+        // (a guess that an ingredient stack would empty its slot
+        // did not hold, or the room checked before the batch has since gone)
+        // will time out the same way again: made room first, or fail at once
+        // with that reason, rather than waiting out the same timeout twice
+        // (note 735; 25595's stone pickaxe timed out "after crafting... 0
+        // free slots" and was retried once more, unchanged).
+        if (!fits()) {
+          await makeRoom(bot, task, step.item, { count: made, goal, keep: new Set(Object.keys(step.consumes || {})), away: table?.position, room: fits,
+            purpose: `the craft in hand (${what}), after a first try timed out with no free slot for it` });
+          task.check();
+          if (!fits()) { noteCraftFailure(bot, step.item, `no free slot for the output (${bot.inventory.emptySlotCount?.() ?? '?'} free slots)`); throw new Blocked(`No free slot for the ${what}; the inventory is full`); }
+        }
+        const open = closeStrayWindow(bot);
+        try { await openWindow(bot, task, () => bot.craft(recipe, 1, table), { block: table, what: 'the crafting table', timeoutMs: 10000 }); }
+        finally { task.check(); await settleCraftInventory(bot, task); }
+        try { await waitFor(task, done, 4000, awaitedItem(bot, step.item, before + recipe.result.count * (n + 1), `crafting${table ? ' at a table' : ''}, twice${open ? `, a ${open} window found open between` : ''}`)); }
+        catch (failed) {
+          task.check();
+          // Only a wait that timed out is a craft that made nothing; anything else unwinds as it did.
+          const nothing = /^Timed out waiting for world\/inventory update/.test(failed.message);
+          if (table && nothing) { trace.stop(); console.log(`[craft] ${what} made nothing at the crafting table at ${table.position}, twice (${tableSays(bot, table)}): ${trace.says()}`); }
+          if (!table || !nothing || tableMoved) { noteCraftFailure(bot, step.item, failed.message.replace(/^Timed out waiting for world\/inventory update: /, 'no output: ')); throw failed; }
+          // At another table, once a craft (setTableAfresh): one of these came out at
+          // once from a second table set down a few blocks over, three seconds after
+          // two clicks at the first had made nothing.
+          tableMoved = true;
+          table = await craftAtAnotherTable(bot, task, goal, step, recipe, table, { done, failed, what, want: before + recipe.result.count * (n + 1), room: roomForOutput });
+        }
+      }
+    } finally { trace?.stop(); }
   }
   noteCraftMade(bot, step.item);
   // A pickaxe made beside another sound one is the spare, kept whole
@@ -3619,6 +3641,92 @@ async function craft(bot, task, step, goal) {
     } catch (err) { task.check(); if (['NeedsAir', 'NeedsSafety', 'Cancelled', 'Stalled'].includes(err.name)) throw err; }
     forgetWorkstation(bot, goal, `crafting_table:${table.position}`);
   }
+}
+
+// Where a crafting table stands, for the line said when a craft there makes
+// nothing: what it stands on, its height from the feet, its distance from
+// the eyes, and whose it is.
+function tableSays(bot, table) {
+  const p = table.position, parts = [`on ${String(bot.blockAt?.(p.offset(0, -1, 0))?.name || 'something unread').replaceAll('_', ' ')}`];
+  const feet = bot.entity?.position;
+  if (feet) {
+    const dy = p.y - Math.floor(feet.y);
+    parts.push(dy === 0 ? 'at the feet' : `${Math.abs(dy)} ${dy > 0 ? 'above' : 'below'} the feet`);
+    parts.push(`${feet.offset(0, bot.entity.eyeHeight || 1.62, 0).distanceTo(p.offset(0.5, 0.5, 0.5)).toFixed(1)} from the eyes`);
+  }
+  parts.push(bot._ownedWorkstations?.has(`crafting_table:${p}`) ? 'set down by the bot' : 'not set down by the bot');
+  return parts.join(', ');
+}
+
+// A table that made nothing twice is left for another. Three table crafts
+// made nothing with the ingredients carried, slots free and no other window
+// open, both clicks each time, each at a table the bot had just set down. At
+// one the wooden pickaxe came out at once from a second table set down a few
+// blocks over, three seconds later; the first was still standing afterwards,
+// on birch leaves at head height. The bot's own table is taken back up, its cell
+// rests (restStationCell) and is passed over, and a table is set down at
+// another cell, or another one near is used. One its work keeps for the
+// next craft (holdWorkstation) is set down afresh too, and stays for that
+// craft. A table it did not set down is left standing, and the table the
+// player chose is the player's to move. Null when no other table could be
+// had: the craft fails as it did.
+const TABLE_MOVE_STOPS = ['NeedsAir', 'NeedsSafety', 'Cancelled', 'Stalled'];
+async function setTableAfresh(bot, task, goal, table) {
+  const at = table.position, key = `crafting_table:${at}`;
+  if (goal?.workSite?.name === 'crafting_table') return null;
+  restStationCell(goal, at, 'crafting_table', 'a craft there made nothing twice');
+  let moved = false;
+  if (bot._ownedWorkstations?.has(key)) {
+    const count = countOf(bot, 'crafting_table');
+    try {
+      await dig(bot, task, at);
+      if (countOf(bot, 'crafting_table') <= count) await navigate(bot, task, new goals.GoalNear(at.x, at.y, at.z, 1));
+      await waitFor(task, () => countOf(bot, 'crafting_table') > count, 4000, () => 'the crafting table picked back up');
+    } catch (err) { task.check(); if (TABLE_MOVE_STOPS.includes(err.name)) throw err; }
+    if (bot.blockAt(at)?.name !== 'crafting_table') { forgetWorkstation(bot, goal, key); moved = countOf(bot, 'crafting_table') > count; }
+  }
+  let next = null;
+  try { next = await workstation(bot, task, 'crafting_table', goal, { avoid: at }); }
+  catch (err) {
+    task.check(); if (TABLE_MOVE_STOPS.includes(err.name)) throw err;
+    console.log(`[craft] no other crafting table to try after the one at ${at}: ${err.message}`);
+    return null;
+  }
+  if (!next?.position || next.position.equals(at)) return null;
+  return { table: next, moved };
+}
+
+// The craft clicked once more at another table, after two clicks at this one
+// made nothing (setTableAfresh). The table it is made at is returned, for the
+// craft's own table to come back into the pack as before. The failure is
+// noted and thrown as it was where no other table could be had, or the craft
+// made nothing there as well.
+async function craftAtAnotherTable(bot, task, goal, step, recipe, table, { done, failed, what, want, room = null }) {
+  const { noteCraftFailure } = require('./craft-failures');
+  const { startCraftTrace } = require('./craft-trace');
+  const noOutput = err => err.message.replace(/^Timed out waiting for world\/inventory update: /, 'no output: ');
+  const from = table.position;
+  const next = await setTableAfresh(bot, task, goal, table);
+  if (!next) { noteCraftFailure(bot, step.item, noOutput(failed)); throw failed; }
+  console.log(`[craft] ${next.moved ? `took the crafting table at ${from} back up and set it down` : `left the crafting table at ${from} for the one`} at ${next.table.position}; the ${what} clicked once more there`);
+  // The table taken back up may have filled the slot the output was to have.
+  if (room) await room();
+  const trace = startCraftTrace(bot);
+  try {
+    try { await openWindow(bot, task, () => bot.craft(recipe, 1, next.table), { block: next.table, what: 'the crafting table', timeoutMs: 10000 }); }
+    finally { task.check(); await settleCraftInventory(bot, task); }
+    await waitFor(task, done, 4000, awaitedItem(bot, step.item, want, `crafting at a table, twice, and once more at another`));
+    // What a craft that works reads like, beside the one that did not.
+    trace.stop();
+    console.log(`[craft] the ${what} came out at the crafting table at ${next.table.position} (${tableSays(bot, next.table)}): ${trace.says()}`);
+    return next.table;
+  } catch (err) {
+    task.check();
+    trace.stop();
+    console.log(`[craft] ${what} made nothing at the crafting table at ${next.table.position} either (${tableSays(bot, next.table)}${/^Timed out waiting for world\/inventory update/.test(err.message) ? '' : `; ${err.message}`}): ${trace.says()}`);
+    noteCraftFailure(bot, step.item, noOutput(/^Timed out waiting for world\/inventory update/.test(err.message) ? err : failed));
+    throw err;
+  } finally { trace.stop(); }
 }
 
 // A reserve found before dusk, priced where it is for the reserve alone

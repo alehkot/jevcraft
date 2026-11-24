@@ -133,7 +133,14 @@ function friendlyProblem(error, { known = null } = {}) {
   if (/chest.*(?:lid|open)|free block near you for a chest/i.test(text)) return text;
   if (/handover was interrupted|pickup.*(?:unconfirmed|not confirmed)/i.test(text)) return 'I\'m not sure you got all the items. Please check the ground nearby before asking for more.';
   if (/recipient|player.*(?:visible|loaded)|cannot see|can.t see|pickup.*confirm/i.test(text)) return 'I need you a bit closer so I can give you the items.';
-  if (/inventory.*full|inventory space|free.*slot/i.test(text)) return 'My pockets are full. I need to make some room.';
+  // A count of free slots is not full pockets: "(have 0 of 1, 34 free slots)", in
+  // the record of a table craft that made nothing, was said as full pockets with
+  // 34 slots free.
+  if (/inventory.*full|inventory space|\bno free slot|(?<!\d)0 free slots?\b|\bfree slots:? 0(?!\d)/i.test(text)) return 'My pockets are full. I need to make some room.';
+  // A craft that made nothing, said as that: further down its record reads as the
+  // want of a tool (a pickaxe in it) or as trouble thinking (its timed-out wait).
+  const nothing = /^Crafting (.+?) made nothing\b/.exec(text) || /(?:update|no output): (.+?) after crafting\b/.exec(text);
+  if (nothing) return `The ${nothing[1]} didn't come out when I crafted it.`;
   if (/food|hungry|hunger/i.test(text)) return 'I need some food before I can keep going.';
   if (/tool|pickaxe|durability/i.test(text)) return 'I need the right tool before I can keep going.';
   // A search that has found what it looks for and stalls getting to it is
