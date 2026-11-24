@@ -11110,7 +11110,7 @@ async function runGoal(bot, task, goal, store, { maxSteps = Infinity, onStep = (
         await workSites.approach(bot, task, goal.workSite, navigate);
         goal.visitedWorkSite = true; save();
       }
-      if (!endTask && !['come', 'follow'].includes(goal.kind) && await stayClose.regroup(bot, task, navigate, false)) continue;
+      if (!endTask && !stayClose.exempt(bot, goal) && await stayClose.regroup(bot, task, navigate, false)) continue;
       if (!endTask && await sculkStep(bot, task, goal, save, decisionClient, onStep)) { goal.stalls = 0; save(); onStep(goal); continue; }
       // A structure's chest within reach is opened as a rule (looting.js).
       if (goal.kind === 'win' && !endTask && await inCatch(task, goal, () => lootNearby(bot, task, goal, save, lootActions()))) { goal.stalls = 0; save(); onStep(goal); continue; }

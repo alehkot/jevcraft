@@ -3,7 +3,42 @@ const { goals } = require('mineflayer-pathfinder');
 
 const DEFAULT_RADIUS = 12;
 const distance = (p, q) => Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z);
-const preference = bot => bot?.companionMemory?.state?.stayClose;
+// JEV_STAY_CLOSE=<blocks>: with no stay-close of a player's own, the bot keeps within that many blocks of the player it
+// is with (company.js withPlayer), or else the nearest one in sight. Asked for 2026-11-23: "it also by default tries to
+// stay not further than 75 blocks from player". A player's "stay within N blocks" replaces it, and "stop staying
+// close" turns it off until one is asked for again. Unset: no default, as before.
+const defaultRadius = (env = process.env) => { const n = Number(String(env?.JEV_STAY_CLOSE ?? '').trim()); return Number.isSafeInteger(n) && n > 0 ? n : null; };
+const stored = bot => bot?.companionMemory?.state?.stayClose;
+function defaultPlayer(bot) {
+  const online = name => name && name !== bot?.username && bot?.players?.[name];
+  if (online(bot?._company?.name)) return bot._company.name;
+  const me = bot?.entity?.position;
+  let best = null, nearest = Infinity;
+  for (const [name, p] of Object.entries(bot?.players || {})) {
+    const at = p?.entity?.position;
+    if (name === bot?.username || !at || !me) continue;
+    const d = distance(at, me);
+    if (d < nearest) { best = name; nearest = d; }
+  }
+  return best;
+}
+// The stay-close in force: a player's own, else the default, else none. The default is the same object while its
+// player and radius hold: a regroup ends when the preference changes.
+function preference(bot) {
+  const own = stored(bot);
+  if (own?.player) return own;
+  if (own?.off) return null;
+  const radius = defaultRadius();
+  if (!radius) return own;
+  const name = defaultPlayer(bot);
+  if (!name) return null;
+  const last = bot._stayDefault;
+  return last?.player === name && last.radius === radius ? last : (bot._stayDefault = { player: name, radius, byDefault: true });
+}
+// Goals no regroup interrupts: a come or a follow is itself a walk to the player; under the default (not a player's
+// own stay-close) neither is a walk the player sent the bot on: to a place, to find something, down a ladder.
+const SENT = new Set(['visit', 'find', 'climb_ladder']);
+const exempt = (bot, goal) => ['come', 'follow'].includes(goal?.kind) || (SENT.has(goal?.kind) && Boolean(preference(bot)?.byDefault));
 
 function readControl(text) {
   const s = text.toLowerCase().trim().replace(/^(?:please |can you |could you )/,'').replace(/[.!?]+$/, '').trim();
@@ -22,14 +57,16 @@ function status(bot) {
   const p = preference(bot);
   if (!p) return 'Stay-close mode is off.';
   const seen = player(bot);
-  return `I aim to stay within ${p.radius} blocks of ${p.player}. ${seen ? `We're ${Math.round(distance(bot.entity.position, seen.position))} blocks apart.` : "I'll pick that up when I can see them again."}`;
+  return `I aim to stay within ${p.radius} blocks of ${p.player}${p.byDefault ? ' (my default)' : ''}. ${seen ? `We're ${Math.round(distance(bot.entity.position, seen.position))} blocks apart.` : "I'll pick that up when I can see them again."}`;
 }
 
 function applyControl(bot, from, input) {
-  const memory = bot.companionMemory, previous = preference(bot);
+  // The player's own setting before, not the default: "stay close to me" is 12 blocks whatever the default is.
+  const memory = bot.companionMemory, previous = stored(bot);
   if (input.mode === 'status') return status(bot);
   if (input.mode === 'invalid') return 'Give me a positive whole number of blocks.';
-  if (input.mode === 'off') delete memory.state.stayClose;
+  // Off is kept as off while there is a default, or the default would come straight back.
+  if (input.mode === 'off') { if (defaultRadius()) memory.state.stayClose = { off: true }; else delete memory.state.stayClose; }
   else memory.state.stayClose = { player: from, radius: input.radius ?? (previous?.player === from ? previous.radius : DEFAULT_RADIUS) };
   delete bot._closeRegroup;
   memory.flush();
@@ -95,4 +132,4 @@ async function regroup(bot, task, navigate, idle) {
   return true;
 }
 
-module.exports = { readControl, applyControl, status, preference, player, travelScore, biasRoutes, due, regroup };
+module.exports = { readControl, applyControl, status, preference, player, travelScore, biasRoutes, due, regroup, defaultRadius, defaultPlayer, exempt };
