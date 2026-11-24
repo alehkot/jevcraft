@@ -57,6 +57,8 @@ function trimLaid(kept) {
 }
 function noteLaid(bot, now, { at = Date.now(), goal = bot._stalls?.goalOf?.() } = {}) {
   if (!now?.position || !now.name) return;
+  // Never a player's (player-build.js), whichever the game told of first.
+  try { require('./player-build').dropPlaced(bot, now); } catch (_) { /* no record kept */ }
   const k = keyOf(now.position), rec = { name: now.name, at };
   remember(bot._laid ||= new Map(), k, rec);
   if (bot._laid.size > LAID_MOST) bot._laid.delete(bot._laid.keys().next().value);

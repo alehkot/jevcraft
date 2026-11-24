@@ -201,7 +201,13 @@ async function interpret(client, request, from, username, context = {}) {
     }
   } else if (houseMaterial) {
     if (a.material?.choice && a.material.choice !== 'local_wood') spec.material = a.material.choice;
-    else if (!spec.starterBeds) spec.material = 'oak_planks';
+    else {
+      if (!spec.starterBeds) spec.material = 'oak_planks';
+      // local_wood is the model's answer both to "a wooden house" and to a house
+      // said with no material at all. Nothing named: whatever blocks are
+      // quickest here (any-material.js), the planks only the design's own.
+      if (!require('./any-material').namesMaterial(address.text, registry)) spec.anyMaterial = true;
+    }
   }
   return spec;
 }

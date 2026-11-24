@@ -1071,6 +1071,7 @@ function handDiggableExit(bot, { origin = bot.entity.position.floored(), maxHeig
 // under one for twenty minutes saying it could not reach a safe spot. A
 // thin lid of shelter material with open sky above it is dug straight up.
 const LID = new Set(['cobblestone', 'cobbled_deepslate', 'netherrack', 'blackstone', 'dirt', 'oak_planks', 'spruce_planks', 'birch_planks', 'acacia_planks', 'dark_oak_planks', 'jungle_planks', 'mangrove_planks', 'cherry_planks']);
+const MADE_LID = /_planks$|^(?:cobblestone|cobbled_deepslate)$/;
 function lidExit(bot, { origin = bot.entity.position.floored(), maxHeight = 3 } = {}) {
   const x = origin.x, z = origin.z, lid = [];
   for (let y = origin.y + 2; y <= origin.y + 2 + maxHeight; y++) {
@@ -1078,6 +1079,10 @@ function lidExit(bot, { origin = bot.entity.position.floored(), maxHeight = 3 } 
     if (!block) return [];
     if (/_leaves$/.test(block.name) || block.boundingBox !== 'block') continue;
     if (!LID.has(block.name)) return [];
+    // A roof is not a lid (2026-11-24): a bot inside a house, its own (builds.js) or a player's, dug up through it to
+    // go for logs. Its own blocks only, and the ground: what is made (planks, cobblestone) only where it laid it.
+    if (require('./home-base').jevBuilt(bot, block)) return [];
+    if (MADE_LID.test(block.name) && !require('./own-blocks').laidAt(bot, block.position)) return [];
     lid.push(new Vec3(x, y, z));
   }
   if (!lid.length || !surfaceObserver(bot)(new Vec3(x + .5, origin.y + 2 + maxHeight + 1, z + .5))) return [];

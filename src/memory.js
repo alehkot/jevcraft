@@ -12,7 +12,7 @@ const sameOwner = (entry, from) => owner(entry.from) === owner(from);
 const replayable = new Set(['obtain', 'craft', 'bundle', 'house', 'build', 'find', 'visit', 'place_at_site']);
 function intentOf(goal) {
   if (!replayable.has(goal.kind)) return null;
-  return Object.fromEntries(['kind', 'request', 'item', 'count', 'deliver', 'material', 'starterBeds', 'houseDetails', 'workSite', 'discoveryTarget', 'destination', 'tasks']
+  return Object.fromEntries(['kind', 'request', 'item', 'count', 'deliver', 'material', 'anyMaterial', 'starterBeds', 'houseDetails', 'addRoom', 'onto', 'ontoWhat', 'keepWalls', 'workSite', 'discoveryTarget', 'destination', 'tasks']
     .filter(k => goal[k] !== undefined).map(k => [k, k === 'tasks'
       ? goal.tasks.map(t => Object.fromEntries(['kind', 'item', 'count', 'deliver'].map(field => [field, t[field]]))) : structuredClone(goal[k])]));
 }

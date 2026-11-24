@@ -189,6 +189,9 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   // world rather than the request and is shared by every later build.
   const builds = new BuildRegistry(path.join(stateDirectory, `${memoryIdentity}-builds.json`));
   bot.buildRegistry = builds;
+  // What the bot sees players lay (player-build.js): their dirt and stone told from the ground's, kept per world.
+  bot.placedLog = new (require('./player-build').PlacedLog)(path.join(stateDirectory, `${memoryIdentity}-placed.json`));
+  bot.loadPlugin(require('./player-build').placedPlugin);
   // The dream: what the bot works toward when nobody has asked for
   // anything. Kept per world, beside the builds it produces.
   const dreamStore = new GoalStore(path.join(stateDirectory, `${memoryIdentity}-dream.json`));
@@ -1071,6 +1074,14 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     if (require('./built').on() && address.explicit && !literal && !answer && /^(yes,? )?(you (may|can) )?use the buildings?[.!]?$/i.test(normalized)) {
       bot.chat(useBuildingsNow(from)); return;
     }
+    // "Jev, don't cut my wall": the doorway through a player's wall left for them to open (player-build.js leaveDoorway).
+    // Read here too, so it works with the language layer off or out of reach.
+    if (address.explicit && !literal && !answer && require('./player-build').keepWallsRequest(normalized)) {
+      const goal = active && !active.idle ? active.goal : store.read();
+      const line = require('./player-build').leaveDoorway(bot, goal);
+      if (goal?.keepWalls) saveGoal(goal);
+      bot.chat(line); return;
+    }
     // A house asked for without the name (hearOut) is asked about first, as a build is (below): if the line was not for
     // the bot it would cost an afternoon.
     if (data.judged && houseIntent) {
@@ -1308,11 +1319,13 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       saveGoal(goal);
       if (goal.workSite) { const s = goal.workSite; bot.chat(`I'll work beside the ${s.name.replaceAll('_', ' ')} at ${s.position.x}, ${s.position.y}, ${s.position.z}.`); }
       const changing = spec.kind === 'build' && spec.buildContinuation?.name &&
-        { edit: `I'll work out what to change about ${spec.buildContinuation.name}.`,
+        { edit: spec.houseDetails?.room ? `I'll add a room to ${spec.buildContinuation.name}.` : `I'll work out what to change about ${spec.buildContinuation.name}.`,
           finish: `I'll carry on with ${spec.buildContinuation.name}.`,
           repair: `I'll look ${spec.buildContinuation.name} over and put right what is missing.`,
         }[spec.buildContinuation.mode];
       bot.chat(changing ? changing :
+        spec.kind === 'build' && spec.addRoom ? "I'll add a room to your house, on the wall you are looking at." :
+        spec.kind === 'build' && spec.onto === 'asked' ? (spec.ontoWhat === 'roof' ? "I'll have a look at what you've built and put a roof on it." : "I'll have a look at what you've built and finish it.") :
         spec.kind === 'build' ? "I'll make a plan, find a good spot, and build it for you." :
         spec.kind === 'bundle' ? `Working on the whole list: ${bundleSummary(spec)}.` :
         spec.kind === 'find' ? `I will look for ${spec.discoveryTarget.name.replaceAll('_', ' ')} and tell you where I find it.` :

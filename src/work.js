@@ -2058,13 +2058,13 @@ function find(bot, names, distance = 48, count = 32) {
 // post. `noteAs`: with none free found, those passed over are kept with the
 // goal under that resource's name (the line in chat, the last resort).
 function findFree(bot, goal, names, distance = 48, count = 32, { noteAs = null } = {}) {
-  if ((!built.on() || built.allowed(goal)) && !goal?.workSite) return find(bot, names, distance, count);
+  if ((!built.on() || built.allowed(goal)) && !goal?.workSite) return find(bot, names, distance, count).filter(p => !built.ownBuilding(bot, p));
   const ids = names.map(n => bot.registry.blocksByName[n]?.id).filter(n => n !== undefined);
   if (!ids.length) return [];
   const passedOver = [];
   const found = bot.findBlocks({ matching: ids, maxDistance: distance, count,
     useExtraInfo: b => {
-      if (workSites.protects(goal?.workSite, b.position)) return false;
+      if (workSites.protects(goal?.workSite, b.position) || built.ownBuilding(bot, b.position)) return false;
       if (!built.leftAlone(bot, goal, b.position)) return true;
       if (passedOver.length < 8) passedOver.push(b.position);
       return false;
@@ -2540,7 +2540,7 @@ async function workSource(bot, task, step, goal, save, source) {
           const here = bot.entity.position, feet = here.floored();
           next = find(bot, step.sources || [step.block], 6, 24)
             .filter(p => !p.equals(feet.offset(0, -1, 0)) && !reservedForConstruction(goal, p) && !isSetAside(goal, 'reach', p) &&
-              faces.some(f => air(bot.blockAt(p.plus(f)))))
+              !built.leftAlone(bot, goal, p) && faces.some(f => air(bot.blockAt(p.plus(f)))))
             .sort((a, b) => a.distanceTo(here) - b.distanceTo(here))[0] || null;
         }
         if (!next || next.distanceTo(bot.entity.position) > 6 || !workSites.within(workSites.forOutput(goal, step.drops), next)) break;
@@ -5188,6 +5188,8 @@ async function reachableBlocks(bot, task, candidates, { limit = 16, budgetMs = 3
   return reachable;
 }
 
+// The starter house's own check, eased round a player's start (player-build.js).
+const starterCheck = goal => goal.playerBuild ? { ...goal.starterReference, around: require('./player-build').around(goal.playerBuild) } : goal.starterReference;
 async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = () => {}) {
   if (goal.houseDetails && !goal.blueprint) {
     const entry = bot.buildRegistry?.find(goal.houseDetails.target);
@@ -5196,9 +5198,48 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     if (!bot.blockAt(door) || door.distanceTo(bot.entity.position) > 20) {
       await navigate(bot, task, new goals.GoalNear(door.x, door.y, door.z, 3)); return false;
     }
-    const patch = require('./house-details').planFittings(bot, entry, goal.houseDetails);
+    // A room (add-room.js) or the fittings (house-details.js), drawn against the house as it stands.
+    const patch = goal.houseDetails.room
+      ? require('./add-room').planRoom(bot, { entry, room: goal.houseDetails.room, material: goal.anyMaterial ? null : goal.material,
+        claimed: bot.buildRegistry?.claimed(dimensionName(bot), entry.id), near: goal.houseDetails.near || goal.requesterPosition || bot.players?.[goal.from]?.entity?.position })
+      : require('./house-details').planFittings(bot, entry, goal.houseDetails);
     goal.buildId = entry.id; goal.blueprint = patch.blueprint; goal.buildOwned = patch.owned;
+    // A room is the house's from the start (rememberFittings, and again once it is done): the notes hold it while it is
+    // built, so no search for dirt or stone takes its floor or its new walls (built.js ownBuilding).
+    if (goal.houseDetails.room) {
+      if (goal.anyMaterial) require('./any-material').markShell(goal);
+      require('./house-details').rememberFittings(bot, goal);
+    }
+    if (patch.said) bot.chat(patch.said);
     save();
+    return false;
+  }
+  // A room on a player's house (add-room.js): the wall they look at, read once and kept.
+  if (goal.addRoom && !goal.blueprint) {
+    // Kept beside the request, not in it: "again" reads the wall looked at then (memory.js intentOf).
+    if (!goal.roomWall) {
+      goal.roomWall = goal.workSite?.position || require('./work-site').resolveLocation(bot, goal.from, { aimed: true }).position;
+      save();
+    }
+    const wall = pos(goal.roomWall);
+    // A wall of the bot's own house after all: its notes say where a room may go, the side looked at first.
+    const own = (bot.buildRegistry?.all(dimensionName(bot)) || []).find(e => (e.blueprint?.blocks || []).some(c => c.x === wall.x && c.y === wall.y && c.z === wall.z));
+    if (own) {
+      goal.houseDetails = { target: own.id, room: goal.addRoom, near: { ...goal.roomWall } };
+      goal.buildContinuation = { mode: 'edit', target: own.id, name: own.name };
+      delete goal.addRoom; save(); return false;
+    }
+    if (!bot.blockAt(wall) || wall.distanceTo(bot.entity.position) > 24) {
+      await navigate(bot, task, new goals.GoalNear(wall.x, wall.y, wall.z, 4)); return false;
+    }
+    const carried = bot.inventory.items().map(i => i.name.replace(/^stripped_|_(?:planks|log)$/g, '')).find(w => bot.registry.itemsByName[w + '_door'] && w !== 'iron');
+    const patch = require('./add-room').planRoom(bot, { wall, room: goal.addRoom, material: goal.anyMaterial ? null : goal.material,
+      claimed: bot.buildRegistry?.claimed(dimensionName(bot)), wood: carried || 'oak', keepWalls: !!goal.keepWalls });
+    goal.blueprint = patch.blueprint; goal.buildOwned = patch.owned; goal.buildName = 'room';
+    // In the notes from the start, as a building is once its site is chosen: no search takes its floor or its walls.
+    if (goal.anyMaterial) require('./any-material').markShell(goal);
+    bot.buildRegistry?.remember(goal, { dimension: dimensionName(bot) });
+    bot.chat(patch.said); save();
     return false;
   }
   if (goal.continueBuild && !goal.blueprint) {
@@ -5228,6 +5269,38 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     }
     return false;
   }
+  // A house asked for from inside a start of the player's, or "finish my house" (player-build.js): drawn round
+  // their blocks rather than sited somewhere else.
+  if (goal.onto === 'asked' && !goal.buildAnchor && !goal.playerBuild && !goal.design && !goal.blueprint) {
+    throw Object.assign(new Blocked("Stand inside what you've built and ask me again, so I can see it."), { needsPlayer: true });
+  }
+  if ((goal.starterBeds || goal.onto === 'asked') && goal.buildAnchor && !goal.ontoChecked && !goal.playerBuild && !goal.design && !goal.blueprint &&
+      !savedForReview && !goal.houseDetails && !goal.buildContinuation && !goal.workSite && !goal.continueBuild) {
+    const spot = pos(goal.buildAnchor);
+    if (bot.entity.position.distanceTo(spot) > 24) { await navigate(bot, task, new goals.GoalNear(spot.x, spot.y, spot.z, 6)); return false; }
+    const pb = require('./player-build'), found = pb.startedAt(bot, goal.buildAnchor), asked = goal.onto === 'asked';
+    // Asked for and not to be had, it is said; resumed, it is looked at afresh.
+    if (asked && found?.tooBig) throw Object.assign(new Blocked('What you built here is more than I can plan round in one go. Stand inside the part you want finished and ask me again.'), { needsPlayer: true });
+    if (pb.meant(found, asked)) {
+      if (!designerAvailable(bot)) {
+        if (asked) throw Object.assign(new Blocked("I need my building designer to work with what you built, and it isn't available right now."), { needsPlayer: true });
+      } else {
+        goal.playerBuild = found;
+        // A house of any blocks round theirs is walled with what theirs is made of, where it can be (any-material.js).
+        if (goal.anyMaterial && found.main && require('./any-material').SHELL.test(found.main)) goal.shellPrefer = found.main;
+        bot.chat(`I'll ${goal.starterBeds ? 'make the house of' : 'build onto'} what you've started here (${found.said}), keeping every block of yours${found.closed ? (goal.keepWalls ? ". There's no way in yet, so I'll ask you to open a doorway" : " but one doorway: there's no way in yet, so I'll cut one through your wall") : ''}.${asked ? '' : ' Ask me from outside it if you meant a house of its own.'}`);
+      }
+    } else if (asked) {
+      // Nothing of theirs here: an unfinished house of the bot's own they stand at is carried on instead.
+      const own = (bot.buildRegistry?.all(dimensionName(bot)) || []).find(e => e.status !== 'complete' && e.blueprint && e.bounds &&
+        ['x', 'y', 'z'].every(k => spot[k] >= e.bounds.min[k] - 4 && spot[k] <= e.bounds.max[k] + 4));
+      if (!own) throw Object.assign(new Blocked("I can't see a house you've started here. Stand inside what you've built and ask me again."), { needsPlayer: true });
+      goal.continueBuild = { id: own.id, mode: 'finish' };
+    }
+    goal.ontoChecked = true;
+    save();
+    if (goal.continueBuild) return false;
+  }
   if (goal.starterBeds && !goal.design && !goal.blueprint && !goal.starterReference) {
     const design = require('./starter-house').designStarterHouse(bot, goal);
     if (!design) {
@@ -5236,10 +5309,27 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     }
     goal.starterReference = { sleepers: goal.starterBeds, material: goal.material, source: design.source };
     save();
-    bot.chat(`I'll build a furnished house for ${goal.starterBeds}. You can drop logs or wool beside me to help.`);
+    if (!goal.playerBuild) bot.chat(goal.anyMaterial
+      ? `I'll build a furnished house for ${goal.starterBeds} from whatever blocks are quickest here. You can drop dirt, cobblestone, planks, logs or wool beside me to help.`
+      : `I'll build a furnished house for ${goal.starterBeds}. You can drop logs or wool beside me to help.`);
+  }
+  // Three drafts that would not keep the player's blocks: built beside them when a house was only asked for, or
+  // left to the player when finishing theirs was.
+  if (goal.playerBuild && !goal.design && !goal.blueprint && !savedForReview &&
+      ((goal.designHistory?.length || 0) >= 3 || (goal.designAttempts || 0) >= 4 || !designerAvailable(bot))) {
+    delete goal.playerBuild;
+    for (const k of ['designDraft', 'designDraftInfo', 'designError', 'designReview']) delete goal[k];
+    if (goal.onto === 'asked' || !goal.starterReference) {
+      // Theirs to finish, never a house of the bot's own instead: resumed, it is looked at and drawn afresh.
+      for (const k of ['ontoChecked', 'designHistory', 'designAttempts']) delete goal[k];
+      save();
+      throw Object.assign(new Blocked(`I couldn't work out a plan that keeps every block of yours where it is. Say Jev resume to let me try again${goal.ontoWhat === 'roof' ? '' : ', or ask me for a house next to it instead'}.`), { needsPlayer: true });
+    }
+    save();
+    bot.chat("I couldn't work out a house plan that keeps all of your blocks, so I'll build my own next to them instead.");
   }
   if (goal.starterReference && !goal.design && !goal.blueprint && !savedForReview &&
-      (!designerAvailable(bot) || goal.designHistory?.length >= 2 || goal.designAttempts >= 4)) {
+      (!designerAvailable(bot) || (!goal.playerBuild && goal.designHistory?.length >= 2) || goal.designAttempts >= 4)) {
     goal.design = { ...validateSchematic(goal.starterReference.source, bot.registry), backend: 'starter-house', createdAt: new Date().toISOString() };
     if (goal.designHistory?.length) bot.chat("I'll use my furnished house plan with the materials I found here.");
     save();
@@ -5262,7 +5352,8 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     if (!fallback && goal.designDraft && goal.designReview?.accepted !== false) {
       try {
         savedDraft = { ...validateSchematic(goal.designDraft, bot.registry, { fromPlanner: true }), backend: 'validated-saved-draft', createdAt: new Date().toISOString(), ...goal.designDraftInfo };
-        if (goal.starterReference) require('./starter-house').checkStarterDesign(savedDraft, goal.starterReference);
+        if (goal.playerBuild) require('./player-build').checkOnto(savedDraft, goal.playerBuild);
+        if (goal.starterReference) require('./starter-house').checkStarterDesign(savedDraft, starterCheck(goal));
         delete goal.designFallbackReason;
       }
       catch (error) { savedDraft = null; goal.designError = error.message; }
@@ -5291,7 +5382,7 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     let design = savedDraft;
     if (!design) try { design = fallback ? await designWithJev(bot, task, goal.request, client, goal.memoryContext) :
         await designBuilding(bot, task, goal.request, { previousDraft: goal.designDraft, feedback: goal.designError, memory: goal.memoryContext, editing,
-          starter: goal.starterReference, anchor: goal.workSite?.position || goal.buildAnchor }); }
+          starter: goal.starterReference, anchor: goal.workSite?.position || goal.buildAnchor, onto: goal.playerBuild }); }
     catch (err) {
       if (!fallback && ['Cancelled', 'NeedsAir', 'NeedsSafety'].includes(err.name)) goal.designAttempts--;
       goal.designError = err.message;
@@ -5311,7 +5402,8 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
       delete goal.designReview; goal.designDraft = design.source;
       goal.designDraftInfo = { model: design.model, backend: design.backend, world: design.world, createdAt: design.createdAt }; save();
       let review;
-      try { review = await reviewDesign(client, { request: goal.request, design, memory: goal.memoryContext, editing }); }
+      try { review = await reviewDesign(client, { request: goal.request, design, memory: goal.memoryContext,
+        editing: editing || (goal.playerBuild && { name: 'what a player has begun here, kept as it stands and finished by this design', size: goal.playerBuild.size }) }); }
       catch (err) { if (!savedDraft && ['Cancelled', 'NeedsAir', 'NeedsSafety'].includes(err.name)) goal.designAttempts--; save(); throw err; }
       task.check();
       goal.designReview = review;
@@ -5332,6 +5424,7 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     save();
     const changing = goal.buildContinuation?.mode === 'edit' && goal.buildContinuation.name;
     bot.chat(changing ? `I've worked out how to change ${changing}. Starting on it now.`
+      : goal.playerBuild ? `I've planned ${goal.design.source.name} round what you built. Starting on it now.`
       : `I've planned ${goal.design.source.name}! I'll find a good spot and start building.`);
     return false;
   }
@@ -5340,7 +5433,7 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     // A house approved by an older version can still be waiting for a site.
     // Recheck it while a redraw can be made without moving anything in the world.
     if (goal.starterReference && goal.design.backend !== 'starter-house') {
-      try { require('./starter-house').checkStarterDesign(schematic, goal.starterReference); }
+      try { require('./starter-house').checkStarterDesign(schematic, starterCheck(goal)); }
       catch (error) {
         goal.designDraft = schematic.source;
         goal.designError = error.message;
@@ -5364,7 +5457,30 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     const offset = edited && schematic.existingOffset;
     if (edited && !offset) throw Object.assign(new Blocked('I need a drawing anchored to the original building before making this change.'), { needsPlayer: true });
     const origin = edited && require('./house-details').drawingForEdit(edited).origin;
-    const at = offset ? { x: origin.x - offset[0], y: origin.y - offset[1], z: origin.z - offset[2] } : undefined;
+    // What they built may have changed while it was drawn: looked at again, and drawn again if the plan no longer
+    // keeps it (not while someone is waited on to step aside).
+    if (!edited && goal.playerBuild && !goal.asideSince) {
+      const pb = require('./player-build'), now = pb.startedAt(bot, goal.buildAnchor);
+      if (now && !now.tooBig && JSON.stringify(now.cells) !== JSON.stringify(goal.playerBuild.cells)) {
+        goal.playerBuild = now;
+        try { pb.checkOnto(schematic, now); } catch (err) {
+          goal.designDraft = schematic.source; goal.designError = err.message; goal.designReview = { accepted: false };
+          (goal.designHistory ||= []).push({ at: new Date().toISOString(), error: err.message });
+          goal.designHistory = goal.designHistory.slice(-4);
+          delete goal.design; delete goal.designDraftInfo;
+          save();
+          bot.chat("What you built has changed since I planned round it. I'll draw it again.");
+          return false;
+        }
+      }
+    }
+    // Drawn round a player's start (player-build.js): it stands exactly over their blocks, kept as they are.
+    const fit = !edited && goal.playerBuild ? require('./player-build').checkOnto(schematic, goal.playerBuild) : null;
+    const ontoAt = fit && goal.playerBuild.origin, ontoOffset = fit && schematic.existingOffset;
+    const at = offset ? { x: origin.x - offset[0], y: origin.y - offset[1], z: origin.z - offset[2] }
+      : fit ? { x: ontoAt.x - ontoOffset[0], y: ontoAt.y - ontoOffset[1], z: ontoAt.z - ontoOffset[2] } : undefined;
+    const keep = fit ? require('./player-build').keepOf(goal.playerBuild, fit.doorway) : undefined;
+    const opening = fit?.doorway.length ? new Set(fit.doorway.map(p => `${p.x},${p.y},${p.z}`)) : undefined, cutting = !goal.keepWalls;
     // The design is the only party that saw the ground and the building
     // together, so its choice of spot is tried first. It is a suggestion, not
     // an instruction: a player's "here" still wins, and code searches on its
@@ -5381,7 +5497,53 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     }
     const nearbyRadius = goal.workSite ? undefined : goal.starterBeds && (!goal.buildContinuation || goal.buildContinuation.placement === 'anywhere') ? 24 : undefined;
     goal.blueprint = selectSchematicSite(bot, schematic, { anchor: goal.buildAnchor, prefer: proposed, owned, protect, at, baseY: proposed?.y,
-      allowPreserved: !goal.starterBeds, nearbyRadius, landmark: goal.workSite });
+      allowPreserved: !goal.starterBeds || !!fit, nearbyRadius, landmark: fit ? undefined : goal.workSite, keep, doorway: opening, cut: cutting });
+    if (!goal.blueprint && fit) {
+      // Someone, or something, standing where a block of it goes: waited for a minute and a half, the plan kept.
+      const why = [];
+      // Anchored like the first try, so it is this spot or none, never ground found elsewhere.
+      const open = selectSchematicSite(bot, schematic, { anchor: goal.buildAnchor, owned, protect, at, allowPreserved: true, keep, doorway: opening, cut: cutting, bodies: false, why });
+      if (open) {
+        const inWay = e => !!e?.position && open.blocks.some(p => e.position.x + 0.35 > p.x && e.position.x - 0.35 < p.x + 1 &&
+          e.position.z + 0.35 > p.z && e.position.z - 0.35 < p.z + 1 && e.position.y + (e.height || 1.8) > p.y && e.position.y < p.y + 1);
+        const body = Object.values(bot.entities || {}).find(e => e !== bot.entity && e.name !== 'item' && inWay(e));
+        const what = body?.type === 'player' || body?.name === 'player' ? 'player' : body?.name ? String(body.name).replaceAll('_', ' ') : null;
+        goal.asideSince ||= Date.now();
+        if (Date.now() - goal.asideSince > 90000) {
+          delete goal.asideSince; save();
+          throw Object.assign(new Blocked(`${what ? `A ${what}` : 'Something'} is standing where part of the house goes${body ? `, at ${pos(body.position.floored())}` : ''}. When it's out of the way, say Jev resume.`), { needsPlayer: true });
+        }
+        if (!(Date.now() - (goal.askedAside || 0) < 30000)) {
+          goal.askedAside = Date.now();
+          bot.chat(what === 'player' ? "Could you step aside? You're standing where part of the house goes." : `There's ${what ? `a ${what}` : 'something'} where part of the house goes. I'll start once it moves.`);
+        }
+        save(); await sleep(2000); return false;
+      }
+      // Else drawn again, told why, in the drawing's own coordinates.
+      const local = p => `[${p.x - at.x},${p.y - at.y},${p.z - at.z}]`;
+      const nameAt = p => (bot.blockAt(pos(p))?.name || 'something').replaceAll('_', ' ');
+      // Nothing to step onto outside the door: on flat ground round their blocks, the drawing's floor at the wrong height.
+      const groundY = goal.playerBuild?.groundY, offsetY = schematic.existingOffset?.[1];
+      const level = Number.isFinite(groundY) && Number.isFinite(offsetY) && offsetY !== -groundY
+        ? `. Your y 0 is laid level with the top of the ground, which is at their y ${groundY}, so the y of existingOffset should be ${-groundY}, not ${offsetY}` : '';
+      const reasons = why.map(w => w.reason === 'entrance' ? (w.step
+          ? `outside your entrance, at ${local(w.cells[0])}, there is nothing to step onto: your doorway's floor is above the ground there${level}`
+          : `outside your entrance, at ${local(w.cells[0])}, there is ${nameAt(w.cells[0])} in the way`)
+        : w.reason === 'bed' ? `a bed at ${w.cells.map(local).join(' and ')} stands in or on something that stays there`
+        : `${w.cells.length} cells of your drawing hold things that stay there and are not theirs: ${w.cells.slice(0, 8).map(p => `${local(p)} ${nameAt(p)}`).join(', ')}`);
+      goal.designDraft = schematic.source;
+      goal.designError = `it cannot stand over the player's blocks where they are: ${reasons.join('; ') || 'the ground round them does not take it'}. Keep new blocks, beds and the way in off those cells, or make them part of a wall`;
+      goal.designReview = { accepted: false };
+      (goal.designHistory ||= []).push({ at: new Date().toISOString(), error: goal.designError });
+      goal.designHistory = goal.designHistory.slice(-4);
+      delete goal.design; delete goal.designDraftInfo; delete goal.asideSince;
+      save();
+      bot.chat("That plan doesn't fit the ground round your blocks. I'll draw it again.");
+      return false;
+    }
+    if (fit) delete goal.asideSince;
+    // The doorway to be cut through their wall, for "Jev, don't cut my wall" to take back (player-build.js leaveDoorway).
+    if (fit?.doorway.length && cutting && goal.blueprint) goal.blueprint.cut = fit.doorway.map(p => ({ ...p }));
     if (!goal.blueprint && !goal.workSite && proposed) goal.blueprint = selectSchematicSite(bot, schematic, { owned, protect });
     // A dream's anchor is where the village would like the next part,
     // not where a player pointed. When nothing fits there, anywhere near will do.
@@ -5407,18 +5569,30 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     save();
     const reworking = goal.buildContinuation?.mode === 'edit' && goal.buildContinuation.name;
     bot.chat(reworking ? `Reworking ${reworking} at ${pos(goal.blueprint.origin)}.`
+      : fit ? `Building ${goal.design.source.name} onto what you built, at ${pos(goal.blueprint.origin)}.`
       : `Building ${goal.design.source.name} near ${pos(goal.blueprint.origin)}.`);
     // Something castle-sized is hours of placing blocks by hand. Say so at
     // the start, while stopping it is still a cheap decision for the player.
     const effort = buildEffort(goal.blueprint);
     if (effort) bot.chat(`That is a big one: ${effort.blocks} blocks, so give me about ${effort.spoken}. Say "Jev stop" if that is too long.`);
-    if (goal.blueprint.preserved?.length) {
+    if (fit?.doorway.length) {
+      const door = fit.doorway.reduce((a, b) => (a.y <= b.y ? a : b));
+      bot.chat(cutting ? `There's no way into your walls, so I'll cut the doorway at ${door.x}, ${door.y}, ${door.z}. Say "Jev, don't cut my wall" if you'd rather open it yourself.`
+        : `There's no way into your walls yet, so the door goes through them at ${door.x}, ${door.y}, ${door.z}. Break the two blocks there when you're ready, and I'll carry on.`);
+    } else if (!fit && goal.blueprint.preserved?.length) {
       bot.chat(reworking
         ? `${goal.blueprint.preserved.length} blocks in the way there are not mine, so I'll work around them.`
         : `There are ${goal.blueprint.preserved.length} blocks already there. I'll build around them rather than take them down.`);
     }
   }
   const blueprint = goal.blueprint;
+  // A house asked for with no material named (any-material.js): its plain
+  // shell takes any sound block, painted for the pack before each batch.
+  // A building finished or repaired later keeps its marks.
+  const anyShell = require('./any-material');
+  // A house's own entry is only written over when the change to it is done (rememberFittings).
+  if (goal.anyMaterial && anyShell.markShell(goal)) { if (!goal.houseDetails) bot.buildRegistry?.remember(goal, { dimension: dimensionName(bot) }); save(); }
+  const flexible = blueprint.blocks.some(c => c.flexible);
   if (!bot.blockAt(pos(blueprint.origin))) {
     const p = pos(blueprint.entrance);
     await navigate(bot, task, new goals.GoalNear(p.x, p.y, p.z, 2)); return false;
@@ -5451,7 +5625,7 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     obstructions = obstructions.filter(p => !leftAround.has(cellKey(p)));
     if (!missing.length && !obstructions.length) {
       const names = around.accept(bot, goal, canClearSchematicBlock);
-      if (names.length) { bot.buildRegistry?.remember(goal, { dimension: dimensionName(bot) }); bot.chat(`I built around your ${around.said(names)}.`); }
+      if (names.length) { if (!goal.houseDetails) bot.buildRegistry?.remember(goal, { dimension: dimensionName(bot) }); bot.chat(`I built around your ${around.said(names)}.`); }
       save(); return false;
     }
   }
@@ -5477,6 +5651,7 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
   if (!goal.buildBatch || !remainingBuildBatch(bot, goal.buildBatch).length) {
     delete goal.buildBatch;
     if (missing.length) {
+      if (flexible) anyShell.paint(bot, goal, pending);
       const stock = planningInventory(bot);
       goal.buildBatch = createBuildBatch(bot, pending, outputs => catalogPlan(bot, outputs, undefined, stock, goal), stock, goal.starterBeds ? 16 : undefined);
       save();
@@ -5485,6 +5660,7 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
   const batch = goal.buildBatch;
   if (await takeOutBatch(bot, task, goal, save)) return false;
   if (batch) {
+    if (flexible && anyShell.repaintBatch(bot, goal, batch)) save();
     const cells = remainingBuildBatch(bot, batch), outputs = materialCounts(cells);
     if (bot.game.gameMode === 'creative') for (const output of outputs) output.count = 1;
     if (batch.phase === 'gather' || outputs.some(o => !countOf(bot, o.item))) {
@@ -5516,10 +5692,12 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
   const placements = availablePlacements.filter(p => p.position.y === layer);
   const passage = goal.starterBeds ? require('./construction-access').entrancePassage(blueprint) : new Set();
   const interior = furnishing ? new Set(blueprint.empty.map(p => `${p.x},${p.y},${p.z}`)) : new Set();
+  // What stands where the upper half of a door or the head of a bed is to go comes out now, even the bot's own dirt.
+  const halfWay = new Set(blockedParts.map(p => `${p.x},${p.y},${p.z}`));
   const clearing = obstructions.filter(p => {
     const k = `${p.x},${p.y},${p.z}`;
     const block = bot.blockAt(pos(p));
-    return block?.diggable && (!missing.length || passage.has(k) || interior.has(k) ||
+    return block?.diggable && (!missing.length || passage.has(k) || interior.has(k) || halfWay.has(k) ||
       !['dirt', 'cobblestone'].includes(block.name) || goal.buildOwned?.[k] !== (block.stateId ?? block.name));
   }).sort((a, b) => b.y - a.y).map(p => ({ position: p, operation: 'dig', cleanup: true,
     // Rock is dug from the face inward. A cell walled in on every side cannot
@@ -5587,12 +5765,16 @@ async function executeConstructionWork(bot, task, goal, save, work) {
     // unexpected replacement after resume.
     let confirmed = false;
     const changed = packet => { if (packet.location?.x === p.x && packet.location.y === p.y && packet.location.z === p.z) confirmed = packet.type === 0; };
+    // Only a block of two halves (a door, a bed) goes as one. Two wall blocks where a door is to go come out one at
+    // a time (a room's doorway, add-room.js), the other keeping its ownership until it is dug in turn.
+    const dug = bot.blockAt(p), halves = props => ['lower', 'upper'].includes(props?.half) || ['head', 'foot'].includes(props?.part);
+    const together = footprint.filter(part => pos(part).equals(p) || (halves(dug?.getProperties?.()) && bot.blockAt(pos(part))?.name === dug.name));
     bot._client.on('block_change', changed);
     try {
       await dig(bot, task, p, { requireDrops: false });
-      await waitFor(task, () => confirmed && footprint.every(part => air(bot.blockAt(pos(part)))), 5000);
+      await waitFor(task, () => confirmed && together.every(part => air(bot.blockAt(pos(part)))), 5000);
     } finally { bot._client.removeListener('block_change', changed); }
-    for (const part of footprint) delete goal.buildOwned?.[`${part.x},${part.y},${part.z}`];
+    for (const part of together) delete goal.buildOwned?.[`${part.x},${part.y},${part.z}`];
     // Retain the original name: grass and water can change state naturally.
   } else {
     let placed = false;

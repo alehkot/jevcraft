@@ -25,6 +25,8 @@
 //   a block of the ground's own kinds (a log, cobblestone, terracotta) with
 //     NEAR or more made things of a wall, floor or roof in the 5x5x5 cells
 //     round it: a house's corner post, its footing.
+//   any block the bot saw a player lay (player-build.js), whatever its kind:
+//     a first night's dirt hut, a cobblestone pillar.
 // Ore and what grows are never part of a building: a mine's timbers beside
 // an iron vein do not close the vein, and a village's ripe wheat is taken
 // and sown again as before (villages.js).
@@ -84,6 +86,11 @@ function own(bot, p, goal) {
   try { return !!require('./own-blocks').laidAt(bot, p, goal); } catch (_) { return false; }
 }
 
+// Seen laid by a player (player-build.js), whatever it is: their dirt is not the ground's.
+function seenLaid(bot, p) {
+  try { return !!require('./player-build').seenPlaced(bot, p); } catch (_) { return false; }
+}
+
 // The made blocks of a building in the cells round p, the bot's own not
 // counted, read no further than `enough`.
 function structureRound(bot, p, { goal = null, read = reader(bot), enough = NEAR, radius = RADIUS } = {}) {
@@ -108,7 +115,7 @@ function builtAt(bot, p, goal = bot?._goal) {
   if (hit && now - hit.at < FRESH_MS) return hit.built;
   const read = reader(bot), name = read(x, y, z), cell = new Vec3(x, y, z);
   const built = !!name && !NOTHING.test(name) && !grows(name) && !own(bot, cell, goal) &&
-    (made(name) || structureRound(bot, cell, { goal, read }) >= NEAR);
+    (made(name) || seenLaid(bot, cell) || structureRound(bot, cell, { goal, read }) >= NEAR);
   if (kept.size >= 8192) kept.clear();
   kept.set(k, { at: now, built });
   return built;
@@ -119,8 +126,18 @@ const allowed = goal => !!(goal && goal.allowBuilt);
 const family = name => /_log$|_stem$|_wood$|_hyphae$/.test(name || '') ? 'wood' : name;
 // The last resort taken for this kind of block, and no other.
 const opened = (goal, name) => !!(goal?.builtLastResort && name && goal.builtLastResort[family(name)]);
+// The bot's own buildings as they stand (home-base.js jevBuiltAt): never a
+// source, whatever the mode or the player's word about the others'. A house
+// of dirt and cobblestone (any-material.js) has no made block to tell it by,
+// and its walls were the nearest dirt to the next "get dirt". Not noted as
+// passed over (noteSkipped): no last resort ever opens them.
+function ownBuilding(bot, p) {
+  if (!p || !bot?.buildRegistry) return false;
+  try { return require('./home-base').jevBuiltAt(bot, p); } catch (_) { return false; }
+}
 // The question every search and every chosen block is put to.
 function leftAlone(bot, goal, p) {
+  if (ownBuilding(bot, p)) return true;
   if (!on() || allowed(goal) || !builtAt(bot, p, goal)) return false;
   return !(goal?.builtLastResort && opened(goal, reader(bot)(Math.floor(p.x), Math.floor(p.y), Math.floor(p.z))));
 }
@@ -255,5 +272,5 @@ function permit(bot, goal, by) {
   return true;
 }
 
-module.exports = { mode, on, made, structure, grows, structureRound, builtAt, allowed, leftAlone, noteSkipped, seenFor, hint, lastResort, refuse, permit, recall, woodInView,
+module.exports = { mode, on, made, structure, grows, structureRound, builtAt, allowed, leftAlone, ownBuilding, noteSkipped, seenFor, hint, lastResort, refuse, permit, recall, woodInView,
   RADIUS, NEAR, LAST_RESORT_LEGS, LAST_RESORT_MS, BREAK_MS, GIVE_UP_LEGS };

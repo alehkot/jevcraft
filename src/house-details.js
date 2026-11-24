@@ -25,8 +25,21 @@ function houseRequest(raw, registry) {
     .trim()
     .replace(/[.!?]+$/, '')
     .replace(/^(?:(?:please|can you|could you|would you)[, ]+)+/, '');
+  // "...but don't cut my walls": a doorway through the player's wall is theirs to open (player-build.js).
+  const leave = require('./player-build').LEAVE_WALLS_CLAUSE.exec(text);
+  if (leave) {
+    const rest = (text.slice(0, leave.index) + text.slice(leave.index + leave[0].length)).replace(/\s+/g, ' ').trim();
+    const intent = rest && houseRequest(rest, registry);
+    return intent ? { ...intent, keepWalls: true } : null;
+  }
+  // A room added to a house (add-room.js).
+  const room = require('./add-room').roomRequest(text, registry);
+  if (room) return room;
+  // A start of the speaker's own to build onto (player-build.js).
+  const onto = require('./player-build').ontoRequest(text, registry);
+  if (onto) return onto;
   const create =
-    /^(?:help (?:me|us) (?:to )?)?(?:build|make|construct) (?:me |us )?(?:a |an )?(.*?)\b(house|home|cabin|hut|cottage)\b(?: (?:for (?:the )?|with )(.+))?$/.exec(
+    /^(?:help (?:me|us) (?:to )?)?(?:build|make|construct) (?:me |us )?(?:a |an )?(.*?)\b(house|home|cabin|hut|cottage)\b(?: (?:right )?here)?(?: (?:for (?:the )?|with )(.+))?$/.exec(
       text
     );
   if (create && !/\b(?:for|in|to)\b/.test(create[1])) {
@@ -42,7 +55,10 @@ function houseRequest(raw, registry) {
     const capacity =
       create[3] && /^(?:(?:two|2) or )?(two|three|2|3)(?: (?:people|players|beds|of us))?$/.exec(create[3]);
     if (create[3] && !capacity) return null;
-    return { starterBeds: capacity && ['3', 'three'].includes(capacity[1]) ? 3 : 2, ...(material && { material }) };
+    // Nothing named to build it of (not even "wooden"): whatever blocks are
+    // quickest here (any-material.js).
+    const anyMaterial = !material && !require('./any-material').namesMaterial(create[1], registry);
+    return { starterBeds: capacity && ['3', 'three'].includes(capacity[1]) ? 3 : 2, ...(material && { material }), ...(anyMaterial && { anyMaterial }) };
   }
   const craft = /^(?:craft|make) (?:(a|one|two|three|\d+) )?(?:(\w+(?:[ _-]\w+)*) )?doors?$/.exec(text);
   if (craft) {
@@ -98,6 +114,22 @@ function houseSpec(intent, request, from, context) {
       'oak';
     return { kind: 'craft', request, from, item: wood + '_door', count: intent.count };
   }
+  // A room for the bot's own house the speaker stands by or points into; else the player's house, whose wall the
+  // player looks at when the work starts (work.js, add-room.js).
+  if (intent.addRoom) {
+    const homes = (context.builds || []).filter((b) => b.kind === 'house' || house.test(b.name) || house.test(b.request));
+    const at = context.workSite?.position || context.speakerPosition;
+    const near = (b, m) => b.bounds && at && ['x', 'y', 'z'].every((k) => at[k] >= b.bounds.min[k] - m && at[k] <= b.bounds.max[k] + m);
+    const target = homes.find((b) => near(b, context.workSite ? 1 : 4));
+    const made = { ...(intent.material && { material: intent.material }), ...(intent.anyMaterial && { anyMaterial: true }), ...(intent.keepWalls && { keepWalls: true }) };
+    if (target)
+      return { kind: 'build', request, from, ...made, houseDetails: { target: target.id, room: intent.addRoom },
+        buildContinuation: { mode: 'edit', target: target.id, name: target.name } };
+    return { kind: 'build', request, from, ...made, addRoom: { ...intent.addRoom } };
+  }
+  // Onto a start of the speaker's (player-build.js): looked for where they stand, when the work begins.
+  if (intent.onto && !intent.starterBeds)
+    return { kind: 'build', request, from, ...intent, ...(context.speakerPosition && { buildAnchor: { ...context.speakerPosition } }) };
   if (intent.starterBeds)
     return {
       kind: 'build',
@@ -158,9 +190,10 @@ function planFittings(bot, entry, { parts, wood }) {
   const structural = (p) =>
     p &&
     !p.properties &&
-    /(?:_planks|_bricks|_terracotta|_concrete|_logs?)$|^(?:stone|cobblestone|sandstone|bricks|terracotta|dirt)$/.test(
-      p.material
-    );
+    (p.flexible ||
+      /(?:_planks|_bricks|_terracotta|_concrete|_logs?)$|^(?:stone|cobblestone|sandstone|bricks|terracotta|dirt)$/.test(
+        p.material
+      ));
   const usable = (p) => {
     const k = key(p),
       before = planned.get(k),
@@ -184,9 +217,12 @@ function planFittings(bot, entry, { parts, wood }) {
     }
   };
   const woods = new Map();
-  for (const c of original.blocks)
-    if (c.material.endsWith('_planks'))
-      woods.set(c.material.slice(0, -7), (woods.get(c.material.slice(0, -7)) || 0) + 1);
+  // A house of any blocks (any-material.js) may have no planks in its walls:
+  // its doors tell its wood then.
+  for (const c of original.blocks) {
+    const wood = /^(.+)_(?:planks|door)$/.exec(c.material)?.[1];
+    if (wood && bot.registry?.itemsByName?.[wood + '_planks']) woods.set(wood, (woods.get(wood) || 0) + 1);
+  }
   const localWood = [...woods].sort((a, b) => b[1] - a[1])[0]?.[0] || 'oak';
   const room = [],
     sides = [];
@@ -377,12 +413,22 @@ function rememberFittings(bot, goal) {
   if (!entry) throw blocked('I cannot find the original house in my building notes.');
   const changes = new Map(goal.blueprint.blocks.map((p) => [key(p), p]));
   const old = entry.blueprint;
+  // A room added (add-room.js) brings its own open cells, and the house grows by it.
+  const opened = (goal.blueprint.empty || []).filter((p) => !changes.has(key(p)));
+  const open = new Set(opened.map(key));
+  const all = [...old.blocks, ...old.empty, ...goal.blueprint.blocks, ...opened];
+  const bounds = goal.blueprint.room
+    ? { min: Object.fromEntries(['x', 'y', 'z'].map((k) => [k, Math.min(old.bounds.min[k], ...all.map((p) => p[k]))])),
+      max: Object.fromEntries(['x', 'y', 'z'].map((k) => [k, Math.max(old.bounds.max[k], ...all.map((p) => p[k]))])) }
+    : old.bounds;
   const blueprint = {
     ...old,
-    blocks: [...old.blocks.filter((p) => !changes.has(key(p))), ...changes.values()],
-    empty: old.empty.filter((p) => !changes.has(key(p)))
+    bounds,
+    blocks: [...old.blocks.filter((p) => !changes.has(key(p)) && !open.has(key(p))), ...changes.values()],
+    empty: [...old.empty.filter((p) => !changes.has(key(p)) && !open.has(key(p))), ...opened]
   };
-  let design = entry.design;
+  // Its drawing no longer holds the house: an edit redraws it from the plan (drawingForEdit).
+  let design = goal.blueprint.room ? null : entry.design;
   if (design?.source) {
     const source = structuredClone(design.source);
     for (const c of changes.values()) {

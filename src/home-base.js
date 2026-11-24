@@ -170,6 +170,13 @@ function plannedCells(bot, now = Date.now()) {
 // its cell is there, in a building finished or given up alike. Ground where
 // the plan has another block, a cell not built yet, a block put in the cell
 // since, are not (claimedCells has them all).
+// The same of a cell, read only where a plan has one (a search asks it of
+// every block it finds).
+function jevBuiltAt(bot, p) {
+  const x = Math.floor(p.x), y = Math.floor(p.y), z = Math.floor(p.z), cell = plannedCells(bot).get(`${x},${y},${z}`);
+  if (!cell) return false;
+  try { return require('./build-blocks').matchesBuildBlock(bot.blockAt(new Vec3(x, y, z)), cell); } catch (_) { return false; }
+}
 function jevBuilt(bot, block) {
   const p = block?.position, cell = p && plannedCells(bot).get(`${p.x},${p.y},${p.z}`);
   return !!cell && require('./build-blocks').matchesBuildBlock(block, cell);
@@ -1490,6 +1497,6 @@ function homeChores(bot, goal, { now = Date.now() } = {}) {
   return options;
 }
 
-module.exports = { woolSays, cutCobwebs, noSheepSays, searchForSheep, takeHomeBed, bedCarried, placeOriented, isBed, jevBuilt, siteWork, levelSite, clearStray, repairPlot, HOME_REACH, BREAD_WHEAT, layout, inside, baseAnchor, siteFits, chooseBaseSite, establishHome, homeOf, homeDistance, goHome, plotStatus, bedStatus, penStatus,
+module.exports = { woolSays, cutCobwebs, noSheepSays, searchForSheep, takeHomeBed, bedCarried, placeOriented, isBed, jevBuilt, jevBuiltAt, siteWork, levelSite, clearStray, repairPlot, HOME_REACH, BREAD_WHEAT, layout, inside, baseAnchor, siteFits, chooseBaseSite, establishHome, homeOf, homeDistance, goHome, plotStatus, bedStatus, penStatus,
   woolCarried, woodSpecies, homeStage, homeComplete, homeStep, tillPlot, plantPlot, harvestPlot, placeBed, claimBed, buildPen, gatherWool, lureCows, breedCows, takeSteak, bake,
   homeFood, eatFromHome, homeChores };

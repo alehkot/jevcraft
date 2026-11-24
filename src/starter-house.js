@@ -57,7 +57,7 @@ function designStarterHouse(bot, goal) {
   return { ...validateSchematic(design, bot.registry), backend: 'starter-house', createdAt: new Date().toISOString() };
 }
 
-function checkStarterDesign(design, { sleepers, material }) {
+function checkStarterDesign(design, { sleepers, material, around }) {
   const { source, blocks, materials } = design, [w, h, d] = source.size;
   const byPosition = new Map(blocks.map(p => [[p.x, p.y, p.z].join(','), p]));
   const cell = (x, y, z) => byPosition.get([x, y, z].join(','));
@@ -99,17 +99,19 @@ function checkStarterDesign(design, { sleepers, material }) {
   const living = walk(false), interior = walk(true);
   const usableFrom = (area, p) => p && p.y === entrance?.y &&
     buildFootprint(p).some(c => sides.some(([dx, dz]) => area.has(key(c.x + dx, c.z + dz))));
-  const separate = usableFrom(living, sofa) && usableFrom(interior, chest) &&
+  // Round a player's start (player-build.js, around) one room may be all their walls allow: each thing usable from inside.
+  const separate = around ? [sofa, chest, ...beds].every(p => usableFrom(interior, p)) : usableFrom(living, sofa) && usableFrom(interior, chest) &&
     beds.every(p => !usableFrom(living, p) && usableFrom(interior, p));
   const lights = blocks.filter(p => p.material === 'torch' && p.y === entrance?.y);
-  const litRooms = lights.some(p => living.has(key(p.x, p.z))) &&
+  const litRooms = around ? lights.some(p => interior.has(key(p.x, p.z))) : lights.some(p => living.has(key(p.x, p.z))) &&
     lights.some(p => interior.has(key(p.x, p.z)) && !living.has(key(p.x, p.z)));
   const roofed = [...interior].every(k => { const [x, z] = k.split(',').map(Number); return covered({ x, y: entrance.y, z }); });
-  if (w > 11 || d > 12 || h > 7 || blocks.length > 380 || !doors.includes(entrance) || (entrance.x !== 0 && entrance.z !== 0 && entrance.x !== w-1 && entrance.z !== d-1) ||
+  const [capW, capH, capD, capBlocks] = around ? [Math.max(11, around.size[0] + 4), Math.max(7, around.size[1] + 3), Math.max(12, around.size[2] + 4), 380 + around.blocks] : [11, 7, 12, 380];
+  if (w > capW || d > capD || h > capH || blocks.length > capBlocks || !doors.includes(entrance) || (entrance.x !== 0 && entrance.z !== 0 && entrance.x !== w-1 && entrance.z !== d-1) ||
       !separate || !roofed || !litRooms ||
       windows.length < 2 || (materials.torch || 0) < 2 || beds.length !== sleepers || !chest || !sofa ||
       ![...beds, chest, sofa].every(covered) || (material && !(materials[material] >= Math.min(w, d) * 2))) {
-    throw new Error('Keep the compact furnished house from the reference: a roofed bedroom and living room, an exterior and an interior door, two windows and floor torches, a usable chest, a two-stair sofa, the requested wall material and bed count.');
+    throw new Error(around ? `Finish it as a furnished house round the player's blocks, within ${capW}x${capH}x${capD}: an entrance door in an outside wall, a roof over all of the inside, two glass windows in the outside walls, two floor torches inside, a usable chest, a two-stair sofa and one bed for each of the ${sleepers} sleepers, each with a standing space beside it reached from the door` : 'Keep the compact furnished house from the reference: a roofed bedroom and living room, an exterior and an interior door, two windows and floor torches, a usable chest, a two-stair sofa, the requested wall material and bed count.');
   }
 }
 

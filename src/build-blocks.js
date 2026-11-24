@@ -2,6 +2,7 @@
 const { Vec3 } = require('vec3');
 const { goals } = require('mineflayer-pathfinder');
 const { isDoor, doorPairMatches } = require('./doors');
+const { fills } = require('./any-material');
 const isBed = name => typeof name === 'string' && name.endsWith('_bed');
 const bedDirections = { north: [0, -1], south: [0, 1], east: [1, 0], west: [-1, 0] };
 const opposite = { north: 'south', south: 'north', east: 'west', west: 'east' };
@@ -67,6 +68,9 @@ function regionProperties(material, value) {
 }
 
 function matchesBuildBlock(block, cell) {
+  // A shell cell of a house asked for with no material takes any sound block
+  // (any-material.js), whoever put it there.
+  if (cell?.flexible) return fills(block);
   if (!block || block.name !== cell.material) return false;
   const observed = block.getProperties?.() || {};
   return Object.entries(cell.properties || {}).every(([key, value]) => String(observed[key]) === String(value));

@@ -126,6 +126,8 @@ async function askServer(bot, cells, { task, waitMs = 400 } = {}) {
     const before = bot.blockAt(cell);
     jobs.push({ cell, ref, before, listen: hear(bot, cell, before?.stateId ?? before?.type) });
   }
+  // What these cells turn out to hold changes the view, not the world: nothing a player laid (player-build.js).
+  bot._viewFixes = { keys: new Set(jobs.map(j => `${j.cell.x},${j.cell.y},${j.cell.z}`)), until: Date.now() + waitMs + 3000 };
   try {
     for (const { ref } of jobs) {
       const f = ref.face;
