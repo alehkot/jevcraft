@@ -187,6 +187,26 @@ test('a running errand ends after eight minutes, or, gathering, with a minute of
   assert.equal(arms.errandOver({ kind: 'craft' }, at(13000), 1000001), null, "a player's own craft");
 });
 
+test('a gathering errand ends while the daylight left covers a minute and the walk back to its player', () => {
+  const robin = { name: 'Robin', position: { x: 0, y: 64, z: 0 } }, far = { x: 120, y: 64, z: 0 };
+  const bot = (timeOfDay, me, seen) => ({ time: { timeOfDay }, entity: { position: me }, players: seen ? { Robin: { entity: { position: seen } } } : {} });
+  const goal = (extra = {}) => ({ weaponErrand: true, errandUntil: Infinity, returnTo: robin, ...extra });
+  assert.equal(arms.walkTicks(120), 1600, '120 blocks at a block and a half a second: 80 seconds');
+  // 120 blocks off with the player out of sight: from where they were. Dark at 12300, so a minute and the walk is 2800 ticks.
+  assert.equal(arms.backBlocks(goal(), bot(9500, far)), 120);
+  assert.equal(arms.errandOver(goal(), bot(9500, far), 0), null);
+  assert.equal(arms.errandOver(goal(), bot(9501, far), 0), 'night is near', 'before the minute a near one would have');
+  // The player in sight 20 blocks off: a minute and 267 ticks.
+  assert.equal(arms.backBlocks(goal(), bot(10833, far, { x: 100, y: 64, z: 0 })), 20);
+  assert.equal(arms.errandOver(goal(), bot(10833, far, { x: 100, y: 64, z: 0 }), 0), null);
+  assert.equal(arms.errandOver(goal(), bot(10834, far, { x: 100, y: 64, z: 0 }), 0), 'night is near');
+  // Nobody to go back to: the minute alone, as before.
+  assert.equal(arms.backBlocks(goal({ returnTo: null }), bot(11000, far)), null);
+  assert.equal(arms.errandOver(goal({ returnTo: null }), bot(11100, far), 0), null);
+  assert.equal(arms.errandOver(goal({ returnTo: null }), bot(11101, far), 0), 'night is near');
+  assert.equal(arms.errandOver(goal({ errandPockets: true }), bot(12000, far), 0), null, 'from the pockets: no walk away to end');
+});
+
 test('pocketsMake with the real recipes (minecraft-data 26.1): a stone sword needs a table or the wood for one; nothing from empty pockets', () => {
   const real = require('minecraft-data')('26.1');
   const carrying = list => ({ registry: real, game: { gameMode: 'survival', dimension: 'overworld' }, inventory: { items: () => list.map(([name, count]) => ({ name, count, durabilityUsed: 0 })) } });

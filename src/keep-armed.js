@@ -3,8 +3,8 @@
 // "jev should always try to carry some weapons and for the very first night getting stone sword at least".
 //   pockets  at work on a request, a sword the pockets make with crafts alone is made before the next step (workSword)
 //   keep     that, and between requests a waiting bot (JEV_IDLE=wait) with no stone sword or better goes and makes one:
-//            by day gathering for it as a request would (with three minutes of daylight ahead, and ended with one
-//            left, so the walk back is made in the light), by night only from what its pockets make there and then; then back to the player it
+//            by day gathering for it as a request would (with three minutes of daylight ahead, and ended while the
+//            daylight left covers a minute and the walk back), by night only from what its pockets make there and then; then back to the player it
 //            waited with, whatever came of it, unless a player stopped it or asked for something else. Three that
 //            come to nothing and it stops trying until it next connects (errandDue here, launchArms in session.js)
 // Unset: the bot fights with what it happens to carry, as before.
@@ -23,9 +23,14 @@ const ERRAND_HEALTH = 12, ERRAND_FOOD = 6;
 const ERRAND_TRIES = 3;             // errands that came to nothing in one connection, then none until the next
 // Gathered for only with three minutes of daylight ahead (company.js darkNow: dark from 12300 to 23500).
 const DUSK = 12300, DAWN = 23500, ERRAND_DAY_LEFT = 3600;
-// A gathering errand is ended with a minute of daylight left: the walk back after it does not look for a player out of
-// sight in the dark (company.js backDue), and a bot cut off at nightfall could spend the night alone and unarmed.
-const ERRAND_END_LEFT = 1200;
+// A gathering errand is ended while the daylight left still covers a minute and the walk back to the player it waited
+// with: the walk back does not look for a player out of sight in the dark (company.js backDue), and a bot cut off at
+// nightfall spends the night alone and unarmed. On the private copy on 2026-11-23 an errand begun at noon, the trees
+// about felled, was ended with a minute left 122 blocks from the player; the night came on the way and the bot
+// sheltered out there. The walk is reckoned at a block and a half a second as the crow flies: the one walk back timed
+// that day was 54 blocks in 25 seconds, over open savanna.
+const ERRAND_END_LEFT = 1200, WALK_BLOCKS_PER_SECOND = 1.5;
+const walkTicks = blocks => Math.ceil(blocks / WALK_BLOCKS_PER_SECOND * 20);
 // Not made at: a come or a follow is the player's to wait on (a guard makes its own first, work.js), and the idle
 // loop and the dream's ladder keep their own.
 const NOT_AT = new Set(['come', 'follow', 'visit', 'climb_ladder', 'survive', 'win']);
@@ -132,11 +137,21 @@ function errandDue(bot, { survival, dark = false, paused = false, threatened = f
   return pocket && pocket !== 'wooden_sword' ? { item: pocket, pockets: true } : { item: 'stone_sword', pockets: false };
 }
 const errandRequest = item => 'craft ' + a(item);
-// Why a running errand ends now, or null: after its eight minutes, or, gathering, with a minute of daylight left.
+// How far the bot is from the player it would walk back to: from where they are when in sight, else from where they
+// were when the errand began (the walk back goes there: company.js backDue); null with nobody to go back to.
+function backBlocks(goal, bot) {
+  const to = goal?.returnTo, me = bot?.entity?.position;
+  if (!to?.name || !me) return null;
+  const at = bot?.players?.[to.name]?.entity?.position || to.position;
+  return at ? Math.hypot(me.x - at.x, me.y - at.y, me.z - at.z) : null;
+}
+// Why a running errand ends now, or null: after its eight minutes, or, gathering, once the daylight left is under a
+// minute and the walk back.
 function errandOver(goal, bot, now = Date.now()) {
   if (!goal?.weaponErrand || goal.errandEnded || goal.errandStopped) return null;
   if (now > (goal.errandUntil || Infinity)) return 'it took too long';
-  return !goal.errandPockets && dayLeft(bot) < ERRAND_END_LEFT ? 'night is near' : null;
+  if (goal.errandPockets) return null;
+  return dayLeft(bot) < ERRAND_END_LEFT + walkTicks(backBlocks(goal, bot) || 0) ? 'night is near' : null;
 }
 // What the bot says as it sets out: what it has, what it makes, and whether it walks off.
 function errandLine(bot, item, { pockets = false, returnTo = null } = {}) {
@@ -145,4 +160,4 @@ function errandLine(bot, item, { pockets = false, returnTo = null } = {}) {
   return why + ", so I'm making " + (worn?.name === item ? 'a new one' : a(item)) + (returnTo && !pockets ? '. Back soon, ' + returnTo.name : '') + '.';
 }
 
-module.exports = { mode, bestSword, ready, armed, spareFor, pocketSword, workSword, pocketsMake, carried, dayLeft, errandDue, errandRequest, errandLine, errandOver, a, READY, MIN_USES, REST_MS, ERRAND_MS, ERRAND_REST_MS, ERRAND_TRIES, ERRAND_DAY_LEFT, ERRAND_END_LEFT };
+module.exports = { mode, bestSword, ready, armed, spareFor, pocketSword, workSword, pocketsMake, carried, dayLeft, errandDue, errandRequest, errandLine, errandOver, backBlocks, walkTicks, a, READY, MIN_USES, REST_MS, ERRAND_MS, ERRAND_REST_MS, ERRAND_TRIES, ERRAND_DAY_LEFT, ERRAND_END_LEFT, WALK_BLOCKS_PER_SECOND };

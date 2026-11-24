@@ -673,7 +673,13 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     // of daylight left; either way the bot then walks back to the player it waited with (keep-armed.js errandOver).
     if (active && !active.idle && active.goal?.weaponErrand) {
       const over = require('./keep-armed').errandOver(active.goal, bot, now);
-      if (over) { active.goal.errandEnded = over; console.log(`[weapon] the errand was ended: ${over}`); stop('interrupted').catch(console.error); }
+      if (over) {
+        // Said with the daylight left and how far the player is, for the walk back after it.
+        const arms = require('./keep-armed'), back = arms.backBlocks(active.goal, bot);
+        active.goal.errandEnded = over;
+        console.log(`[weapon] the errand was ended: ${over} (${Math.round(Math.min(arms.dayLeft(bot), 24000) / 20)} s of daylight left; ${back == null ? 'nobody to go back to' : Math.round(back) + ' blocks from ' + active.goal.returnTo.name})`);
+        stop('interrupted').catch(console.error);
+      }
     }
     if (ready && !pendingRequests && !launchingDream && (!active || active.idle) && now - waitCheckedAt > 5000) {
       waitCheckedAt = now;
