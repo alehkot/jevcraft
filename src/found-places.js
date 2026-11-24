@@ -37,7 +37,7 @@ function foundOptions(bot, goal, { lootActions = null } = {}) {
   const out = {};
   try {
     const ruin = require('./looting').unlootedLandmarks(bot, goal, SCAN).find(l => l.landmark.kind === 'ruined_portal');
-    if (ruin && lootActions) out.visit_ruined_portal = {
+    if (ruin && lootActions) out.visit_ruined_portal = { to: { x: ruin.landmark.x, z: ruin.landmark.z },
       description: `Go to the ruined portal at (${ruin.landmark.x}, ${ruin.landmark.y}, ${ruin.landmark.z}), ${walkSays(bot, ruin.landmark)}, and open its chest: a ruined portal's chest holds gold (nuggets, ingots, sometimes a gold armour piece or tool), flint and steel or a fire charge, obsidian now and then, and sometimes a golden apple.${needsSays(bot, 'ruined_portal')}`,
       run: async (b, t, g, sv) => require('./looting').lootStep(b, t, g, sv, lootActions),
     };
@@ -46,7 +46,7 @@ function foundOptions(bot, goal, { lootActions = null } = {}) {
     const here = bot.entity.position;
     const village = (goal.villages || []).filter(v => !v.lootedAt && String(v.dimension || 'overworld').includes('overworld') && Math.hypot(v.x - here.x, v.z - here.z) <= SCAN)
       .sort((a, b) => Math.hypot(a.x - here.x, a.z - here.z) - Math.hypot(b.x - here.x, b.z - here.z))[0];
-    if (village && lootActions?.navigate) out.visit_village = {
+    if (village && lootActions?.navigate) out.visit_village = { to: { x: village.x, z: village.z },
       description: `Go to the village at (${village.x}, ${village.y}, ${village.z}), ${walkSays(bot, village)}, and open its chests: a village holds ${village.beds ? `${village.beds} beds, ` : ''}${village.hay ? `${village.hay} hay bales (nine wheat each), ` : ''}chests with bread, iron and now and then tools or diamonds, and villagers who trade for emeralds.${needsSays(bot, 'village')}`,
       run: async (b, t, g, sv) => {
         const { goals } = require('mineflayer-pathfinder');

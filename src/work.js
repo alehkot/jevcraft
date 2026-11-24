@@ -8687,7 +8687,7 @@ function idleOptions(bot, goal) {
     if (target) {
       const known = explorationSummary(goal);
       options.explore = { description: `Explore: walk to the nearest unexplored area (${target.fromHere} blocks away) and see what is there. Known so far: ${summaryText(known)}. Villages mean beds, food and trades; a ruined portal or a surface lava pool means obsidian; dungeons, mineshafts and temples mean chests.${tripTime(bot, target.fromHere)}`,
-        walkBlocks: target.fromHere, run: (b, t, g, sv) => exploreStep(b, t, g, sv, { navigate, home, noticeVillage }) };
+        walkBlocks: target.fromHere, to: { x: target.x, z: target.z }, run: (b, t, g, sv) => exploreStep(b, t, g, sv, { navigate, home, noticeVillage }) };
     }
   }
   const sides = sideTrips(bot, goal);
@@ -8722,7 +8722,7 @@ function idleOptions(bot, goal) {
   }
   // Each craft said with what its chain lacks from the pockets, and no walk
   // offered from a cell no walk leaves (option-feasibility.js, note 754).
-  return require('./option-feasibility').screenOffers(bot, goal, options, { withheld: sides.withheld });
+  return stayClose.boundOffers(bot, goal, require('./option-feasibility').screenOffers(bot, goal, options, { withheld: sides.withheld }), { filler: true });
 }
 
 // The trips worth making from wherever the bot is, each already checked
@@ -8817,7 +8817,7 @@ function sideTrips(bot, goal, client) {
   // said (the decision audit).
   const below = unlooted && ['dungeon', 'mineshaft'].includes(unlooted.landmark.kind) ? ` It is underground at y ${Math.round(unlooted.landmark.y ?? bot.entity.position.y)}${unlooted.landmark.kind === 'dungeon' ? ', and its spawner keeps making mobs until it is broken or lit' : ', and a cave spider spawner is common in one'}.` : '';
   if (unlooted) trips.loot = { description: `Loot: walk ${unlooted.distance} blocks to the ${unlooted.landmark.kind.replaceAll('_', ' ')} and open its chests. Ruined portals hold gold, obsidian and flint and steel; dungeons and temples iron, gold, bread and now and then diamonds; a mineshaft's chests ride in minecarts, with rails, iron, gold and bread, and its cobwebs are string.${below}${waitingThere(bot, new Vec3(unlooted.landmark.x, unlooted.landmark.y ?? bot.entity.position.y, unlooted.landmark.z))}${tripTime(bot, unlooted.distance)}`,
-    says: `I'll loot the ${unlooted.landmark.kind.replaceAll('_', ' ')} ${unlooted.distance} blocks away`, walkBlocks: unlooted.distance,
+    says: `I'll loot the ${unlooted.landmark.kind.replaceAll('_', ' ')} ${unlooted.distance} blocks away`, walkBlocks: unlooted.distance, to: { x: unlooted.landmark.x, z: unlooted.landmark.z },
     run: (b, t, g, sv) => lootStep(b, t, g, sv, lootActions()) };
   // The base's bed taken along, with what it buys and what it moves: the
   // user's call (2026-09-26), after the scoreboard put nights at over a
@@ -8830,14 +8830,14 @@ function sideTrips(bot, goal, client) {
   if (home?.bed?.claimedAt && standing && (standing.placed || !standing.loaded) && !hb.bedCarried(bot) && !home.bed.carriedAt && /overworld/.test(String(bot.game?.dimension || ''))) {
     const foot = hb.layout(home).bed.foot, far = Math.round(new Vec3(foot.x, foot.y, foot.z).distanceTo(bot.entity.position));
     trips.take_home_bed = { description: `Take the base's bed along: walk ${far} blocks to it, pick it up and carry it. Then a night on the Overworld passes in seconds wherever it comes: put down in a nook or on open ground, slept in, picked back up. Sleep is refused with a monster within about eight blocks of the bed, and in the Nether or the End a bed set down explodes. The spawn point is wherever the bot last slept: a death sends it there, not to the base, and a death drops the bed with everything else.${tripTime(bot, far)}`,
-      says: 'I\'ll take my bed along', walkBlocks: far,
+      says: 'I\'ll take my bed along', walkBlocks: far, to: { x: foot.x, z: foot.z },
       run: async (b, t, g, sv) => { for (let i = 0; i < 4; i++) if (await hb.takeHomeBed(b, t, g, sv, { navigate, dig, collectNearbyDrops })) return; } };
   }
   // Trading: a village remembered and something to sell or spend (trading.js).
   if (tradeWorthwhile(bot, goal)) {
     const village = require('./villages').knownVillages(bot, goal, 256)[0];
     trips.trade = { description: `Trade at the remembered village${village ? ` ${village.distance} blocks away` : ''}: read the villagers' offers, sell spare coal, sticks, wheat and the like for emeralds, and buy what the run needs (ender pearls, arrows, a bow, better armour or tools, food).${tripTime(bot, village?.distance)}`,
-      says: 'I\'ll go trade at the village', walkBlocks: village?.distance,
+      says: 'I\'ll go trade at the village', walkBlocks: village?.distance, ...(Number.isFinite(village?.x) && Number.isFinite(village?.z) && { to: { x: village.x, z: village.z } }),
       run: (b, t, g, sv) => tradeStep(b, t, g, sv, { navigate, decide, client: client || t.opportunityClient }) };
   }
   // The raw ore carried, smelted all at once: mid-87-a carried eighty-four
@@ -8880,7 +8880,7 @@ function sideTrips(bot, goal, client) {
     const home = goal.survival?.home?.origin;
     const target = unexploredArea(bot, goal, { home });
     if (target) trips.explore = { description: `Explore: walk to the nearest unexplored area (${target.fromHere} blocks away) and see what is there. Known so far: ${summaryText(explorationSummary(goal))}. Villages mean beds, food and trades; temples, shipwrecks and ruined portals mean chests.${tripTime(bot, target.fromHere)}`,
-      says: "I'll go exploring", walkBlocks: target.fromHere, run: (b, t, g, sv) => exploreStep(b, t, g, sv, { navigate, home, noticeVillage }) };
+      says: "I'll go exploring", walkBlocks: target.fromHere, to: { x: target.x, z: target.z }, run: (b, t, g, sv) => exploreStep(b, t, g, sv, { navigate, home, noticeVillage }) };
   }
   // Another biome in view, with what it holds (biomes.js): the ground
   // underfoot decides what a step can find, and a desert has no sheep.
@@ -8897,7 +8897,7 @@ function sideTrips(bot, goal, client) {
   const climbSays = underfoot ? ` Underground here (${up != null ? `about ${up} blocks up to open sky, roughly ${climbMinutes(up)} minutes to climb` : 'how far up is not known'}): the climb to the surface is the first leg, and the walk is on the surface after it.` : '';
   for (const b of require('./exploration').biomeTrips(bot)) {
     trips[`travel_${b.biome}`] = { description: `Travel: walk to ${b.says} and carry on from there.${climbSays}${tripTime(bot, b.distance)}`,
-      says: `I'll head to the ${b.biome.replaceAll('_', ' ')} to the ${b.direction}`, walkBlocks: b.distance,
+      says: `I'll head to the ${b.biome.replaceAll('_', ' ')} to the ${b.direction}`, walkBlocks: b.distance, to: { x: b.x, z: b.z },
       run: async (b2, t, g, sv) => {
         if (!onSurface(b2)) {
           b2.chat?.(`Climbing out first, for the ${b.biome.replaceAll('_', ' ')}.`);
@@ -8981,8 +8981,8 @@ function sideTrips(bot, goal, client) {
   if (enchantReady(bot, goal)) trips.enchant = { description: `Enchant the ${enchantable(bot)[0].item.name.replaceAll('_', ' ')} at the enchanting table with ${bot.experience?.level} levels and the lapis carried: Sharpness, Protection or Power for the fights ahead.`,
     says: `I'll enchant my ${enchantable(bot)[0].item.name.replaceAll('_', ' ')}`,
     run: (b, t, g, sv) => enchantStep(b, t, g, sv, { workstation }) };
-  // No walk offered from a cell no walk leaves (note 754).
-  return require('./option-feasibility').screenOffers(bot, goal, trips);
+  // No walk offered from a cell no walk leaves (note 754); none past the stay-close for work of the bot's own.
+  return stayClose.boundOffers(bot, goal, require('./option-feasibility').screenOffers(bot, goal, trips));
 }
 
 async function idleWork(bot, task, goal, save, client, onStep = () => {}, { acquire = acquireStep, handlers, actions } = {}) {
@@ -11110,7 +11110,7 @@ async function runGoal(bot, task, goal, store, { maxSteps = Infinity, onStep = (
         await workSites.approach(bot, task, goal.workSite, navigate);
         goal.visitedWorkSite = true; save();
       }
-      if (!endTask && !stayClose.exempt(bot, goal) && await stayClose.regroup(bot, task, navigate, false)) continue;
+      if (!endTask && !stayClose.exempt(bot, goal) && await stayClose.regroup(bot, task, navigate, false, goal)) continue;
       if (!endTask && await sculkStep(bot, task, goal, save, decisionClient, onStep)) { goal.stalls = 0; save(); onStep(goal); continue; }
       // A structure's chest within reach is opened as a rule (looting.js).
       if (goal.kind === 'win' && !endTask && await inCatch(task, goal, () => lootNearby(bot, task, goal, save, lootActions()))) { goal.stalls = 0; save(); onStep(goal); continue; }

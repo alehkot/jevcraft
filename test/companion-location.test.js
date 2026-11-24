@@ -107,7 +107,10 @@ test('the path cost grows for outward work, leaves inward and emergency moves al
   assert.ok(Number.isFinite(stepCost(1000,1)));
   assert.equal(stepCost(35,-1), 1);
   bot._turn = { holder: 'vitals' }; assert.equal(stepCost(35,1), 1);
-  delete bot.players.Alex.entity; assert.equal(stepCost(35,1), 1); assert.equal(close.due(bot, true), false);
+  delete bot._turn;
+  // Out of sight: kept to where the player was last seen (stay-close.js anchor), not given up.
+  delete bot.players.Alex.entity; assert.ok(stepCost(35,1) > 1); assert.equal(close.due(bot, true), true);
+  delete bot.players.Alex; assert.equal(stepCost(35,1), 1); assert.equal(close.due(bot, false), false, 'gone: nothing to keep to');
 });
 
 test('regroups with a moving player and leaves uninterrupted work time at a fixed distant job', async () => {

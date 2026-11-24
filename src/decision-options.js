@@ -30,7 +30,8 @@ function failedSeeds(failures, now) {
 
 function resourceSources(bot, candidates, { radius = 6, limit = 4, failures = {}, resting = () => false, now = Date.now(), workSite } = {}) {
   const origin = bot.entity.position;
-  const player = stayClose.player(bot);
+  // Where the player is, or was last seen (stay-close.js anchor): the pull holds out of sight too.
+  const player = stayClose.anchor(bot);
   const cost = player || workSite ? p => stayClose.travelScore(bot, p, workSite?.position) : p => p.distanceTo(origin);
   const failed = failedSeeds(failures, now);
   const remaining = candidates.map(pos).filter(p => !resting(p))
