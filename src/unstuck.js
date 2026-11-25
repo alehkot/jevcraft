@@ -296,7 +296,9 @@ function ofHealth(view, damage) {
 // open cell and the dig of it again, for eighty and ninety minutes (note
 // 615).
 const laidOf = (view, p) => (typeof view.laid === 'function' ? view.laid(p) : null) || null;
-const diggable = (view, p, name) => solid(name) && (natural.test(name) || !!laidOf(view, p));
+// Never a player's block (player-build.js theirsAt), of a natural kind or not.
+const theirsOf = (view, p) => typeof view.theirs === 'function' && !!view.theirs(p);
+const diggable = (view, p, name) => solid(name) && !theirsOf(view, p) && (natural.test(name) || !!laidOf(view, p));
 const hhmm = at => new Date(at).toISOString().slice(11, 16);
 function ownSays(view, p) {
   const laid = laidOf(view, p);
@@ -337,6 +339,7 @@ function risePlan(view, feet, { reach = 48 } = {}) {
       if (rock.length && next != null && open(next) && !isWater(next) && !isLava(next)) { top = y; break; }
       continue;
     }
+    if (theirsOf(view, c)) { blocked = `a ${n.replaceAll('_', ' ')} a player laid in the way at y ${y}`; break; }
     if (!DIGGABLE_ABOVE.test(n) || falls(n)) { blocked = `${n.replaceAll('_', ' ')} in the way at y ${y}${falls(n) ? ', and it would fall on the head' : ''}`; break; }
     if (firstRock === null) firstRock = y;
     rock.push({ y, name: n });
@@ -403,7 +406,7 @@ function swimUp(view, x, y, z, reach) {
       if (water && open(view.name(c.plus(UP)) || 'stone') && !isWater(view.name(c.plus(UP)))) return { cells, water, air: yy, seconds: Math.round(seconds * 10) / 10 };
       cells++; seconds += SWIM_S; continue;
     }
-    if (!DIGGABLE_ABOVE.test(n) || falls(n)) return null;
+    if (!DIGGABLE_ABOVE.test(n) || falls(n) || theirsOf(view, c)) return null;
     cells++; seconds += SWIM_S + (digSeconds(n, view, false) ?? 1.2);
   }
   return null;
@@ -985,11 +988,11 @@ function liveView(bot) {
   for (const i of bot.inventory.items()) carried[i.name] = (carried[i.name] || 0) + i.count;
   let lavaTouch = null;
   try { lavaTouch = terrain.lavaTouchSays(bot); } catch (_) { /* no body to price */ }
-  const { laidAt } = require('./own-blocks');
+  const { laidAt } = require('./own-blocks'), { theirsAt } = require('./player-build');
   const pickaxe = PICKS.find(n => carried[n]) || null;
   const held = pickaxe && bot.inventory.items().find(i => i.name === pickaxe), most = pickaxe && bot.registry?.itemsByName?.[pickaxe]?.maxDurability;
   const pickaxeUses = held && most ? Math.max(0, most - (held.durabilityUsed || 0)) : null;
-  return { name: p => bot.blockAt(p)?.name ?? null, block: p => bot.blockAt(p) ?? null, laid: p => laidAt(bot, p), carried, pickaxe, pickaxeUses,
+  return { name: p => bot.blockAt(p)?.name ?? null, block: p => bot.blockAt(p) ?? null, laid: p => laidAt(bot, p), theirs: p => theirsAt(bot, p), carried, pickaxe, pickaxeUses,
     axe: Object.keys(carried).find(n => n.endsWith('_axe') && !n.endsWith('_pickaxe')) || null, health: bot.health ?? 20, lavaTouch,
     corrections: (() => { try { return bot.serverTruth?.says?.() || null; } catch (_) { return null; } })() };
 }

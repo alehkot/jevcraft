@@ -71,15 +71,25 @@ function laidAt(bot, p, goal = bot._stalls?.goalOf?.()) {
   const k = keyOf(p), rec = bot._laid?.get(k) || goal?.laid?.[k];
   if (!rec) return null;
   let b = null; try { b = bot.blockAt?.(p); } catch (_) { b = null; }
-  if (!b || b.name !== rec.name) { bot._laid?.delete(k); if (goal?.laid && b) delete goal.laid[k]; return null; }
+  if (!b || !(b.name === rec.name || grownOver(rec.name, b.name))) { bot._laid?.delete(k); if (goal?.laid && b) delete goal.laid[k]; return null; }
   return rec;
 }
+// Grass grows over dirt in the light: the bot's dirt still.
+const grownOver = (was, now) => was === 'dirt' && now === 'grass_block';
 
 function ownBlocksPlugin(bot) {
   if (bot._ownBlocksWatched) return;
   bot._ownBlocksWatched = true;
   bot.on?.('blockUpdate', (was, now) => { try { noteChange(bot, was, now); } catch (_) { /* a change missed */ } });
   bot.on?.('blockPlaced', (was, now) => { try { noteLaid(bot, now); } catch (_) { /* a placement missed */ } });
+  // The pathfinder's placements given up on (its 'place_error' resets), the last few: said with a block on a
+  // building's site that no record accounts for (work.js whoseSays).
+  bot.on?.('path_reset', reason => {
+    if (reason !== 'place_error') return;
+    const p = bot.entity?.position, list = bot._placeErrors ||= [];
+    list.push({ at: Date.now(), feet: p ? { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) } : null, held: bot.heldItem?.name ?? null });
+    if (list.length > 8) list.shift();
+  });
 }
 
 // Noted this session merged into the search's record (`state[field]`), and

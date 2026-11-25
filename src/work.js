@@ -113,9 +113,29 @@ class Blocked extends Error { constructor(message) { super(message); this.name =
 // Only a block where the building needs the spot clear comes here now (build-around.js): `why` says what the spot is
 // for; anything else of a player's is built around.
 function siteChanged(bot, p, why) {
+  whoseSays(bot, bot._goal, p);
   const name = bot.blockAt(p)?.name;
   return Object.assign(new Blocked(`The building site changed at ${p}; preserving the unexpected ${name}${why ? ` in ${why}` : ''}. Clear it or request a new build`),
     { needsPlayer: true, waitOn: { x: p.x, y: p.y, z: p.z, name, dimension: String(bot.game?.dimension || 'overworld'), ...(why ? { why } : {}) } });
+}
+
+// What is known of a block on a building's site that no record of the bot's accounts for, written to the log once a
+// minute a cell, before a player is asked about it: the building's record there, the bot's own laid record, a
+// player's, a server correction of the view there, and the pathfinder's placements given up on in the half minute
+// before. In the test window of 2026-11-25 a player was asked to break a dirt the bot had most likely put down
+// itself, and nothing told how it came to have no record of it.
+function whoseSays(bot, goal, p) {
+  try {
+    const k = `${p.x},${p.y},${p.z}`, name = bot.blockAt(p)?.name ?? 'unloaded', now = Date.now(), said = bot._whoseSaid ||= new Map();
+    if (now - (said.get(`${k} ${name}`) || 0) < 60000) return;
+    said.set(`${k} ${name}`, now);
+    const given = (bot._placeErrors || []).filter(e => now - e.at < 30000)
+      .map(e => `${Math.round((now - e.at) / 1000)} s before, from ${e.feet ? `${e.feet.x},${e.feet.y},${e.feet.z}` : 'unknown'} holding ${e.held ?? 'nothing'}`);
+    const at = bot.entity?.position, feet = at ? `${Math.floor(at.x)},${Math.floor(at.y)},${Math.floor(at.z)}` : 'unknown';
+    console.log(`[site] asking about the ${name} at ${k}: the building's record ${JSON.stringify(goal?.buildOwned?.[k] ?? null)}, laid ${JSON.stringify(require('./own-blocks').laidAt(bot, p) ?? null)}, ` +
+      `seen laid by a player ${JSON.stringify(require('./player-build').seenPlaced(bot, p) ?? null)}, the view fixed there ${bot._viewFixes?.keys?.has?.(k) ? (now < bot._viewFixes.until ? 'lately' : 'earlier') : 'no'}, the bot at ${feet}; ` +
+      `placements the pathfinder gave up on: ${given.join('; ') || 'none'}`);
+  } catch (_) { /* the log only */ }
 }
 
 function inventory(bot) {
@@ -5614,7 +5634,8 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
   const around = require('./build-around');
   const foreign = [...missing.flatMap(buildFootprint), ...obstructions].filter(p => {
     const block = bot.blockAt(pos(p));
-    return block && !canClearSchematicBlock(blueprint, goal.buildOwned, block);
+    // A block the bot laid (own-blocks.js) is its own to clear, should the building's record have missed it.
+    return block && !canClearSchematicBlock(blueprint, goal.buildOwned, block) && !require('./own-blocks').laidAt(bot, pos(p));
   });
   const sorted = around.classify(bot, goal, foreign);
   if (sorted.ask) throw siteChanged(bot, pos(sorted.ask), sorted.ask.why);

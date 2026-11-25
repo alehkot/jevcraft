@@ -647,7 +647,8 @@ function schematicScaffolding(bot, goal) {
     const p = new Vec3(...key.split(',').map(Number));
     if (planned.has(key) || p.x < min.x - 3 || p.x > max.x + 3 || p.z < min.z - 3 || p.z > max.z + 3 || p.y < min.y || p.y > max.y + 3) return [];
     const block = bot.blockAt(p);
-    return ['dirt', 'cobblestone'].includes(block?.name) && (block.stateId ?? block.name) === state ? [{ ...p }] : [];
+    // Its dirt grown over with grass is its scaffold still (build-blocks.js matchesOwnership).
+    return ['dirt', 'cobblestone', 'grass_block'].includes(block?.name) && matchesOwnership(block, state) ? [{ ...p }] : [];
   });
 }
 module.exports = { MODEL, designerConfig, generativeAllowed, designerAvailable, LIMITS, CEILING, SECONDS_PER_BLOCK, SURVEY, SCHEMA, designProgress, buildPalette, bedPaintStart, validateSchematic, surveyForDesign, designBuilding, selectSchematicSite, canClearSchematicBlock, schematicScaffolding };

@@ -28,6 +28,8 @@ const FIRE_SIDE_COST = 6;
 const LAVA_SIDE_COST = 6;
 // While blaze rods are carried (note 762, walk-out.js).
 const { ROD_DROP_MAX, ROD_COST } = require('./walk-out');
+// A player's block (player-build.js theirsAt), never dug on a walk.
+const theirsBlock = (bot, block) => { try { return require('./player-build').theirsAt(bot, block.position); } catch (_) { return false; } };
 // The bot's own blocks (SurvivalMovements.safeToBreak), read lazily.
 let ownLaid = null;
 // The lava round a standing cell (note 516's set): the eight cells round it
@@ -188,6 +190,8 @@ class SurvivalMovements extends Movements {
   // packet fence and permits left out.
   safeToBreak(block) {
     if (block?.position && require('./home-base').jevBuilt(this.bot, block)) return false;
+    // Nor a player's block: a hut of their dirt is soft ground to the route otherwise.
+    if (block?.position && theirsBlock(this.bot, block)) return false;
     if (super.safeToBreak(block)) return true;
     if (!this.canDig || !block?.type || !block.position || !this.blocksCantBreak.has(block.type)) return false;
     ownLaid ||= { materials: require('./shelter').buildingMaterials, laidAt: require('./own-blocks').laidAt };
@@ -196,6 +200,18 @@ class SurvivalMovements extends Movements {
     if (!own) return false;
     this.blocksCantBreak.delete(block.type);
     try { return super.safeToBreak(block); } finally { this.blocksCantBreak.add(block.type); }
+  }
+
+  // No scaffold into a cell of the building the bot is at (construction-access.js siteCells) on any walk, not only
+  // on the building's own way to its work. In the test window of 2026-11-25 a dirt turned up in a bed's place, the
+  // cell the bot stood in as it set off from inside the house being built to come at its work another way, on a walk
+  // that could pillar there; with no record of laying it, the bot asked the player to break it.
+  exclusionPlace(block) {
+    const weight = super.exclusionPlace(block);
+    if (weight >= 100 || !block?.position) return weight;
+    let cells = null;
+    try { cells = require('./construction-access').siteCells(this.bot?._goal); } catch (_) { cells = null; }
+    return cells?.has(`${block.position.x},${block.position.y},${block.position.z}`) ? weight + 100 : weight;
   }
 
   getNeighbors(node) {

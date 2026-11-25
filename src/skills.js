@@ -210,6 +210,8 @@ function breakable(bot, block, { natural = false } = {}) {
   if (!block || block.boundingBox !== 'block' || LIQUID.has(block.name) || HAZARD.has(block.name)) return false;
   if (block.name === 'bedrock' || block.diggable === false || MANUFACTURED.test(block.name)) return false;
   if (bot._constructionProtection?.(block) > 0) return false;
+  // Nor a player's block (player-build.js theirsAt).
+  if (block.position && require('./player-build').theirsAt(bot, block.position)) return false;
   if (natural && !softOrLeaves(block) && !/^(stone|deepslate|cobblestone|andesite|diorite|granite|tuff|calcite|sandstone|red_sandstone|netherrack|basalt|blackstone|end_stone|ice|packed_ice|.*_ore|.*_log|.*_wood|mushroom_stem|.*_mushroom_block)$/.test(block.name)) return false;
   // Never open a wall onto liquid.
   for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]]) {
@@ -496,7 +498,7 @@ function repeatStallSays(bot, goal, now = Date.now()) {
 // within four blocks of where the walk is going (the goal itself is not
 // avoided).
 function badSteps(bot, goal, now = Date.now()) {
-  const dim = String(bot.game?.dimension || 'overworld'), there = goalPoint(goal);
+  const dim = String(bot.game?.dimension || 'overworld'), there = goalPoint(goal) || cellPoint(goal);
   return (bot._stallSpots || []).filter(s => s.dim === dim && s.n >= STALL_SPOT_TIMES && now - s.last < STALL_SPOT_MS &&
     !(there && Math.hypot(s.x - there.x, s.y - there.y, s.z - there.z) <= 4));
 }
@@ -685,8 +687,9 @@ async function walkTo(bot, task, goal, { timeoutMs, stallMs, stopWhen, sprint, b
   if (movements && scooped.length) bad.push(...scooped.map(e => ({ x: e.x, y: e.y, z: e.z, lava: true })));
   // And where the ground hurt the bot or its air ran low (noteHazard).
   if (movements) bad.push(...hazardSpots(bot, goal).map(e => ({ x: e.x, y: e.y, z: e.z, hazard: true })));
-  const hadAreas = bad.length && Object.hasOwn(movements, 'exclusionAreasStep'), areasWere = bad.length ? movements.exclusionAreasStep : undefined;
-  if (bad.length) movements.exclusionAreasStep = [...(areasWere || []), block => {
+  const costed = bad.length > 0;
+  const hadAreas = costed && Object.hasOwn(movements, 'exclusionAreasStep'), areasWere = costed ? movements.exclusionAreasStep : undefined;
+  if (costed) movements.exclusionAreasStep = [...(areasWere || []), block => {
     // A block with no place (the pathfinder asks of cells in chunks not
     // loaded): no cost. It threw "Cannot read properties of undefined
     // (reading 'x')" out of the path search, six times in two trials' logs
@@ -700,7 +703,7 @@ async function walkTo(bot, task, goal, { timeoutMs, stallMs, stopWhen, sprint, b
   if (movements) movements.walkGoalY = goalPoint(goal)?.y;
   const deadline = Date.now() + timeoutMs;
   try {
-    let asked = 0;
+    let asked = 0, costFree = false;
     for (let attempt = 0; ; attempt++) {
       task.check(); checkAir(bot);
       if (stopWhen?.()) return;
@@ -709,6 +712,14 @@ async function walkTo(bot, task, goal, { timeoutMs, stallMs, stopWhen, sprint, b
       try { return await navigateAttempt(bot, task, goal, { timeoutMs: remaining, stallMs, stopWhen, walk, from }); }
       catch (err) {
         if (err?.name === 'NeedsAir') noteHazard(bot, bot.entity?.position, 'its air ran low');
+        const kept = !costFree && searchOpen(err) ? stallCostOff(bad) : null;
+        if (kept) {
+          costFree = true;
+          const off = bad.filter(s => !s.lava && !s.hazard).map(s => `(${s.x}, ${s.y}, ${s.z})`);
+          console.log(`[walk] the search ran out with the cost of ${off.length} bad step${off.length === 1 ? '' : 's'} on it, at ${off.join(' ')}: searched again without it`);
+          bad.splice(0, bad.length, ...kept);
+          attempt--; continue;
+        }
         // The server keeps putting the body back: this client's view of the
         // blocks round it is wrong somewhere (a block it dug that the server
         // did not break, note 632). Ask the server what is there and walk
@@ -735,7 +746,7 @@ async function walkTo(bot, task, goal, { timeoutMs, stallMs, stopWhen, sprint, b
     if (stillUp) Object.assign(movements, stillUp);
     if (hadGoalY) movements.walkGoalY = walkGoalY;
     else if (movements) delete movements.walkGoalY;
-    if (bad.length) { if (hadAreas) movements.exclusionAreasStep = areasWere; else delete movements.exclusionAreasStep; }
+    if (costed) { if (hadAreas) movements.exclusionAreasStep = areasWere; else delete movements.exclusionAreasStep; }
   }
 }
 
@@ -777,6 +788,22 @@ function goalPoint(goal) {
   return null;
 }
 
+// Where a goal for a block of work is (construction-access.js ConstructionGoal, the pathfinder's GoalPlaceBlock): its
+// cell. Read by badSteps alone: with goalPoint only, a walk to a house's work had every stall spot routed round, the
+// one in its doorway too (2026-11-25).
+function cellPoint(goal) {
+  const p = goal?.pos;
+  return p && [p.x, p.y, p.z].every(Number.isFinite) ? new Vec3(p.x + 0.5, p.y, p.z + 0.5) : null;
+}
+
+// A cost, not a wall (noteStallSpot): a search that ran out with the bad steps' cost on it is made once more without
+// it, the lava's and the hazards' costs kept. In the test window of 2026-11-25 two stalls just inside a house's one
+// door put the cost on every way into it, and each search for the way to its bedroom ran out; offline, 12 s with the
+// cost were not enough, and without it the way was found in 0.07 to 2.1 s. A search runs out as an empty route or no
+// time, or as a stall at the end of part of a way while it goes on (navigateAttempt). -> the bad steps to keep, or null.
+const searchOpen = err => (err?.name === 'NoRoute' && /\((?:partial|timeout)\)/.test(err.message)) || err?.name === 'Timeout' || err?.searchOpen === true;
+const stallCostOff = bad => bad.some(s => !s.lava && !s.hazard) ? bad.filter(s => s.lava || s.hazard) : null;
+
 // Where a goal with no height is, on the ground.
 function flatGoalPoint(goal) {
   if (goal?.entity || Number.isFinite(goal?.y) || !Number.isFinite(goal?.x) || !Number.isFinite(goal?.z)) return null;
@@ -800,6 +827,46 @@ function noRoute(bot, goal, status) {
   return Object.assign(new Error(`No route from here to ${to} (${status})${lava}`), { name: 'NoRoute', destination, besideLava: refused.lavaRefusals > 0 });
 }
 
+// The pathfinder's goto (mineflayer-pathfinder lib/goto.js) ends on the first empty route a search gives it, and the
+// first is what the search found in its first 40 ms: a way that sets off away from the goal (round a wall to a door)
+// has got no nearer by then, and the walk ended "No route from here (partial)" while the search went on and found it.
+// In the test window of 2026-11-25 every walk from beside a house to its bedroom, through the two doors on the far
+// side, ended so at once, for ten minutes; offline the way was found in 1.2 s. While the search goes on, the walk
+// waits for it, up to THINK_WAIT_MS (searchGoesOn).
+const THINK_WAIT_MS = 6000;
+const emptyPart = route => route?.status === 'partial' && !route.path?.length;
+// The rest of such a walk: goto's own ends (the goal reached; an empty route; no path or no time for one with a route;
+// the goal changed or the path stopped), a further empty part waited through, and the wait given up at `until` while
+// the search has still found nothing. `latest` is the last route seen (navigateAttempt's observedRoute): an answer
+// that came between goto's end and these listeners.
+function searchGoesOn(bot, goal, latest, until) {
+  return new Promise((resolve, reject) => {
+    const fail = (name, message) => Object.assign(new Error(message), { name });
+    let done = false, timer = null;
+    const end = err => {
+      if (done) return;
+      done = true;
+      clearInterval(timer);
+      bot.removeListener('goal_reached', reached); bot.removeListener('path_update', updated);
+      bot.removeListener('goal_updated', changed); bot.removeListener('path_stop', stopped);
+      setTimeout(() => (err ? reject(err) : resolve()), 0);
+    };
+    const reached = () => end();
+    const updated = results => {
+      if (emptyPart(results)) return;
+      if (!results?.path?.length) end();
+      else if (results.status === 'noPath') end(fail('NoPath', 'No path to the goal!'));
+      else if (results.status === 'timeout') end(fail('Timeout', 'Took to long to decide path to goal!'));
+    };
+    const changed = next => { if (next !== goal) end(fail('GoalChanged', 'The goal was changed before it could be completed!')); };
+    const stopped = () => end(fail('PathStopped', 'Path was stopped before it could be completed! Thus, the desired goal was not reached.'));
+    bot.on('goal_reached', reached); bot.on('path_update', updated); bot.on('goal_updated', changed); bot.on('path_stop', stopped);
+    timer = setInterval(() => { if (bot.pathfinder?.goal !== goal || Date.now() >= until && emptyPart(latest?.())) end(); }, 100);
+    const seen = latest?.();
+    if (seen && !emptyPart(seen)) updated(seen);
+  });
+}
+
 async function navigateAttempt(bot, task, goal, { timeoutMs, stallMs, stopWhen, walk = null, from = null }) {
   task.check(); checkAir(bot);
   if (stopWhen?.()) return;
@@ -807,10 +874,12 @@ async function navigateAttempt(bot, task, goal, { timeoutMs, stallMs, stopWhen, 
   let timer;
   let acquired = false;
   let corrections = [];
-  let latestRoute;
+  let latestRoute, thinkingUntil = 0, found = false;
   let routeLength = null, routeNodes = null;
   const observedRoute = route => {
-    if (Array.isArray(route.path) && route.status !== 'noPath') { routeLength = route.path.length; routeNodes = route.path.map(p => ({ x: p.x, y: p.y, z: p.z })); }
+    // A search's first empty part (searchGoesOn above) is no route left to walk, nor a shorter one.
+    if (Array.isArray(route.path) && route.status !== 'noPath' && !emptyPart(route)) { routeLength = route.path.length; routeNodes = route.path.map(p => ({ x: p.x, y: p.y, z: p.z })); }
+    if (route.status === 'success') found = true;
     latestRoute = { status: route.status, path: (route.path || []).slice(0, 12).map(p => ({
       x: p.x, y: p.y, z: p.z, toBreak: p.toBreak, toPlace: p.toPlace,
     })) };
@@ -913,6 +982,8 @@ async function navigateAttempt(bot, task, goal, { timeoutMs, stallMs, stopWhen, 
       // Stood behind the shield for a shot on its way (shot-reflex.js): the
       // walk waits, and a wait there is not a stall (note 676).
       if (bot._shotHold) lastProgress = Date.now();
+      // Nor is the wait for a search that goes on (searchGoesOn above).
+      if (Date.now() < thinkingUntil && emptyPart(latestRoute)) lastProgress = Date.now();
       if (routeLength !== null && (bestRoute === null || routeLength < bestRoute)) { bestRoute = routeLength; lastProgress = Date.now(); }
       if (near !== null && (bestNear === null || near <= bestNear - 1)) { bestNear = near; lastProgress = Date.now(); }
       if (bot.entity.position.distanceTo(previous) >= 1) {
@@ -921,19 +992,22 @@ async function navigateAttempt(bot, task, goal, { timeoutMs, stallMs, stopWhen, 
         if (!visited.has(cell)) { visited.add(cell); if (routeLength === null && near === null) lastProgress = Date.now(); }
       }
       if (task.cancelled || Date.now() - started > timeoutMs || Date.now() - lastProgress > stallMs) {
+        // Stood at the end of part of a way, no whole way found and the search for one still going on: the search's
+        // stall, not a bad step's. Noted as one, its cost slowed the next searches more (searchOpen, 2026-11-25).
+        const waiting = !found && latestRoute?.status === 'partial' && !(routeLength > 0);
         if (!task.cancelled) {
           bot._lastNavigationFailure = { at: Date.now(), walk, from, position: { ...bot.entity.position },
           goal: { type: goal.constructor?.name, x: goal.x, y: goal.y, z: goal.z, rangeSq: goal.rangeSq,
             target: goal.entity ? { name: goal.entity.username || goal.entity.name, position: { ...goal.entity.position } } : undefined },
           controls: Object.fromEntries(['forward', 'back', 'left', 'right', 'jump', 'sprint', 'sneak'].map(key => [key, bot.getControlState?.(key)])), inWater: bot.entity.isInWater, oxygen: bot.oxygenLevel,
           feet: bot.blockAt?.(bot.entity.position)?.name, head: bot.blockAt?.(bot.entity.position.offset(0, 1.62, 0))?.name,
-          route: latestRoute };
+          route: latestRoute, ...(waiting && { searchOpen: true }) };
           bot.emit?.('navigation_stall', bot._lastNavigationFailure);
-          if (Date.now() - started < timeoutMs) noteStallSpot(bot, bot.entity.position, Date.now(), { goal: goalPoint(goal) || (flatGoalPoint(goal) ? { ...flatGoalPoint(goal) } : null), walk, from });
+          if (Date.now() - started < timeoutMs && !waiting) noteStallSpot(bot, bot.entity.position, Date.now(), { goal: goalPoint(goal) || (flatGoalPoint(goal) ? { ...flatGoalPoint(goal) } : null), walk, from });
         }
         bot.pathfinder.setGoal(null);
         reject(task.cancelled ? new Cancelled(task.label) : Date.now() - started >= timeoutMs
-          ? new Error('navigation timed out') : new NavigationStall());
+          ? new Error('navigation timed out') : Object.assign(new NavigationStall(), waiting ? { searchOpen: true } : {}));
         return;
       }
       if (corrections.length >= 4 && Date.now() - corrections.at(-1).at < 500) {
@@ -944,6 +1018,11 @@ async function navigateAttempt(bot, task, goal, { timeoutMs, stallMs, stopWhen, 
   });
   try {
     await Promise.race([bot.pathfinder.goto(goal), watchdog]);
+    thinkingUntil = Date.now() + THINK_WAIT_MS;
+    while (emptyPart(latestRoute) && bot.pathfinder?.goal === goal && Date.now() < thinkingUntil && !goal.isEnd?.(bot.entity.position.floored())) {
+      await Promise.race([searchGoesOn(bot, goal, () => latestRoute, thinkingUntil), watchdog]);
+    }
+    thinkingUntil = 0;
     task.check();
     // Pathfinder can report arrival while the bot is still almost a block
     // above its landing. Starting the next dig then can remove the next step
@@ -1189,7 +1268,7 @@ function closeStrayWindow(bot) {
   return String(w.type || 'a window').replace(/^minecraft:/, '').replace(/_/g, ' ');
 }
 
-module.exports = { arrowsCarried, ARROW_KINDS, inventoryCounts, digWithTool, emptyHand, SCOOPED_COST, noteStallSpot, stallsToward, repeatStallSays, WalksFailing, REPEAT_TIMES, badSteps, noteHazard, hazardSpots, HAZARD_COST, STALL_SPOT_COST, openWindow, opensOnClick, closeStrayWindow, wholeGoal, goalGuardPlugin, digGuardPlugin, pickaxeDurability,
+module.exports = { breakable, searchGoesOn, THINK_WAIT_MS, searchOpen, stallCostOff, arrowsCarried, ARROW_KINDS, inventoryCounts, digWithTool, emptyHand, SCOOPED_COST, noteStallSpot, stallsToward, repeatStallSays, WalksFailing, REPEAT_TIMES, badSteps, noteHazard, hazardSpots, HAZARD_COST, STALL_SPOT_COST, openWindow, opensOnClick, closeStrayWindow, wholeGoal, goalGuardPlugin, digGuardPlugin, pickaxeDurability,
   Task,
   Cancelled,
   navigate,

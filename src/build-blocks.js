@@ -144,9 +144,20 @@ function blockOwnership(block) {
   return { stateId: block.stateId, name: block.name, properties: { facing: p.facing, half: p.half, hinge: p.hinge } };
 }
 
+// What the bot recorded as its own (blockOwnership), by name: a bed's, a door's or a furnishing's record carries it;
+// a plain block's is its state, read back through the block's own class.
+function ownedName(owned, block) {
+  if (owned && typeof owned === 'object') return owned.name ?? null;
+  if (typeof owned === 'string') return owned;
+  if (typeof owned !== 'number') return null;
+  try { return block?.constructor?.fromStateId?.(owned, 0)?.name ?? null; } catch (_) { return null; }
+}
 function matchesOwnership(block, owned) {
-  return owned && typeof owned === 'object' ? matchesBuildBlock(block, { material: owned.name, properties: owned.properties }) :
+  if (!owned || !block) return false;
+  const same = typeof owned === 'object' ? matchesBuildBlock(block, { material: owned.name, properties: owned.properties }) :
     owned === (block.stateId ?? block.name);
+  // Grass grows over dirt in the light: a dirt the bot laid is its own still, not a stranger's block to ask about.
+  return same || (block.name === 'grass_block' && ownedName(owned, block) === 'dirt');
 }
 
 function ladderSupport(facing) {
@@ -193,4 +204,4 @@ function placementGoal(bot, point, cell = {}) {
   return goal;
 }
 
-module.exports = { ladderSupport, furnishingPlacement, placementFacing, placementPitch, placedHalf, isBed, bedFloor, bedPairMatches, regionProperties, matchesBuildBlock, placementGoal, buildFootprint, buildCellComplete, enclosedCell, blockOwnership, matchesOwnership };
+module.exports = { ladderSupport, furnishingPlacement, placementFacing, placementPitch, placedHalf, isBed, bedFloor, bedPairMatches, regionProperties, matchesBuildBlock, placementGoal, buildFootprint, buildCellComplete, enclosedCell, blockOwnership, matchesOwnership, ownedName };

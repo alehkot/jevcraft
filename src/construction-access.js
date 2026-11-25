@@ -89,6 +89,25 @@ function entrancePassage(blueprint) {
   return keys;
 }
 
+// The cells a building keeps for itself: its planned blocks, and for a starter house its rooms and the way in. No
+// scaffold goes into them, on the building's own way to its work (constructionMovement) or on any other walk while
+// the bot is at it (movement.js SurvivalMovements.exclusionPlace).
+const siteSets = new WeakMap(), NO_CELLS = new Set();
+function siteCells(goal) {
+  const blueprint = goal?.blueprint, blocks = blueprint?.blocks;
+  if (!Array.isArray(blocks) || !blocks.length) return NO_CELLS;
+  const rooms = !!goal.starterBeds, empty = blueprint.empty || [];
+  const held = siteSets.get(blueprint);
+  if (held && held.blocks === blocks && held.n === blocks.length && held.empty === empty.length && held.rooms === rooms) return held.cells;
+  const cells = new Set(blocks.map(key));
+  if (rooms) {
+    for (const p of empty) cells.add(key(p));
+    for (const k of entrancePassage(blueprint)) cells.add(k);
+  }
+  siteSets.set(blueprint, { blocks, n: blocks.length, empty: empty.length, rooms, cells });
+  return cells;
+}
+
 function constructionMovement(bot, goal) {
   const m = bot.pathfinder.movements;
   const previous = { canDig: m.canDig, scafoldingBlocks: m.scafoldingBlocks, exclusionAreasPlace: m.exclusionAreasPlace, countScaffoldingItems: m.countScaffoldingItems, getScaffoldingItem: m.getScaffoldingItem };
@@ -99,11 +118,7 @@ function constructionMovement(bot, goal) {
     for (const p of goal.blueprint?.blocks || []) if (!p.companion && !buildCellComplete(bot, p)) reserved[p.material] = (reserved[p.material] || 0) + 1;
   }
   const spare = name => goal.buildPhase === 'cleanup' ? 0 : Math.max(0, (bot.inventory?.items() || []).filter(i => i.name === name).reduce((n, i) => n + i.count, 0) - (reserved[name] || 0));
-  const planned = new Set((goal.blueprint?.blocks || []).map(key));
-  if (goal.starterBeds) {
-    for (const p of goal.blueprint?.empty || []) planned.add(key(p));
-    for (const k of entrancePassage(goal.blueprint)) planned.add(k);
-  }
+  const planned = siteCells(goal);
   // Access must not demolish the building or consume reserved materials. Use
   // surplus ordinary blocks already carried before making a new gathering trip.
   m.canDig = false;
@@ -131,6 +146,20 @@ async function steadyConstructionSwim(bot, task) {
     guard: () => checkAir(bot), until: () => bot.entity.position.y >= surface + .1 });
 }
 
+// Why no work was found in reach, written to the log at most every 20 s: how each candidate's search ended and how
+// long it took, the bot's feet, and the scaffold it may use. In the test window of 2026-11-25 the row of a roof was
+// called out of reach for eleven minutes, and nothing told why.
+function reachSays(bot, tried) {
+  const now = Date.now();
+  if (now - (bot._reachSaidAt || 0) < 20000) return;
+  bot._reachSaidAt = now;
+  const p = bot.entity?.position, feet = p ? `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}` : 'unknown';
+  let scaffold = null;
+  try { scaffold = bot.pathfinder?.movements?.countScaffoldingItems?.(); } catch (_) { scaffold = null; }
+  console.log(`[reach] no work in reach from ${feet} (scaffold ${scaffold ?? 'unknown'}): ${tried.join('; ') || 'nothing surveyed'}`);
+}
+
+const SLOW_RETRIES = 3, SLOW_SURVEY_MS = 2500;
 async function chooseConstructionWork(bot, task, goal, candidates) {
   await steadyConstructionSwim(bot, task);
   const restore = constructionMovement(bot, goal);
@@ -142,12 +171,31 @@ async function chooseConstructionWork(bot, task, goal, candidates) {
     if (ready) return ready;
     // Inspect several possible work faces before asking recovery to help with
     // access. One unreachable nearest block must not block the entire site.
+    const slow = [], tried = [];
+    const look = async (candidate, ms) => {
+      const t0 = Date.now(), route = await surveyRoute(bot, task, bot.pathfinder.movements, candidate.destination, ms);
+      tried.push(`${candidate.position.x},${candidate.position.y},${candidate.position.z} ${route.status} in ${Date.now() - t0} of ${ms} ms`);
+      return route;
+    };
     for (const candidate of ordered.slice(0, 16)) {
       task.check();
       if (candidate.destination.reachable(bot.entity.position)) return candidate;
-      const route = await surveyRoute(bot, task, bot.pathfinder.movements, candidate.destination, 350);
+      const route = await look(candidate, 350);
+      if (route.status === 'success') return candidate;
+      if (route.status === 'timeout') slow.push(candidate);
+    }
+    // A way up onto a roof or round a wall can take longer to find than that first look, the more so with the event
+    // loop held: the nearest few whose search ran out of time are looked at again, for longer, before the work is
+    // called out of reach. In the test window of 2026-11-25 the row of a roof over a house's inner wall, reached only
+    // from on top of the roof once the rows beside it were laid, was called out of reach for eleven minutes; offline,
+    // on that house and from where the bot stood beside it, the way (a pillar beside the wall, then over the roof)
+    // took 0.1 to 1.4 s to find for each cell of the row, more than this first look's 350 ms for most of them.
+    for (const candidate of slow.slice(0, SLOW_RETRIES)) {
+      task.check();
+      const route = await look(candidate, SLOW_SURVEY_MS);
       if (route.status === 'success') return candidate;
     }
+    reachSays(bot, tried);
     return null;
   } finally { restore(); }
 }
@@ -184,4 +232,4 @@ function recordBuildPlacement(goal, block) {
   (goal.buildOwned ||= {})[key] = owned;
   return true;
 }
-module.exports = { entrancePassage, recordBuildPlacement, ConstructionGoal, constructionMovement, chooseConstructionWork, approachConstruction };
+module.exports = { entrancePassage, recordBuildPlacement, ConstructionGoal, constructionMovement, chooseConstructionWork, approachConstruction, siteCells };

@@ -255,7 +255,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   const workStore = { save: goal => { saveGoal(goal); saveSurvival(); } };
   let active = null;
   const noteOwnPlacement = block => {
-    const goal = active?.goal || store.read();
+    // Laid while idle or on a walk beside a building set aside, it is that building's to clear as well.
+    const goal = active?.goal?.kind === 'build' ? active.goal : !active || active.idle ? store.read() : active.goal;
     if (goal && !['complete','failed'].includes(goal.status) && require('./construction-access').recordBuildPlacement(goal, block)) saveGoal(goal);
   };
   bot.on('blockPlaced', (_old, block) => noteOwnPlacement(block));

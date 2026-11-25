@@ -164,6 +164,30 @@ function seenPlaced(bot, p) {
   return log.get(dimensionOf(bot), keyOf({ x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) }));
 }
 
+// A player's block, which the bot does not dig unasked to get free (unstuck.js, skills.js shakeLoose) or on a walk
+// (movement.js safeToBreak), whatever it is made of: one it saw a player lay, still there, or one of theirs that the
+// building it is at keeps (blueprint.preserved). In the test window of 2026-11-25, wedged in the bedroom of a house
+// it was building onto a player's ring of cobblestone, the bot dug a block of the ring to get out: cobblestone passed
+// for ground.
+const keptSets = new WeakMap(), NONE = new Set();
+function keptCells(blueprint) {
+  const cells = blueprint?.preserved;
+  if (!Array.isArray(cells) || !cells.length) return NONE;
+  let kept = keptSets.get(cells);
+  if (!kept || kept.n !== cells.length) keptSets.set(cells, kept = { n: cells.length, keys: new Set(cells.map(keyOf)) });
+  return kept.keys;
+}
+function theirsAt(bot, p, goal = bot?._goal) {
+  if (!p) return false;
+  const q = { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) };
+  const seen = seenPlaced(bot, q);
+  if (seen) {
+    const block = at(bot, new Vec3(q.x, q.y, q.z));
+    if (!block || block.name === seen[0]) return true;
+  }
+  return keptCells(goal?.blueprint).has(keyOf(q));
+}
+
 // Where a start is looked for, round where the player stood, and how much of it there may be.
 const BOX = { radius: 10, below: 2, above: 10 };
 const MOST_CELLS = 900, SPAN = [20, 12, 20], FEWEST = 6, WALLS = 8;
@@ -457,4 +481,4 @@ function leaveDoorway(bot, goal) {
   return "All right, I won't cut your wall. Break the block" + (standing.length > 1 ? 's' : '') + ' at ' + low.x + ', ' + low.y + ', ' + low.z + " when you're ready, and I'll put the door in.";
 }
 
-module.exports = { keepWallsRequest, withoutLeaveWalls, leaveDoorway, LEAVE_WALLS_CLAUSE, PlacedLog, placedPlugin, notePlaced, dropPlaced, seenPlaced, startedAt, meant, checkOnto, around, keepOf, ontoRequest, kindOf };
+module.exports = { keepWallsRequest, withoutLeaveWalls, leaveDoorway, LEAVE_WALLS_CLAUSE, PlacedLog, placedPlugin, notePlaced, dropPlaced, seenPlaced, theirsAt, startedAt, meant, checkOnto, around, keepOf, ontoRequest, kindOf };
