@@ -5333,7 +5333,7 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     if (goal.continueBuild) return false;
   }
   if (goal.starterBeds && !goal.design && !goal.blueprint && !goal.starterReference) {
-    const design = require('./starter-house').designStarterHouse(bot, goal);
+    const design = require('./starter-house').designStarterHouse(bot, goal, { anyWood: !!goal.playerBuild });
     if (!design) {
       await explore(bot, task, goal, save, 'trees for the starter house', { surfaceOnly: true });
       return false;
@@ -5521,6 +5521,10 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     const owned = registry?.claimed(dimensionName(bot), edited ? undefined : goal.buildId);
     // Everything Jev built except the building being changed stays standing.
     const protect = registry?.claimed(dimensionName(bot), edited ? edited.id : goal.buildId);
+    // Their start's cells are theirs, whatever a plan of the bot's once had there (player-build.js startedAt): neither the
+    // bot's own to take down nor a building of its to keep standing, but kept, or cut for the doorway, as on ground no
+    // plan had. Kept for an earlier house's door, the doorway of a house onto a ring of theirs was left shut.
+    if (fit) for (const c of goal.playerBuild.cells || []) { const k = `${c.x},${c.y},${c.z}`; owned?.delete?.(k); protect?.delete?.(k); }
     const here = goal.design.world?.position || bot.entity.position.floored();
     const proposed = !goal.buildAnchor && !at && schematic.site
       ? { x: here.x + schematic.site[0], y: here.y + schematic.site[1], z: here.z + schematic.site[2] } : null;

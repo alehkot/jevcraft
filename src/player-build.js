@@ -179,6 +179,83 @@ function keptCells(blueprint) {
   if (!kept || kept.n !== cells.length) keptSets.set(cells, kept = { n: cells.length, keys: new Set(cells.map(keyOf)) });
   return kept.keys;
 }
+// The cells a plan places or clears.
+const plannedSets = new WeakMap();
+function plannedCells(blueprint) {
+  if (!blueprint) return NONE;
+  const blocks = blueprint.blocks || [], empty = blueprint.empty || [], n = blocks.length + empty.length;
+  if (!n) return NONE;
+  let planned = plannedSets.get(blueprint);
+  if (!planned || planned.n !== n) plannedSets.set(blueprint, planned = { n, keys: new Set([...blocks, ...empty].map(keyOf)) });
+  return planned.keys;
+}
+// A start of theirs found before its plan is drawn (work.js goal.playerBuild): its cells.
+const startSets = new WeakMap();
+function startCells(found) {
+  const cells = found?.cells;
+  if (!Array.isArray(cells) || !cells.length) return NONE;
+  let start = startSets.get(cells);
+  if (!start || start.n !== cells.length) startSets.set(cells, start = { n: cells.length, keys: new Set(cells.map(c => keyOf({ x: Math.floor(c.x), y: Math.floor(c.y), z: Math.floor(c.z) }))) });
+  return start.keys;
+}
+// The players' blocks that the buildings in the bot's records keep (blueprint.preserved: their walls a house of the
+// bot's was built onto), in this dimension: "x,y,z" -> the building's name. Read again when the records change.
+const NO_CELLS = new Map();
+let keptByCache = null;
+function keptByBuildings(bot) {
+  const registry = bot?.buildRegistry;
+  if (typeof registry?.all !== 'function') return NO_CELLS;
+  const dim = dimensionOf(bot), rev = registry.revision;
+  if (keptByCache && keptByCache.registry === registry && keptByCache.dim === dim && rev !== undefined && keptByCache.rev === rev) return keptByCache.cells;
+  const cells = new Map();
+  for (const entry of registry.all(dim) || []) for (const c of entry.blueprint?.preserved || []) if (!cells.has(keyOf(c))) cells.set(keyOf(c), entry.name || 'a building');
+  keptByCache = { registry, dim, rev, cells };
+  return cells;
+}
+// A player's block that a building keeps, as theirsAt and the dig guard (skills.js) read it: the name of what keeps
+// it, or null. The plan in hand keeps its own (blueprint.preserved). The buildings in the records keep theirs whatever
+// the work in hand, and a start found keeps its cells until its plan is drawn: in the window of 2026-11-25 two blocks of
+// a ring the bot was building onto went, beside an inner corner of it, in a run where a routine of the night had the
+// bot for a while; every check that would have refused them read the plan in hand alone. A cell the plan a player
+// asked for places or clears (a room's doorway cut through their wall, as asked) is not kept from that plan, nor a block
+// the bot laid there itself, nor one a player said it may break (labels.js).
+function keptAt(bot, p, goal = bot?._goal) {
+  if (!p) return null;
+  const q = { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) }, k = keyOf(q);
+  const own = keptCells(goal?.blueprint).has(k);
+  const by = own ? goal.buildName || 'the building in hand'
+    : keptByBuildings(bot).get(k) || (!goal?.blueprint && startCells(goal?.playerBuild).has(k) ? 'what they started' : null);
+  if (!by) return null;
+  if (!own && goal?.from && goal.from !== bot?.username && plannedCells(goal.blueprint).has(k)) return null;
+  if (labelsOf().toldAt(bot, q) === 'lets') return null;
+  if (!own) { try { if (require('./own-blocks').laidAt(bot, new Vec3(q.x, q.y, q.z))) return null; } catch (_) { /* not known: kept */ } }
+  return by;
+}
+// The cells of the bot's buildings, "x,y,z" -> what the plan put there, read again when the records change.
+let plannedCache = null;
+function plannedByBuildings(bot) {
+  const registry = bot?.buildRegistry;
+  if (typeof registry?.all !== 'function') return new Map();
+  const dim = dimensionOf(bot), rev = registry.revision;
+  if (plannedCache && plannedCache.registry === registry && plannedCache.dim === dim && rev !== undefined && plannedCache.rev === rev) return plannedCache.cells;
+  const cells = new Map();
+  for (const entry of registry.all(dim) || []) for (const c of entry.blueprint?.blocks || []) cells.set(keyOf(c), c);
+  plannedCache = { registry, dim, rev, cells };
+  return cells;
+}
+// One kind of block, as the game names it standing on a floor or on a wall (a torch, a sign, a banner, a skull).
+const unwalled = name => String(name || '').replace(/_wall_/, '_').replace(/^wall_/, '');
+// A cell of one of the bot's buildings that holds the block its plan put there, whatever that block's state: a door
+// opened, a chest paired with the one beside it, a torch on a wall (home-base.js jevBuiltAt reads every property the
+// plan has, and a paired chest is not the "single" one drawn). A shell of any blocks (any-material.js) is the bot's in
+// whatever fills it, as before. Unloaded, it is the bot's.
+function ownStanding(bot, k) {
+  const cell = plannedByBuildings(bot).get(k);
+  if (!cell) return false;
+  if (cell.flexible) return true;
+  const b = at(bot, new Vec3(...k.split(',').map(Number)));
+  return !b || unwalled(b.name) === unwalled(cell.material);
+}
 function theirsAt(bot, p, goal = bot?._goal) {
   if (!p) return false;
   const q = { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) };
@@ -190,7 +267,7 @@ function theirsAt(bot, p, goal = bot?._goal) {
     const block = at(bot, new Vec3(q.x, q.y, q.z));
     if (!block || block.name === seen[0]) return true;
   }
-  return keptCells(goal?.blueprint).has(keyOf(q));
+  return !!keptAt(bot, q, goal);
 }
 
 // Where a start is looked for, round where the player stood, and how much of it there may be.
@@ -312,7 +389,11 @@ function groundOf(bot, found, min, max) {
 function startedAt(bot, anchor) {
   if (!anchor || typeof bot?.blockAt !== 'function') return null;
   const a = new Vec3(Math.floor(anchor.x), Math.floor(anchor.y), Math.floor(anchor.z));
-  const claimed = bot.buildRegistry?.claimed?.(dimensionOf(bot)) || new Set();
+  // The bot's own: a cell of one of its buildings that holds the block the plan put there (ownStanding). A block of theirs
+  // standing where a plan of its once had one is theirs: in the window of 2026-11-25 a ring of theirs was read as 46
+  // blocks, the two where the door of an earlier house of the bot's had stood taken for its own, and the house drawn
+  // round it was sited with no way in.
+  const claimed = { has: k => ownStanding(bot, k) };
   const inBox = p => Math.abs(p.x - a.x) <= BOX.radius && Math.abs(p.z - a.z) <= BOX.radius && p.y >= a.y - BOX.below && p.y <= a.y + BOX.above;
   const found = new Map(), queue = [];
   const take = p => {
@@ -486,4 +567,4 @@ function leaveDoorway(bot, goal) {
   return "All right, I won't cut your wall. Break the block" + (standing.length > 1 ? 's' : '') + ' at ' + low.x + ', ' + low.y + ', ' + low.z + " when you're ready, and I'll put the door in.";
 }
 
-module.exports = { keepWallsRequest, withoutLeaveWalls, leaveDoorway, LEAVE_WALLS_CLAUSE, PlacedLog, placedPlugin, notePlaced, dropPlaced, seenPlaced, theirsAt, startedAt, meant, checkOnto, around, keepOf, ontoRequest, kindOf };
+module.exports = { keepWallsRequest, withoutLeaveWalls, leaveDoorway, LEAVE_WALLS_CLAUSE, PlacedLog, placedPlugin, notePlaced, dropPlaced, seenPlaced, theirsAt, keptAt, startedAt, meant, checkOnto, around, keepOf, ontoRequest, kindOf };

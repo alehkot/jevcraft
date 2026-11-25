@@ -29,7 +29,8 @@ function starterHouse(sleepers, material, wood, beds) {
     size: [7, 4, 8], palette: [...new Set([material, door, stairs, 'glass', 'torch', 'chest', ...beds])], regions, entrance: [3, 1, 0] };
 }
 
-function designStarterHouse(bot, goal) {
+// anyWood: no tree need be found first (a house built onto a start of theirs, work.js).
+function designStarterHouse(bot, goal, { anyWood = false } = {}) {
   const stock = bot.inventory.items();
   const validWood = wood => wood && bot.registry.itemsByName[`${wood}_door`];
   const carriedWood = stock.filter(i => /_(planks|log|stem)$/.test(i.name))
@@ -44,7 +45,11 @@ function designStarterHouse(bot, goal) {
   const here = goal.workSite?.position || goal.buildAnchor || bot.entity.position;
   const biome = require('./discovery').biomeAt(bot, new Vec3(here.x, here.y, here.z));
   const sandy = /desert|badlands|beach/.test(biome);
-  if (!wood && !sandy) return null;
+  // Built onto a start of theirs (player-build.js), the house is drawn round their blocks, and this one is the model's
+  // reference for its rooms and beds alone: with no wood carried or in view it is drawn in oak, as on sand, and no tree
+  // is looked for before the drawing. In the window of 2026-11-25 the bot, its chunks not all loaded after a move, went
+  // off looking for trees "for the starter house" before it would draw a house onto their ring.
+  if (!wood && !sandy && !anyWood) return null;
   wood ||= 'oak';
   const sand = sandy && bot.findBlocks?.({ point: new Vec3(here.x, here.y, here.z), matching: [bot.registry.blocksByName.sand.id, bot.registry.blocksByName.sandstone.id], maxDistance: 24, count: 1 }).length;
   const material = goal.material || (sand ? 'sandstone' : `${wood}_planks`);

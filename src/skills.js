@@ -368,6 +368,22 @@ function digGuardPlugin(bot) {
       try { bot.emit?.('dig_refused', { block: block.name, at: { x: cell.x, y: cell.y, z: cell.z }, why: 'marked keep' }); } catch (_) { /* the log has it */ }
       return Promise.reject(err);
     }
+    // A player's block that a building keeps (player-build.js keptAt): not dug, whatever the work, but a cell the plan a
+    // player asked for places or clears. Where the dig was asked from is logged, once a minute for a cell: the path that
+    // took two blocks of a ring in the window of 2026-11-25 is not known.
+    const keptBy = cell ? require('./player-build').keptAt(bot, cell) : null;
+    if (keptBy) {
+      const err = Object.assign(new Error(`Not dug: the ${String(block.name || 'block').replaceAll('_', ' ')} at (${cell.x}, ${cell.y}, ${cell.z}) is a player's block that ${keptBy} keeps`), { name: 'DigRefused' });
+      const k = `${cell.x},${cell.y},${cell.z}`, now = Date.now(), refused = bot._keptRefused ||= new Map();
+      if (!(now - (refused.get(k) || 0) < 60000)) {
+        if (refused.size > 500) refused.clear();
+        refused.set(k, now);
+        const from = String(new Error().stack || '').split('\n').slice(2, 8).map(l => (/([\w.-]+\.js):(\d+)/.exec(l) || []).slice(1).join(':')).filter(Boolean).join(' < ');
+        console.log(`[dig] ${err.message} (asked from ${from || 'nowhere known'})`);
+      }
+      try { bot.emit?.('dig_refused', { block: block.name, at: { x: cell.x, y: cell.y, z: cell.z }, why: `a player's block that ${keptBy} keeps` }); } catch (_) { /* the log has it */ }
+      return Promise.reject(err);
+    }
     let why = null;
     try { why = p && cell ? require('./terrain').digExposes(require('./terrain').atOf(bot), p, cell, { health: bot.health ?? 20 }) : null; } catch (_) { why = null; }
     // Buried already, the head in a block: the dig that would let sand or
