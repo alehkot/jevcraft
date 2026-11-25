@@ -123,6 +123,8 @@ function friendlyProblem(error, { known = null } = {}) {
   const text = String(error?.message || error || '');
   if (/silk touch/i.test(text)) return 'I need a tool with Silk Touch to pick up that block.';
   if (/That place is in the |^The spot you chose |^The .* you chose has gone|^I cannot .+ (beside the |you chose\.)/i.test(text)) return text;
+  // Said as it is: in the test window (2026-11-24) the player heard only "I got stuck" when no plan kept their blocks.
+  if (/^I couldn't work out a plan that keeps every block of yours/.test(text)) return text;
   if (REPLAN.test(text)) {
     const w = error?.waitOn;
     const thing = String(w?.name || 'block').replaceAll('_', ' ');

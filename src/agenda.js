@@ -92,4 +92,26 @@ function hasWork(saved, registry, bot, what, { active = null, from } = {}) {
   return what === 'build' && unfinishedBuilds(registry, bot, { from, dimension: bot?.game?.dimension }).length > 0;
 }
 
-module.exports = { hasWork, BUILD_KINDS, isBuild, notErrand, continueAsk, said, siteOf, whereSaid, setAside, unfinishedBuilds, reminder };
+// "Finish my house" said at walls of their own (player-build.js startedAt) is the house round them, not a
+// continuation, unless the bot's work in hand, set aside or left unfinished touches those walls: then it is this house,
+// taken up again. Read as "continue my work" first, it went back to a house of the bot's sixty blocks off, or said
+// there was nothing to continue (test window, 2026-11-24); and an unfinished house a short walk off, as at a base,
+// is another house, not this one.
+function theirStartFirst(bot, text, { at, inHand = null, saved = null, registry } = {}) {
+  if (!at || require('./house-details').houseRequest(text, bot?.registry)?.onto !== 'asked') return false;
+  const start = require('./player-build').startedAt(bot, at);
+  if (!start || start.tooBig || !start.origin || !Array.isArray(start.size)) return false;
+  const o = start.origin, [w, , d] = start.size;
+  const touches = b => !!b && b.min.x <= o.x + w + 1 && b.max.x >= o.x - 2 && b.min.z <= o.z + d + 1 && b.max.z >= o.z - 2;
+  const boxOf = g => {
+    const cells = g?.blueprint?.blocks;
+    if (cells?.length) return cells.reduce((b, c) => ({ min: { x: Math.min(b.min.x, c.x), z: Math.min(b.min.z, c.z) }, max: { x: Math.max(b.max.x, c.x), z: Math.max(b.max.z, c.z) } }),
+      { min: { x: Infinity, z: Infinity }, max: { x: -Infinity, z: -Infinity } });
+    const p = siteOf(g);
+    return p && { min: p, max: p };
+  };
+  if ([inHand, saved].some(g => g && isBuild(g) && g.status !== 'complete' && touches(boxOf(g)))) return false;
+  return !(registry?.all?.(bot?.game?.dimension) || []).some(e => e.status !== 'complete' && touches(e.bounds));
+}
+
+module.exports = { hasWork, theirStartFirst, BUILD_KINDS, isBuild, notErrand, continueAsk, said, siteOf, whereSaid, setAside, unfinishedBuilds, reminder };

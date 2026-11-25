@@ -145,7 +145,22 @@ function permittedWait(bot, goal, now = Date.now()) {
 // (work.js) leaves these out too: it would call a stand at a spawner "No
 // measurable progress" after thirty one-second passes (note 681).
 const RECOVERING = new Set(['recover_before_combat', 'recover_before_nether', 'heal_at_spawner']);
+// A wait a step holds on purpose while something outside the world works for it, for no longer than that work's own
+// limit: the building model drawing a plan is a minute or more of standing still (designer.js, cut off at eight
+// minutes), and the stall rule called it "45 seconds on design building without getting anywhere" and set the
+// design aside between drafts (test window, 2026-11-24). -> the release, to be called when the work ends.
+function holdWait(bot, why, ms, now = Date.now()) {
+  const held = { why, until: now + ms };
+  (bot._heldWaits ||= new Set()).add(held);
+  return () => { bot._heldWaits?.delete(held); };
+}
+function heldWait(bot, now = Date.now()) {
+  for (const held of bot?._heldWaits || []) { if (now < held.until) return held.why; bot._heldWaits.delete(held); }
+  return null;
+}
 function stepWait(bot, goal, now = Date.now()) {
+  const held = heldWait(bot, now);
+  if (held) return held;
   const action = goal?.step?.action === 'combined_request' ? goal.step.detail?.action : goal?.step?.action;
   if (RECOVERING.has(action) && (bot?.health ?? 20) < 20 && (bot?.food ?? 20) >= 18) return 'recovering';
   if (action === 'wait_at_spawner' && goal?.fortressSearch?.spawnerWait?.until > now && goal.step.off <= 8) return 'waiting by a spawner';
@@ -836,5 +851,5 @@ function recordStill(state, reason, ms, { now = Date.now(), detour } = {}) {
   return bucket;
 }
 
-module.exports = { portalPair, flipped, flipWatch, noteTrail, recentPositions, airWatch, STALL_MS, STILL_MS, GROUND, HOLDS, EMERGENCIES, RESULTS, excused, FILLER, permittedWait, stepWait, waitEnds, actionOf, stillReason, look, watchStalls, unwatchStalls, raise, raiseFor, worth,
+module.exports = { portalPair, flipped, flipWatch, noteTrail, recentPositions, airWatch, STALL_MS, STILL_MS, GROUND, HOLDS, EMERGENCIES, RESULTS, excused, FILLER, permittedWait, stepWait, holdWait, heldWait, waitEnds, actionOf, stillReason, look, watchStalls, unwatchStalls, raise, raiseFor, worth,
   Stalled, checkStall, preempted, takeStall, deferStall, refused, recordStill };

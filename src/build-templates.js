@@ -44,6 +44,8 @@ async function designWithJev(bot, task, request, client, memory) {
   const controller = new AbortController();
   const watcher = setInterval(() => { try { task.check(); checkAir(bot); } catch (e) { controller.abort(e); } }, 100);
   const stopThinking = require('./speech').thinking(bot);
+  // As for the designer: the questions about the plan are the work while they are out (stillness.js holdWait).
+  const release = require('./stillness').holdWait(bot, 'a plan being drawn', 240000);
   // Every call the designer makes is bound to this abort: the watcher above
   // aborts it when the task is cancelled or the air runs out.
   const cancellable = require('./typesafe').withRequestSignal(client, controller.signal);
@@ -85,6 +87,6 @@ async function designWithJev(bot, task, request, client, memory) {
     return { ...validateSchematic(templateSchematic({ style, floors: Number(floors), size, material }), bot.registry),
       model: client.model || 'jev', backend: 'jev-template', createdAt: new Date().toISOString(), world,
       judgments: answers, usage: response.usage, materialResolution: resolution };
-  } finally { clearInterval(watcher); stopThinking(); }
+  } finally { clearInterval(watcher); stopThinking(); release(); }
 }
 module.exports = { templateSchematic, designWithJev };

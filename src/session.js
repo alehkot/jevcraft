@@ -1052,8 +1052,12 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     }
     const directDiscovery = data.workSite && discoveryAt(address.text, bot.registry);
     // "Continue" with nothing set aside to continue is the guide's and the interpreter's to make sense of, as before (agenda.js).
-    const action = (a => a?.kind === 'continue_work' && !require('./agenda').hasWork(store.read(), builds, bot, a.what, { active: active && !active.idle ? active.goal : null, from }) ? null : a)(
-      address.explicit && !literal && require('./companion-actions').companionAction(address.text, data.workSite));
+    // Nor "finish my house" said at walls of their own with no building work near them: that is the house round them.
+    const theirStart = a => a?.kind === 'continue_work' && a.what === 'build' && require('./agenda').theirStartFirst(bot, address.text, { at: position(bot.players[from]?.entity?.position),
+      inHand: active && !active.idle ? active.goal : null, saved: store.read(), registry: builds });
+    // Asked of the interpreter too, which reads the companion actions again unless told the house comes first.
+    const companionAsk = address.explicit && !literal && require('./companion-actions').companionAction(address.text, data.workSite), houseFirst = theirStart(companionAsk);
+    const action = (a => (a?.kind === 'continue_work' && !require('./agenda').hasWork(store.read(), builds, bot, a.what, { active: active && !active.idle ? active.goal : null, from })) || houseFirst ? null : a)(companionAsk);
     const knownVisit = locationIntent?.startsWith('visit_');
     const visitLocation = async () => {
       if (locationIntent === 'visit_respawn') await locations.refresh();
@@ -1148,7 +1152,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       const spec = literal ? { kind: 'operator_command' } : knownVisit ? await visitLocation() : directDiscovery ?
         { kind: 'find', discoveryTarget: directDiscovery, from, request } : await interpret(requestClient, request, from, bot.username, {
         registry: bot.registry, players: Object.keys(bot.players),
-        ...requestPosition, houseIntent, action, workSite: data.workSite, memory: { ...memory.context(from), found: require('./exploration').foundEntries(world.known) },
+        ...requestPosition, houseIntent, action, houseFirst, workSite: data.workSite, memory: { ...memory.context(from), found: require('./exploration').foundEntries(world.known) },
         builds: builds.describe(bot, requestPosition.speakerPosition || bot.entity.position, bot.game.dimension),
         continueBuilds: (request, candidates) => resolveBuildContinuation(requestClient, request, candidates,
           { speaker: requestPosition.speakerPosition }),

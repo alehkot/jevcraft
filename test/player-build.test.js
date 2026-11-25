@@ -345,10 +345,11 @@ async function closedRing(text) {
   const goal = structuredClone(houses.houseSpec(houses.houseRequest(text, registry), text, 'P', { registry, speakerPosition: { x: 0.5, y: 64, z: 0.5 }, builds: [] }));
   assert.equal(goal.onto, 'asked');
   try { assert.deepEqual(await drawUntilAccepted(bot, goal), []); } finally { stub.restore(); }
+  const designerRead = stub.calls.map(c => JSON.parse(c.messages.at(-1).content).request);
   const dug = [], dig = bot.dig;
   bot.dig = async block => { dug.push(cellKey(block.position)); return dig(block); };
   Object.assign(stock, { dirt: 80, cobblestone: 40 });
-  return { bot, set, stock, chat, theirs, goal, dug };
+  return { bot, set, stock, chat, theirs, goal, dug, designerRead };
 }
 const DOORWAY = ['0,64,-3', '0,65,-3'];
 function onlyDoorwayChanged(bot, theirs, goal) {
@@ -374,7 +375,7 @@ test('walls with no way in get one doorway cut through them by the bot, and noth
 
 test("told not to cut their wall, with the request or once the site is chosen, Jev asks the player to open the doorway", async () => {
   for (const when of ['with the request', 'after']) {
-    const { bot, set, stock, chat, theirs, goal, dug } = await closedRing(when === 'after' ? 'finish my house' : "finish my house but don't cut my walls");
+    const { bot, set, stock, chat, theirs, goal, dug, designerRead } = await closedRing(when === 'after' ? 'finish my house' : "finish my house but don't cut my walls");
     if (when === 'after') {
       // Sited, the door's batch drawn up, nothing dug yet: then the player says it.
       const batched = new Error('batched');
@@ -387,6 +388,9 @@ test("told not to cut their wall, with the request or once the site is chosen, J
       for (const k of DOORWAY) assert.equal(goal.blueprint.initialBlocks[k], undefined, k);
     } else {
       assert.equal(goal.keepWalls, true);
+      // Said to Jev, not to the designer: it still puts the one door through their wall, for the player to open.
+      assert.deepEqual([...new Set(designerRead)], ['finish my house']);
+      assert.equal(pb.withoutLeaveWalls("Jev, finish my house, but please don't cut my walls"), 'Jev, finish my house');
       assert.ok(chat.some(l => l.includes("There's no way in yet, so I'll ask you to open a doorway.")), chat.join(' | '));
     }
     const asked = await designedBuildStep(bot, task, goal, noop).then(() => null, e => e);
@@ -611,4 +615,41 @@ test('a house of any blocks round their walls is walled first with what theirs a
   assert.deepEqual(theirs.map(c => c.material), ['cobblestone', 'cobblestone', 'cobblestone', 'dirt', 'dirt']);
   am.paint(bot, {}, plain);
   assert.deepEqual(plain.map(c => c.material), ['dirt', 'dirt', 'dirt', 'dirt', 'dirt']);
+});
+
+test('when no plan keeps their blocks, the player is told so, and what else to ask for', () => {
+  const err = Object.assign(new Error("I couldn't work out a plan that keeps every block of yours where it is. You can ask me for a house next to it instead."), { name: 'Blocked', needsPlayer: true });
+  assert.equal(require('../src/speech').friendlyProblem(err), err.message);
+});
+
+test('"finish my house" said at their own walls is their house, unless building work of the bot is near', () => {
+  const agenda = require('../src/agenda');
+  const { bot, set } = scene();
+  bot.buildRegistry = new (require('../src/builds').BuildRegistry)();
+  ring(set, { gap: false });
+  const at = { x: 0.5, y: 64, z: 0.5 }, from = 'P', registry = bot.buildRegistry;
+  assert.deepEqual(require('../src/companion-actions').companionAction('finish my house'), { kind: 'continue_work', what: 'build' });
+  assert.equal(agenda.theirStartFirst(bot, 'finish my house', { at, registry, from }), true);
+  // A house of theirs set aside here (the doorway theirs to open): "finish my house" takes it up again.
+  const here = { kind: 'build', status: 'blocked', request: 'finish my house', buildAnchor: { x: 0, y: 64, z: 0 } };
+  assert.equal(agenda.theirStartFirst(bot, 'finish my house', { at, saved: here, registry, from }), false);
+  assert.equal(agenda.theirStartFirst(bot, 'finish my house', { at, saved: { ...here, buildAnchor: { x: 90, y: 64, z: 0 } }, registry, from }), true);
+  // A house of the bot's left unfinished a short walk off, as at a base, is another house; one touching their walls is this one.
+  const unfinished = bounds => ({ all: () => [{ id: 'u', name: 'Small House', status: 'unfinished', origin: bounds.min, bounds }] });
+  assert.equal(agenda.theirStartFirst(bot, 'finish my house', { at, registry: unfinished({ min: { x: 15, y: 64, z: -3 }, max: { x: 21, y: 68, z: 3 } }) }), true);
+  assert.equal(agenda.theirStartFirst(bot, 'finish my house', { at, registry: unfinished({ min: { x: 3, y: 64, z: -3 }, max: { x: 9, y: 68, z: 3 } }) }), false);
+  // A stopped house at their walls is taken up again too.
+  assert.equal(agenda.theirStartFirst(bot, 'finish my house', { at, saved: { ...here, status: 'cancelled' }, registry, from }), false);
+  // Not asked as a house, or nowhere near their walls: a continuation as before.
+  assert.equal(agenda.theirStartFirst(bot, 'continue building', { at, registry, from }), false);
+  assert.equal(agenda.theirStartFirst(bot, 'finish my house', { at: { x: 40.5, y: 64, z: 40.5 }, registry, from }), false);
+});
+
+test('told the house comes first, the interpreter reads "finish my house" as the house and not as work to continue', async () => {
+  const { interpret } = require('../src/objectives');
+  const context = { registry, speakerPosition: { x: 0.5, y: 64, z: 0.5 }, builds: [] };
+  assert.equal((await interpret(null, 'Jev finish my house', 'P', 'Jev', context)).kind, 'continue_work');
+  const spec = await interpret(null, 'Jev finish my house', 'P', 'Jev', { ...context, houseFirst: true });
+  assert.equal(spec.kind, 'build');
+  assert.equal(spec.onto, 'asked');
 });

@@ -107,11 +107,35 @@ function checkStarterDesign(design, { sleepers, material, around }) {
     lights.some(p => interior.has(key(p.x, p.z)) && !living.has(key(p.x, p.z)));
   const roofed = [...interior].every(k => { const [x, z] = k.split(',').map(Number); return covered({ x, y: entrance.y, z }); });
   const [capW, capH, capD, capBlocks] = around ? [Math.max(11, around.size[0] + 4), Math.max(7, around.size[1] + 3), Math.max(12, around.size[2] + 4), 380 + around.blocks] : [11, 7, 12, 380];
-  if (w > capW || d > capD || h > capH || blocks.length > capBlocks || !doors.includes(entrance) || (entrance.x !== 0 && entrance.z !== 0 && entrance.x !== w-1 && entrance.z !== d-1) ||
-      !separate || !roofed || !litRooms ||
-      windows.length < 2 || (materials.torch || 0) < 2 || beds.length !== sleepers || !chest || !sofa ||
-      ![...beds, chest, sofa].every(covered) || (material && !(materials[material] >= Math.min(w, d) * 2))) {
-    throw new Error(around ? `Finish it as a furnished house round the player's blocks, within ${capW}x${capH}x${capD}: an entrance door in an outside wall, a roof over all of the inside, two glass windows in the outside walls, two floor torches inside, a usable chest, a two-stair sofa and one bed for each of the ${sleepers} sleepers, each with a standing space beside it reached from the door` : 'Keep the compact furnished house from the reference: a roofed bedroom and living room, an exterior and an interior door, two windows and floor torches, a usable chest, a two-stair sofa, the requested wall material and bed count.');
+  // What is wrong with this draft, each named where it is: the whole list alone, sent back three times in the test
+  // window (2026-11-24), did not say what to change, and three drafts of the same mistakes used up the attempts.
+  const at = p => `[${p.x},${p.y},${p.z}]`, wrong = [];
+  if (w > capW || d > capD || h > capH) wrong.push(`it is ${w}x${h}x${d}, over ${capW}x${capH}x${capD}`);
+  if (blocks.length > capBlocks) wrong.push(`it has ${blocks.length} blocks, over ${capBlocks}`);
+  if (!doors.includes(entrance)) wrong.push(`the entrance ${JSON.stringify(source.entrance)} is not the lower half of a door`);
+  else if (entrance.x !== 0 && entrance.z !== 0 && entrance.x !== w - 1 && entrance.z !== d - 1) wrong.push(`the entrance door at ${at(entrance)} is not in an outside wall`);
+  if (beds.length !== sleepers) wrong.push(`${beds.length} bed${beds.length === 1 ? '' : 's'} for ${sleepers} sleepers`);
+  if (!chest) wrong.push('no chest with nothing on top of it');
+  if (!sofa) wrong.push('no sofa: two bottom-half stairs of one material side by side, facing the same way');
+  if (doors.includes(entrance) && !separate) {
+    if (around) {
+      const unusable = [['the sofa', sofa], ['the chest', chest], ...beds.map((b, i) => [`bed ${i + 1}`, b])].filter(([, p]) => p && !usableFrom(interior, p));
+      if (unusable.length) wrong.push(`no standing space reached from the door beside ${unusable.map(([n, p]) => `${n} at ${at(p)}`).join(', ')} (on the floor level of the entrance, y ${entrance.y})`);
+    } else wrong.push('the rooms are not as in the reference: the sofa reached from the front door, the chest from inside, the beds only through the interior door');
+  }
+  if (doors.includes(entrance) && !roofed) {
+    const open = [...interior].find(k => { const [x, z] = k.split(',').map(Number); return !covered({ x, y: entrance.y, z }); });
+    wrong.push(`the inside is not all roofed: nothing two or more blocks above the floor at x ${open?.split(',')[0]}, z ${open?.split(',')[1]}`);
+  }
+  if (doors.includes(entrance) && !litRooms) wrong.push(around ? `no torch standing on the floor inside, at y ${entrance.y}` : 'the living room and the bedroom need a floor torch each');
+  if (windows.length < 2) wrong.push(`${windows.length} glass in the outside walls, two windows needed`);
+  if ((materials.torch || 0) < 2) wrong.push(`${materials.torch || 0} torches, two needed`);
+  const bare = [['the sofa', sofa], ['the chest', chest], ...beds.map((b, i) => [`bed ${i + 1}`, b])].filter(([, p]) => p && !covered(p));
+  if (bare.length) wrong.push(`not under the roof: ${bare.map(([n, p]) => `${n} at ${at(p)}`).join(', ')}`);
+  if (material && !(materials[material] >= Math.min(w, d) * 2)) wrong.push(`${materials[material] || 0} ${material}, at least ${Math.min(w, d) * 2} wanted`);
+  if (wrong.length) {
+    throw new Error((around ? `Finish it as a furnished house round the player's blocks, within ${capW}x${capH}x${capD}: an entrance door in an outside wall, a roof over all of the inside, two glass windows in the outside walls, two floor torches inside, a usable chest, a two-stair sofa and one bed for each of the ${sleepers} sleepers, each with a standing space beside it reached from the door` : 'Keep the compact furnished house from the reference: a roofed bedroom and living room, an exterior and an interior door, two windows and floor torches, a usable chest, a two-stair sofa, the requested wall material and bed count') +
+      `. Wrong in this draft (local [x,y,z]): ${wrong.join('; ')}.`);
   }
 }
 

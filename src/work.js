@@ -5323,7 +5323,7 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
       // Theirs to finish, never a house of the bot's own instead: resumed, it is looked at and drawn afresh.
       for (const k of ['ontoChecked', 'designHistory', 'designAttempts']) delete goal[k];
       save();
-      throw Object.assign(new Blocked(`I couldn't work out a plan that keeps every block of yours where it is. Say Jev resume to let me try again${goal.ontoWhat === 'roof' ? '' : ', or ask me for a house next to it instead'}.`), { needsPlayer: true });
+      throw Object.assign(new Blocked(`I couldn't work out a plan that keeps every block of yours where it is${goal.ontoWhat === 'roof' ? '' : '. You can ask me for a house next to it instead'}.`), { needsPlayer: true });
     }
     save();
     bot.chat("I couldn't work out a house plan that keeps all of your blocks, so I'll build my own next to them instead.");
@@ -5379,9 +5379,11 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
     // Held here until the review passes. On the goal straight away, a review
     // cut short (a stop, a mob, a dropped connection) left a design the next
     // step took as settled, and it was built unreviewed.
+    // The player's "don't cut my walls" is for Jev, not for the drawing (player-build.js withoutLeaveWalls).
+    const asked = goal.keepWalls ? require('./player-build').withoutLeaveWalls(goal.request) : goal.request;
     let design = savedDraft;
-    if (!design) try { design = fallback ? await designWithJev(bot, task, goal.request, client, goal.memoryContext) :
-        await designBuilding(bot, task, goal.request, { previousDraft: goal.designDraft, feedback: goal.designError, memory: goal.memoryContext, editing,
+    if (!design) try { design = fallback ? await designWithJev(bot, task, asked, client, goal.memoryContext) :
+        await designBuilding(bot, task, asked, { previousDraft: goal.designDraft, feedback: goal.designError, memory: goal.memoryContext, editing,
           starter: goal.starterReference, anchor: goal.workSite?.position || goal.buildAnchor, onto: goal.playerBuild }); }
     catch (err) {
       if (!fallback && ['Cancelled', 'NeedsAir', 'NeedsSafety'].includes(err.name)) goal.designAttempts--;
@@ -5402,7 +5404,7 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
       delete goal.designReview; goal.designDraft = design.source;
       goal.designDraftInfo = { model: design.model, backend: design.backend, world: design.world, createdAt: design.createdAt }; save();
       let review;
-      try { review = await reviewDesign(client, { request: goal.request, design, memory: goal.memoryContext,
+      try { review = await reviewDesign(client, { request: asked, design, memory: goal.memoryContext,
         editing: editing || (goal.playerBuild && { name: 'what a player has begun here, kept as it stands and finished by this design', size: goal.playerBuild.size }) }); }
       catch (err) { if (!savedDraft && ['Cancelled', 'NeedsAir', 'NeedsSafety'].includes(err.name)) goal.designAttempts--; save(); throw err; }
       task.check();

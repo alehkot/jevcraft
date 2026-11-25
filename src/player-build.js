@@ -434,6 +434,10 @@ const LEAVE = "(?:(?:don['’]?t|do not) (?:cut|break|dig|knock|open|damage|touc
 const LEAVE_WALLS_CLAUSE = new RegExp(',? (?:but |and )?(?:please )?' + LEAVE);
 const LEAVE_WALLS = new RegExp('^(?:(?:please|no|ok|okay|wait|hey|actually)[, ]+)*' + LEAVE + '(?:,? please)?[.!]*$');
 const keepWallsRequest = text => LEAVE_WALLS.test(String(text || '').toLowerCase().trim());
+// The request as the designer is to read it. "But don't cut my walls" is said to Jev, who leaves the doorway to the
+// player (leaveDoorway); read by the designer it meant no door through their walls at all, and each draft in the test
+// window (2026-11-24) put the door on top of their walls instead, where nobody can walk in.
+const withoutLeaveWalls = text => String(text || '').replace(new RegExp(LEAVE_WALLS_CLAUSE.source, 'gi'), '').trim();
 
 // "Jev, don't cut my wall" with the work in hand -> what to say. Before the site is chosen the word is kept for it;
 // after, the doorway's cells (blueprint.cut) are no longer the plan's to clear, and the player is asked to open them
@@ -453,4 +457,4 @@ function leaveDoorway(bot, goal) {
   return "All right, I won't cut your wall. Break the block" + (standing.length > 1 ? 's' : '') + ' at ' + low.x + ', ' + low.y + ', ' + low.z + " when you're ready, and I'll put the door in.";
 }
 
-module.exports = { keepWallsRequest, leaveDoorway, LEAVE_WALLS_CLAUSE, PlacedLog, placedPlugin, notePlaced, dropPlaced, seenPlaced, startedAt, meant, checkOnto, around, keepOf, ontoRequest, kindOf };
+module.exports = { keepWallsRequest, withoutLeaveWalls, leaveDoorway, LEAVE_WALLS_CLAUSE, PlacedLog, placedPlugin, notePlaced, dropPlaced, seenPlaced, startedAt, meant, checkOnto, around, keepOf, ontoRequest, kindOf };

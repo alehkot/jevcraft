@@ -378,6 +378,8 @@ async function designBuilding(bot, task, request, { fetchImpl = fetch, apiKey, p
   const timer = setTimeout(() => controller.abort(new Error('Building designer timed out')), 480000);
   const watcher = setInterval(() => { try { task.check(); checkAir(bot); } catch (e) { controller.abort(e); } }, 100);
   const stopThinking = thinking(bot);
+  // Standing still while the plan is drawn is the work, not a stall (stillness.js holdWait).
+  const release = require('./stillness').holdWait(bot, 'a plan being drawn', 480000);
   try {
     task.check();
     // The guide's model pays for its reasoning out of the drawing's own budget, so it reasons as the guide does (guide.js).
@@ -435,7 +437,7 @@ async function designBuilding(bot, task, request, { fetchImpl = fetch, apiKey, p
   } catch (err) {
     if (controller.signal.aborted) { task.check(); checkAir(bot); throw controller.signal.reason || err; }
     throw err;
-  } finally { clearTimeout(timer); clearInterval(watcher); stopThinking(); }
+  } finally { clearTimeout(timer); clearInterval(watcher); stopThinking(); release(); }
 }
 
 // How far the foundation may step down over natural terrain, and how much

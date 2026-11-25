@@ -239,3 +239,37 @@ test('a request to craft a door uses carried wood; installing one picks the exis
   const fit = await interpret(null, 'Jev make a door for the house', 'Alex', 'Jev', ctx);
   assert.equal(fit.houseDetails.target, 'near');
 });
+
+test('the stall rule leaves Jev standing while a plan is being drawn, and no longer', async () => {
+  const { permittedWait, holdWait } = require('../src/stillness');
+  const bot = landscape('snowy_taiga'), anchor = { x: 13, y: 65, z: 3 }, goal = { kind: 'build', step: { action: 'design_building' } };
+  const starter = { sleepers: 2, source: designStarterHouse(bot, { starterBeds: 2, buildAnchor: anchor }).source };
+  let during;
+  await designBuilding(bot, new Task('design'), 'Build a house here', {
+    planner: { provider: 'guide', model: 'gpt-6-luna', apiKey: 'fixture', url: 'https://fixture.invalid' }, starter, anchor,
+    fetchImpl: async () => { during = permittedWait(bot, goal); return reply(starter.source); },
+  });
+  assert.equal(during, 'a plan being drawn');
+  assert.notEqual(permittedWait(bot, goal), 'a plan being drawn');
+  // A failed request lets go too.
+  await assert.rejects(designBuilding(bot, new Task('design'), 'Build a house here', {
+    planner: { provider: 'guide', model: 'gpt-6-luna', apiKey: 'fixture', url: 'https://fixture.invalid' }, starter, anchor,
+    fetchImpl: async () => ({ ok: false, status: 500, json: async () => ({}) }),
+  }));
+  assert.notEqual(permittedWait(bot, goal), 'a plan being drawn');
+  // Bounded by the work's own limit: a hold never let go lapses with it.
+  const release = holdWait(bot, 'a plan being drawn', 1000, 0);
+  assert.equal(permittedWait(bot, goal, 500), 'a plan being drawn');
+  assert.notEqual(permittedWait(bot, goal, 1500), 'a plan being drawn');
+  release();
+});
+
+test('a furnished draft sent back says what is wrong with it, not only what a house needs', () => {
+  const source = () => starterHouse(2, 'oak_planks', 'oak', ['white_bed', 'white_bed']);
+  const check = (drawing, sleepers = 2) => checkStarterDesign(validateSchematic(drawing, registry), { sleepers });
+  const noChest = source(); noChest.regions = noChest.regions.filter(r => r.block !== 'chest');
+  assert.throws(() => check(noChest), /Wrong in this draft \(local \[x,y,z\]\): .*no chest with nothing on top of it/);
+  assert.throws(() => check(source(), 3), /Wrong in this draft .*2 beds for 3 sleepers/);
+  const noTorch = source(); noTorch.regions = noTorch.regions.filter(r => r.block !== 'torch');
+  assert.throws(() => check(noTorch), /0 torches, two needed/);
+});
