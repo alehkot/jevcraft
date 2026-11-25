@@ -181,6 +181,75 @@ test('a bed requires full support at both ends and space clear of players before
   assert.equal(clicks.length, 0);
 });
 
+test('a bed whose foot is against a wall is placed from beside it, turned the way the bed faces', async () => {
+  // The Terra houses of the test window (2026-11-24): a bedroom two deep behind a dividing wall, both beds facing
+  // south with their feet against that wall and their heads against the back wall. No cell north of a foot to stand
+  // in and look south from.
+  const { bot, set, stock, clicks } = scene();
+  for (let x = 0; x <= 6; x++) for (let z = 0; z <= 6; z++) for (let y = 64; y <= 67; y++) {
+    const edge = x === 0 || x === 6 || z === 0 || z === 6;
+    if (y === 67 || edge || (z === 3 && x !== 3)) set(new Vec3(x, y, z), 'cobblestone');
+  }
+  const foot = new Vec3(1, 64, 4), properties = { facing: 'south', part: 'foot' };
+  const cell = { ...foot, material: 'white_bed', properties };
+  const stands = [];
+  for (let x = 1; x <= 5; x++) for (let z = 1; z <= 5; z++) {
+    if (z === 3 && x !== 3) continue;
+    if (new ConstructionGoal(bot, foot, 'place', cell).reachable(new Vec3(x + .5, 64, z + .5))) stands.push(`${x},${z}`);
+  }
+  assert.ok(stands.some(s => s.endsWith(',4') || s.endsWith(',5')), 'somewhere in the bedroom to place it from: ' + stands.join(' '));
+  assert.ok(!stands.includes('1,4') && !stands.includes('1,5'), 'not in the bed itself: ' + stands.join(' '));
+  stock.white_bed = 1;
+  bot.entity.position = new Vec3(3.5, 64, 5.5);
+  await place(bot, task, foot, 'white_bed', { properties });
+  assert.deepEqual(clicks, [{ foot, material: 'white_bed', facing: 'south' }]);
+  assert.equal(bot.blockAt(foot.offset(0, 0, 1)).getProperties().part, 'head');
+  assert.equal(stock.white_bed, 0);
+});
+
+test('the stuck house of the test window, as drawn: each bed is placed from inside its bedroom, beside the torch', async () => {
+  // The onto_open house (2026-11-24) in local cells: a player's ring of cobblestone two high (#) with its gap for the
+  // door, the house's own walls, windows and roof above, a two-deep bedroom behind a dividing wall with a door in it,
+  // a floor torch beside the first bed, and the two beds left to place (b), both facing south.
+  const { bot, set, stock, clicks } = scene();
+  const rows = {
+    1: ['###D###', '#ss..H#', '#....t#', '#CCDCC#', '#bt..b#', '#b...b#', '#######'],
+    2: ['###d###', '#.....#', '#.....#', '#CCdCC#', '#.....#', '#.....#', '#######'],
+    3: ['CCCCCCC', 'C.....C', 'G.....G', 'CCCCCCC', 'C.....C', 'G.....G', 'CCCCCCC'],
+    4: Array(7).fill('CCCCCCC'),
+  };
+  const door = half => ['acacia_door', { facing: 'south', half, hinge: 'left', open: false, powered: false }];
+  const blocks = { '#': ['cobblestone'], C: ['cobblestone'], G: ['glass'], D: door('lower'), d: door('upper'), t: ['torch'],
+    s: ['acacia_stairs', { facing: 'north', half: 'bottom', shape: 'straight', waterlogged: false }],
+    H: ['chest', { facing: 'south', type: 'single', waterlogged: false }] };
+  for (let x = 0; x < 7; x++) for (let z = 0; z < 7; z++) {
+    set(new Vec3(x, 63, z), 'cobblestone');
+    for (const [ly, row] of Object.entries(rows)) {
+      const [name, properties] = blocks[row[z][x]] || ['air'];
+      set(new Vec3(x, 63 + Number(ly), z), name, properties);
+    }
+  }
+  const properties = { facing: 'south', part: 'foot' };
+  const standFor = foot => {
+    const goal = new ConstructionGoal(bot, foot, 'place', { ...foot, material: 'white_bed', properties });
+    for (let z = 4; z <= 5; z++) for (let x = 1; x <= 5; x++) {
+      const feet = new Vec3(x + .5, 64, z + .5);
+      if (bot.blockAt(feet).name === 'air' && goal.reachable(feet)) return feet;
+    }
+    return null;
+  };
+  stock.white_bed = 2;
+  for (const foot of [new Vec3(1, 64, 4), new Vec3(5, 64, 4)]) {
+    const feet = standFor(foot);
+    assert.ok(feet, `a cell in the bedroom to place the bed at ${foot} from`);
+    bot.entity.position = feet;
+    await place(bot, task, foot, 'white_bed', { properties });
+    assert.equal(bot.blockAt(foot.offset(0, 0, 1)).getProperties().part, 'head');
+  }
+  assert.deepEqual(clicks.map(c => [c.foot.x, c.facing]), [[1, 'south'], [5, 'south']]);
+  assert.equal(stock.white_bed, 0);
+});
+
 test('counts correctly placed player beds of any colour without claiming them', async () => {
   const { bot, set, clicks } = scene();
   const goal = siteWithShell(bot, set, 2);

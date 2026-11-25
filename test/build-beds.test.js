@@ -46,11 +46,13 @@ test('bed completes only with matching foot and head; occupancy does not lose ow
  assert.equal(matchesOwnership({...foot,stateId:2,getProperties:()=>({...cell.properties,occupied:true})},owned),true);
  assert.equal(matchesOwnership(block('white_bed',{facing:'west',part:'foot'}),owned),false);
 });
-test('bed placement clicks supporting floor and faces toward its head',()=>{
+test('bed placement clicks supporting floor, from any side: place turns the bot to the bed\'s facing',()=>{
  const world={getBlock:()=>({shapes:[[0,0,0,1,1,1]]})};
  const goal=placementGoal({world},new Vec3(0,1,0),{material:'white_bed',properties:{facing:'east',part:'foot'}});
  assert.deepEqual(goal.options.faces,[new Vec3(0,-1,0)]);
- assert.equal(goal.options.facing,3); // west: pathfinder face toward player, opposite look east
+ assert.equal(goal.options.facing,-1); // no side asked of where the bot stands
+ const door=placementGoal({world},new Vec3(0,1,0),{material:'oak_door',properties:{facing:'east',half:'lower'}});
+ assert.equal(door.options.facing,3); // a door's hinge goes by where it is clicked from: still from the side it opens to
 });
 test('Survival placement refuses blocked bed head before equipping or clicking',async()=>{
  const {place}=require('../src/work');

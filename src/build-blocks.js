@@ -158,7 +158,12 @@ function placementGoal(bot, point, cell = {}) {
   const p = new Vec3(point.x, point.y, point.z), state = cell.properties || {};
   if (cell.material === 'ladder') return new goals.GoalPlaceBlock(p, bot.world, { range: 4.25, faces: [ladderSupport(state.facing)] });
   if (cell.material === 'torch') return new goals.GoalPlaceBlock(p, bot.world, { range: 4.25, faces: [new Vec3(0, -1, 0)] });
-  if (isDoor(cell.material) || isBed(cell.material)) return new goals.GoalPlaceBlock(p, bot.world, { range: 4.25, facing: opposite[state.facing], faces: [new Vec3(0, -1, 0)] });
+  if (isDoor(cell.material)) return new goals.GoalPlaceBlock(p, bot.world, { range: 4.25, facing: opposite[state.facing], faces: [new Vec3(0, -1, 0)] });
+  // A bed takes its facing from the way the bot is turned as it clicks (work.js place turns it to the bed's facing and
+  // clicks without turning again), not from where it stands. Asked to stand at the foot looking toward the head, the
+  // two Terra houses of the test window (2026-11-24) each stopped with both beds unplaced: their feet against the
+  // bedroom's dividing wall, their heads against the back wall, nowhere left to stand behind them.
+  if (isBed(cell.material)) return new goals.GoalPlaceBlock(p, bot.world, { range: 4.25, faces: [new Vec3(0, -1, 0)] });
   const half = placedHalf(state);
   // GoalPlaceBlock's facing means the face toward the player, opposite the
   // player's horizontal look direction used by Minecraft for stairs.

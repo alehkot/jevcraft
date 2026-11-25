@@ -4,7 +4,7 @@ const { Vec3 } = require('vec3');
 const { goals } = require('mineflayer-pathfinder');
 const { surveyRoute, navigate } = require('./skills');
 const { checkAir } = require('./vitals');
-const { placementGoal, buildCellComplete } = require('./build-blocks');
+const { placementGoal, buildCellComplete, buildFootprint, isBed } = require('./build-blocks');
 const key = p => `${p.x},${p.y},${p.z}`;
 const vec = p => new Vec3(p.x, p.y, p.z);
 const directions = [new Vec3(0, 1, 0), new Vec3(1, 0, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1), new Vec3(0, -1, 0)];
@@ -15,6 +15,11 @@ class ConstructionGoal extends goals.Goal {
   constructor(bot, point, operation, cell) {
     super(); this.bot = bot; this.pos = vec(point); this.operation = operation;
     if (operation === 'place') this.placement = placementGoal(bot, point, cell);
+    // The head of a bed to be placed is no place to stand: the game puts it there as the foot is clicked, and a bed is
+    // placed from any side (placementGoal).
+    if (operation === 'place' && isBed(cell?.material) && cell?.properties?.part === 'foot') {
+      this.head = vec(buildFootprint({ x: point.x, y: point.y, z: point.z, material: cell.material, properties: cell.properties })[1]);
+    }
   }
   heuristic(node) { return Math.max(0, node.distanceTo(this.pos) - 3); }
   isEnd(node) {
@@ -40,6 +45,8 @@ class ConstructionGoal extends goals.Goal {
     // Without this, a hole whose only opening faces the sky can never be closed.
     if (!require('./flight').canFly(this.bot) &&
       cell.x === p.x && cell.z === p.z && p.y <= cell.y + 1 && (this.operation === 'dig' || p.y >= cell.y - 1)) return false;
+    const head = this.head;
+    if (head && cell.x === head.x && cell.z === head.z && head.y >= cell.y && head.y <= cell.y + 1) return false;
     const eye = feet.offset(0, 1.62, 0);
     if (this.placement) {
       this.placement.options.range = 4.25 - margin;
