@@ -135,9 +135,16 @@ function ownBuilding(bot, p) {
   if (!p || !bot?.buildRegistry) return false;
   try { return require('./home-base').jevBuiltAt(bot, p); } catch (_) { return false; }
 }
+let labelsModule = null;
+const labelsOf = () => (labelsModule ||= require('./labels'));
 // The question every search and every chosen block is put to.
 function leftAlone(bot, goal, p) {
+  // What a player said of it (labels.js): marked keep, never a source, whatever the mode or the last resort; a block of
+  // theirs they let the bot take, one.
+  const told = p ? labelsOf().toldAt(bot, p) : null;
+  if (told === 'keep') return true;
   if (ownBuilding(bot, p)) return true;
+  if (told === 'lets') return false;
   if (!on() || allowed(goal) || !builtAt(bot, p, goal)) return false;
   return !(goal?.builtLastResort && opened(goal, reader(bot)(Math.floor(p.x), Math.floor(p.y), Math.floor(p.z))));
 }

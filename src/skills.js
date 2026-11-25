@@ -360,6 +360,14 @@ function digGuardPlugin(bot) {
   if (typeof dig !== 'function' || dig._guarded) return;
   const guarded = function (block, ...rest) {
     const p = bot.entity?.position, cell = block?.position;
+    // A block a player marked keep (labels.js): not dug, whoever asks, but a cell of the building a player asked for.
+    const kept = cell ? require('./labels').keepsDig(bot, cell) : null;
+    if (kept) {
+      const err = Object.assign(new Error(`Not dug: the ${String(block.name || 'block').replaceAll('_', ' ')} at (${cell.x}, ${cell.y}, ${cell.z}) is marked "don't touch"`), { name: 'DigRefused' });
+      console.log(`[dig] ${err.message} (by ${kept.by})`);
+      try { bot.emit?.('dig_refused', { block: block.name, at: { x: cell.x, y: cell.y, z: cell.z }, why: 'marked keep' }); } catch (_) { /* the log has it */ }
+      return Promise.reject(err);
+    }
     let why = null;
     try { why = p && cell ? require('./terrain').digExposes(require('./terrain').atOf(bot), p, cell, { health: bot.health ?? 20 }) : null; } catch (_) { why = null; }
     // Buried already, the head in a block: the dig that would let sand or

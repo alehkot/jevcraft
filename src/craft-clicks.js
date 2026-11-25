@@ -166,6 +166,9 @@ async function craftOnce(bot, window, recipe, width) {
 }
 
 function openTable(bot, table) {
+  // A table a player marked keep on its own (labels.js): not used. The open guard on bot.openBlock is not on this way in.
+  const refused = require('./labels').openRefused(bot, table);
+  if (refused) return Promise.reject(refused);
   return new Promise((resolve, reject) => {
     const opened = window => { clearTimeout(timer); resolve(window); };
     const timer = setTimeout(() => { bot.removeListener('windowOpen', opened); reject(new Error('The crafting table did not open')); }, OPEN_MS);

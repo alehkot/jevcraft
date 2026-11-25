@@ -28,6 +28,8 @@ const words = name => String(name || 'block').replaceAll('_', ' ');
 const dimensionOf = bot => require('./game-progress').dimension(bot) || 'overworld';
 const built = () => require('./built');
 const at = (bot, p) => { try { return bot.blockAt(p); } catch (_) { return null; } };
+let labelsModule = null;
+const labelsOf = () => (labelsModule ||= require('./labels'));
 
 // What a block is laid into: nothing, or what it pushes aside.
 const OPEN = /^(?:air|cave_air|void_air|water|lava|short_grass|tall_grass|fern|large_fern|dead_bush|bush|short_dry_grass|tall_dry_grass|leaf_litter|snow|vine|glow_lichen|seagrass|tall_seagrass|fire|soul_fire|bubble_column)$/;
@@ -180,6 +182,9 @@ function keptCells(blueprint) {
 function theirsAt(bot, p, goal = bot?._goal) {
   if (!p) return false;
   const q = { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) };
+  // What a player said of it (labels.js): marked keep, theirs whoever laid it; a block they let the bot break, not.
+  const told = labelsOf().toldAt(bot, q);
+  if (told) return told === 'keep';
   const seen = seenPlaced(bot, q);
   if (seen) {
     const block = at(bot, new Vec3(q.x, q.y, q.z));

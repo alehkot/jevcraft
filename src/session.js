@@ -122,6 +122,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   // wrapped nothing.
   bot.loadPlugin(require('./skills').goalGuardPlugin);
   bot.loadPlugin(require('./skills').digGuardPlugin);
+  bot.loadPlugin(require('./labels').openGuardPlugin);
   // After the guard, so a dig it refuses never asks the server: a dig is
   // finished only when the server has broken the block (server-truth.js).
   bot.loadPlugin(require('./server-truth').serverTruthPlugin);
@@ -191,6 +192,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   bot.buildRegistry = builds;
   // What the bot sees players lay (player-build.js): their dirt and stone told from the ground's, kept per world.
   bot.placedLog = new (require('./player-build').PlacedLog)(path.join(stateDirectory, `${memoryIdentity}-placed.json`));
+  bot.labels = new (require('./labels').Labels)(path.join(stateDirectory, `${memoryIdentity}-labels.json`));
   bot.loadPlugin(require('./player-build').placedPlugin);
   // The dream: what the bot works toward when nobody has asked for
   // anything. Kept per world, beside the builds it produces.
@@ -905,7 +907,9 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       // Which wood stands free near the bot, for a wish for wood that names none (built.js woodInView).
       ...(require('./built').on() && (wood => wood.length ? { woodInView: wood } : {})((() => { try { return require('./built').woodInView(bot, active?.goal); } catch (_) { return []; } })())),
       savedPlaces: (mine.places || []).map(place => place.label || place.name).filter(Boolean).slice(0, 12),
-      savedNotes: (mine.notes || []).map(note => note.note).filter(Boolean).slice(-8) };
+      savedNotes: (mine.notes || []).map(note => note.note).filter(Boolean).slice(-8),
+      // What players have said of the things round them (labels.js): what "what's marked here?" is answered from.
+      ...(near => (near.length ? { labels: near } : {}))(require('./labels').statusNear(bot, them || me)) };
   };
   const onPlayerChat = data => {
     if (ended) return;
@@ -1101,6 +1105,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       guideQueue = null;
       bot.swingArm?.('right');
       guideBusy++;
+      // What "this" and "here" are, read now: the answer comes seconds later, the head turned by then (labels.js).
+      const pointed = require('./labels').pointedNow(bot, from);
       guide.consult({ from, text: address.text, botName: bot.username, status: guideStatus(from) }).then(out => {
         if (ended) return;
         // A line taken for the bot without its name (hearOut) is the guide's to read or nobody's: it never goes on to the
@@ -1113,9 +1119,13 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
           out.requests = [];
         }
         observation?.sample('guide', { from, said: address.text, say: out.say, requests: out.requests, addedRule: out.addedRule, forgotRule: out.forgotRule,
-          ...(data.judged && { heard: true }), ...(out.options && { options: out.options.map(o => ({ label: o.label, requests: o.requests })) }) });
+          ...(out.label && { label: out.label }), ...(data.judged && { heard: true }), ...(out.options && { options: out.options.map(o => ({ label: o.label, requests: o.requests })) }) });
         console.log(`[guide] ${from}: ${JSON.stringify(address.text)} -> ${JSON.stringify(out)}`);
-        const said = out.say ? sayCounted(out.say) : false;
+        // A label (labels.js): set or taken off now, and said back with what it is on, in place of the guide's own line,
+        // which would say it twice. Choices offered with one go unasked: the label is the answer.
+        const labelled = out.label ? require('./labels').apply(bot, from, out.label, pointed, { judged: !!data.judged }) : null;
+        if (labelled) out.options = null;
+        const said = labelled ? sayCounted(labelled) : out.say ? sayCounted(out.say) : false;
         if (said) talkWith.set(from, Date.now());
         const useBuildings = !!out.useBuildings && require('./built').on();
         // Choices offered: the pick is read when it comes (above), within the question's minute and a half, once said.

@@ -3416,7 +3416,14 @@ async function workstation(bot, task, name, goal, { avoid = null } = {}) {
   const avoided = q => !!avoid && q.x === avoid.x && q.y === avoid.y && q.z === avoid.z;
   const cellOk = (q, options) => !avoided(q) && stationCellOk(bot, goal, q, options);
   const candidates = (goal?.workSite ? workSites.stations(bot, name, goal.workSite) :
-    find(bot, [name], name === 'crafting_table' && countOf(bot, name) ? 4 : 32, 8)).filter(q => !avoided(q));
+    find(bot, [name], name === 'crafting_table' && countOf(bot, name) ? 4 : 32, 8))
+    // One a player marked keep on its own (labels.js) is passed over, and said so in the log: the bot sets down its own.
+    .filter(q => {
+      if (avoided(q)) return false;
+      if (!require('./labels').refusesOpen(bot, bot.blockAt(q))) return true;
+      console.log(`[labels] passed over the ${name.replaceAll('_', ' ')} at (${q.x}, ${q.y}, ${q.z}): marked "don't touch"`);
+      return false;
+    });
   const existing = await approachWorkstation(bot, task, name, candidates);
   if (existing) return existing;
   if (goal?.workSite?.name === name) throw Object.assign(new Blocked(`I cannot reach the ${name.replaceAll('_', ' ')} you chose.`), { needsPlayer: true });
@@ -5253,6 +5260,8 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
       await navigate(bot, task, new goals.GoalNear(wall.x, wall.y, wall.z, 4)); return false;
     }
     const carried = bot.inventory.items().map(i => i.name.replace(/^stripped_|_(?:planks|log)$/g, '')).find(w => bot.registry.itemsByName[w + '_door'] && w !== 'iron');
+    // A wall marked keep (labels.js) is not cut for the room's door either: the player opens it, as with "don't cut my wall".
+    if (!goal.keepWalls && require('./labels').keeps(bot, wall)) goal.keepWalls = true;
     const patch = require('./add-room').planRoom(bot, { wall, room: goal.addRoom, material: goal.anyMaterial ? null : goal.material,
       claimed: bot.buildRegistry?.claimed(dimensionName(bot)), wood: carried || 'oak', keepWalls: !!goal.keepWalls });
     goal.blueprint = patch.blueprint; goal.buildOwned = patch.owned; goal.buildName = 'room';
@@ -5306,6 +5315,8 @@ async function executeDesignedBuildStep(bot, task, goal, save, client, onStep = 
         if (asked) throw Object.assign(new Blocked("I need my building designer to work with what you built, and it isn't available right now."), { needsPlayer: true });
       } else {
         goal.playerBuild = found;
+        // Their start marked keep (labels.js): no doorway is cut through it, the player opens one, as with "don't cut my wall".
+        if (!goal.keepWalls && (found.cells || []).some(c => require('./labels').keeps(bot, c))) goal.keepWalls = true;
         // A house of any blocks round theirs is walled with what theirs is made of, where it can be (any-material.js).
         if (goal.anyMaterial && found.main && require('./any-material').SHELL.test(found.main)) goal.shellPrefer = found.main;
         bot.chat(`I'll ${goal.starterBeds ? 'make the house of' : 'build onto'} what you've started here (${found.said}), keeping every block of yours${found.closed ? (goal.keepWalls ? ". There's no way in yet, so I'll ask you to open a doorway" : " but one doorway: there's no way in yet, so I'll cut one through your wall") : ''}.${asked ? '' : ' Ask me from outside it if you meant a house of its own.'}`);

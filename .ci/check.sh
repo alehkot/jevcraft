@@ -64,6 +64,7 @@ OFFLINE_SUITES=(
   test/add-room.test.js
   test/player-build.test.js
   test/open-ring.test.js
+  test/labels.test.js
 )
 for suite in "${OFFLINE_SUITES[@]}"; do
   echo "== $suite"

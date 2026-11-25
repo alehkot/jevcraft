@@ -52,7 +52,7 @@ You never act yourself. A separate engine does the work. Your job is to turn wha
 ${ENGINE(bot)}
 
 Answer with JSON only:
-{"say": string or null, "requests": [strings, at most ${MAX_REQUESTS}, done in order], "options": [{"label": string, "requests": [strings]}, at most ${MAX_OPTIONS}] or null, "add_rule": string or null, "forget_rule": number or null${built ? ', "use_buildings": true or false' : ''}}
+{"say": string or null, "requests": [strings, at most ${MAX_REQUESTS}, done in order], "options": [{"label": string, "requests": [strings]}, at most ${MAX_OPTIONS}] or null, "add_rule": string or null, "forget_rule": number or null, "label": {"do": "keep" | "use" | "forget", "what": "this" | "here", "thing": "block" | "chest" | "building", "name": string or null} or null${built ? ', "use_buildings": true or false' : ''}}
 
 How to decide:
 1. A plain request the engine understands: pass it on unchanged as the only request, "say" null. Apply the standing rules where the request leaves something open (which wood, how many, what to do first or afterwards).${built ? ` Wood or logs wanted as items (to get, to collect, to craft from) with no kind named and no rule about it, never what a house is built of: name the first kind in status.woodInView that has trees (the free wood near ${bot}, the nearest trees first; a kind with "trees": 0 is only bushes of one log each), or with no trees listed the first kind there, or with no list oak.` : ''}
@@ -63,11 +63,21 @@ How to decide:
 6. Something the engine cannot do: say so in "say" and name the nearest thing it can do. No requests. A number is never the reason: the counts, sizes and distances in a request on the list are the player's to choose.
 7. A job for idle time ("when you have nothing to do, collect coal"): that is a dream. Emit "your dream is to get me <N> <item>" yourself, with a sensible amount such as one stack, and say what you set. Never tell the player how to phrase something you can emit yourself.
 ${built ? `8. What someone built is left alone by the engine: it takes wood, stone and the rest from the wild, and never from a house, a village, a fence, a wall or anything else made by players or villagers. When the only source in view is built it says so and looks further. "use_buildings" is false unless the player clearly allows taking from buildings, in this message or in a standing rule ("take the wood from that house", "you can break the village houses", "use the buildings"): then true. With requests in the answer it covers those requests; with none it covers the work in hand (status.doing), and "say" confirms it. A plain request ("get wood") never sets it, and you never set it because it would be quicker. A standing rule that allows it ("you may always take wood from buildings") is stored like any other and applied to each request. Asked not to touch buildings: say that is how ${bot} works already, no rule needed.
-` : ''}Choices: when a wish could mean two or three different jobs the engine can do, or the nearest job it can do is not quite what was asked, offer them rather than pick one: put them in "options", each {"label": a few words, "requests": what it runs}, with only the question in "say" (the options are listed after it by number and the player answers with the number), and no requests. A single likely meaning is one option, answered with yes. Details are never choices: an amount, a kind of wood or anything else a request leaves open is filled in as rule 1 and the facts say. A clear request is acted on, never offered back as a choice.
+` : ''}9. A player telling ${bot} how to treat one thing, or what it is ("don't touch this", "leave that chest alone", "this is mine", "you can use this chest", "take what you need from that chest", "you can break this", "this is my house", "you can touch it now", "forget that label"): set "label", with "say" null and no requests: the engine finds the thing from where the player looks and says what it marked. "do": "keep" for a thing ${bot} must not break, take or open; "use" for one chest, block, furnace or table the player lets it use, take from or break, never a whole building; "forget" to take a label off. "what": "this" for what the player points at (this, that, it), "here" for the building they stand in. "thing": "chest" for a chest, barrel or other storage, "building" for a house, a farm or another building, else "block". "name": what the player calls it ("my house", "the storage room"), else null. ${built ? 'A leave to take from a building or from buildings ("you can take wood from that house", "you can use this house") is "use_buildings" (8), never a label. ' : ''}Forgetting a standing rule ("forget that rule", or "forget that" just after one was added) is "forget_rule", not a label. A request that only names a thing ("get me a chest", "use a pickaxe", "build a house here") is no label. "What's marked here?" is a question: answer it in "say" from status.labels.
+Choices: when a wish could mean two or three different jobs the engine can do, or the nearest job it can do is not quite what was asked, offer them rather than pick one: put them in "options", each {"label": a few words, "requests": what it runs}, with only the question in "say" (the options are listed after it by number and the player answers with the number), and no requests. A single likely meaning is one option, answered with yes. Details are never choices: an amount, a kind of wood or anything else a request leaves open is filled in as rule 1 and the facts say. A clear request is acted on, never offered back as a choice.
 Never write anything that starts with "/". Never promise what the engine cannot do. "say" is plain text, friendly and brief, in the player's language.${PERSONALITIES[personality] ? ` ${PERSONALITIES[personality]} The manner is for "say" only: it never changes the requests.` : ''}`;
 
 // The requests a model answer may hold: plain text, none a command, at most MAX_REQUESTS.
 const requestsOf = list => (Array.isArray(list) ? list : []).map(r => clean(r, 160)).filter(r => r && !r.startsWith('/')).slice(0, MAX_REQUESTS);
+// The label a model answer may hold (labels.js): what to do, to what, and the player's name for it; null for none.
+const labelOf = value => {
+  if (!value || typeof value !== 'object') return null;
+  const { ASKS } = require('./labels');
+  const act = String(value.do || '').toLowerCase();
+  if (!ASKS.do.includes(act)) return null;
+  const name = clean(typeof value.name === 'string' ? value.name.replace(/^[\s/]+/, '').replaceAll('\xa7', '') : '', 40).trim();
+  return { do: act, what: ASKS.what.includes(value.what) ? value.what : 'this', thing: ASKS.thing.includes(value.thing) ? value.thing : 'block', name: name || null };
+};
 // Choices, each with the requests it runs (the pick is read by session.js, pickOption).
 const optionsOf = list => (Array.isArray(list) ? list : []).map(o => ({ label: clean(o?.label, 40), requests: requestsOf(o?.requests) }))
   .filter(o => o.label && o.requests.length).slice(0, MAX_OPTIONS);
@@ -236,7 +246,7 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
     return parsed && typeof parsed === 'object' ? parsed : null;
   }
 
-  // -> { say, requests, addedRule, forgotRule, useBuildings? } or null when the model was not asked or did not answer usably.
+  // -> { say, requests, addedRule, forgotRule, useBuildings?, label? } or null when the model was not asked or did not answer usably.
   async function consult({ from, text, botName, status = {} }) {
     if (!apiKey || !allowed(from)) return null;
     const rules = rulesFor(from);
@@ -251,6 +261,10 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
     // A chat line that begins with a slash is sent by the client as a command. The model's line never is one.
     const out = { say: clean(clean(parsed.say, 240).replace(/^[\s/]+/, ''), 200) || null, requests, addedRule: null, forgotRule: null,
       ...(built && parsed.use_buildings === true && { useBuildings: true }) };
+    const label = labelOf(parsed.label);
+    // A leave for a whole building is the leave for buildings (8): as a label it would only be refused.
+    if (label?.do === 'use' && label.thing === 'building' && built) out.useBuildings = true;
+    else if (label) out.label = label;
     if (options.length) { out.options = options; out.say = withOptions(out.say, options); }
     const add = clean(parsed.add_rule, 200);
     if (add && !add.startsWith('/')) {
@@ -264,7 +278,9 @@ function createGuide({ file, fetchImpl = fetch, apiKey = process.env.JEV_GUIDE_A
       state.rules.splice(state.rules.indexOf(rules[n - 1]), 1); save(); out.forgotRule = rules[n - 1].text;
     }
     // What the bot says is noted by session.js as it is said (a line speech.js quietRepeats drops was never said).
-    if (!out.say && !requests.length && !out.addedRule && !out.forgotRule && !out.useBuildings) return null;
+    // A forget with a standing rule forgotten is the rule's: "Nothing is marked there" would answer the wrong question.
+    if (out.forgotRule && out.label?.do === 'forget') delete out.label;
+    if (!out.say && !requests.length && !out.addedRule && !out.forgotRule && !out.useBuildings && !out.label) return null;
     return out;
   }
 

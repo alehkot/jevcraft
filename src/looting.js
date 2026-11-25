@@ -124,7 +124,11 @@ function lootableChests(bot, goal, { reach = NEAR } = {}) {
   const watched = !overworld(bot) && piglinInSight(bot);
   const here = bot.entity.position, looted = goal.looted || {};
   return bot.findBlocks({ matching: id, maxDistance: reach, count: 16 })
-    .filter(p => { const s = !looted[key(p)] && !isSetAside(goal, 'loot_chest', key(p)) && !ownChest(goal, p) && structureOf(goal, p, bot);
+    .filter(p => {
+      // Marked keep by a player, never opened; marked use since it was opened, opened again (labels.js).
+      const labels = require('./labels'), seen = looted[key(p)];
+      const s = (!seen || labels.usedSince(bot, p, seen.at)) && !labels.keeps(bot, p) && !isSetAside(goal, 'loot_chest', key(p)) && !ownChest(goal, p) &&
+        structureOf(goal, p, bot);
       return s && (overworld(bot) || (['nether_fortress', 'chest'].includes(s.kind) && !watched) || (s.kind === 'bastion' && require('./bastion-raid').raidOn(goal))) && !trapped(bot, p); })
     .sort((a, b) => a.distanceTo(here) - b.distanceTo(here));
 }
