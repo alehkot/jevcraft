@@ -7,6 +7,7 @@ const Item = require('prismarine-item')(registry);
 const windows = require('prismarine-windows')('26.1');
 const Recipe = require('prismarine-recipe')(registry).Recipe;
 const { craft, install, layout } = require('../src/craft-clicks');
+const { makeTorches } = require('../src/blaze-tactics');
 const id = name => registry.itemsByName[name].id;
 const P = 'oak_planks', S = 'stick';
 const pickaxe = new Recipe({ result: { id: id('wooden_pickaxe'), count: 1 }, inShape: [[id(P), id(P), id(P)], [null, id(S), null], [null, id(S), null]] });
@@ -171,4 +172,53 @@ test('the answered craft stands in for the library\'s from 1.17 on, and lays a r
   const planks = new Recipe({ result: { id: id(P), count: 4 }, ingredients: [id('oak_log')] });
   assert.deepEqual(layout(planks, 2), [{ slot: 1, id: id('oak_log') }]);
   assert.throws(() => layout(pickaxe, 2), /needs a crafting table/);
+});
+
+function torchInventory(initial, craftResults) {
+  let torches = initial;
+  const batches = [];
+  const recipe = { result: { id: id('torch'), count: 4 } };
+  const bot = {
+    registry,
+    inventory: { items: () => [
+      { name: 'torch', count: torches }, { name: 'coal', count: 8 }, { name: 'stick', count: 8 },
+    ] },
+    recipesFor: () => [recipe],
+    craft: async (actual, count, window) => {
+      assert.equal(actual, recipe);
+      assert.equal(window, null);
+      batches.push(count);
+      const result = craftResults.shift();
+      if (!result) throw new Error('unexpected craft retry');
+      torches += result.added;
+      if (result.error) throw result.error;
+    },
+  };
+  return { bot, batches, task: { check() {} } };
+}
+
+test('torch crafting counts only what reached inventory and stops on an empty result', async () => {
+  const { bot, task, batches } = torchInventory(4, [{ added: 4 }, { added: 0 }]);
+  assert.equal(await makeTorches(bot, task, 12), 4);
+  assert.deepEqual(batches, [2, 1]);
+});
+
+test('torch crafting can continue a partial batch to the requested total', async () => {
+  const { bot, task, batches } = torchInventory(4, [{ added: 4 }, { added: 4 }]);
+  assert.equal(await makeTorches(bot, task, 12), 8);
+  assert.deepEqual(batches, [2, 1]);
+});
+
+test('torch crafting preserves the observed partial count when a batch fails', async () => {
+  const { bot, task, batches } = torchInventory(4, [{ added: 4, error: new Error('batch interrupted') }]);
+  assert.equal(await makeTorches(bot, task, 12), 4);
+  assert.deepEqual(batches, [2]);
+});
+
+test('torch crafting still propagates task cancellation after an interrupted batch', async () => {
+  const { bot, task, batches } = torchInventory(4, [{ added: 4, error: new Error('batch interrupted') }]);
+  const cancelled = new Error('task cancelled');
+  task.check = () => { if (batches.length) throw cancelled; };
+  await assert.rejects(makeTorches(bot, task, 12), err => err === cancelled);
+  assert.deepEqual(batches, [2]);
 });

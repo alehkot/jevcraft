@@ -661,7 +661,15 @@ async function makeTorches(bot, task, want) {
       try { await require('./inventory-tidy').makeRoom(bot, task, 'torch', { count: times * 4, room: free, purpose: 'the torches for the spawner' }); } catch (err) { task.check(); }
       if (!free()) break;
     }
-    try { await bot.craft(recipe, times, null); made += times * 4; } catch (err) { task.check(); debug('torch craft', err.message); break; }
+    const before = torchesCarried(bot);
+    let failed = false;
+    try { await bot.craft(recipe, times, null); } catch (err) { task.check(); debug('torch craft', err.message); failed = true; }
+    // A craft can resolve after only part of the batch, or without adding anything.
+    // Count what reached the inventory, and don't repeat a batch that made no progress.
+    const added = torchesCarried(bot) - before;
+    if (added <= 0) break;
+    made += added;
+    if (failed) break;
   }
   return made;
 }
