@@ -54,6 +54,13 @@ function clearHairlineOverlap(bot) {
 // it (reproduced on its world). A closed window has nothing to sync; any
 // sync is given up after two seconds (it is best effort), and at once when
 // a watchdog has stopped the step (stillness.js, survival.js).
+// A watchdog's stop said to a window wait (stillness.js, survival.js, vitals.js): thrown at once.
+function throwIfStopped(bot) {
+  if (bot._preempt) throw require('./stillness').preempted(bot._preempt);
+  if (bot._threatAbort) { const { NeedsSafety, threats } = require('./danger'); let near = null; try { near = threats(bot, 16)[0]; } catch (_) { /* no entities yet */ } throw new NeedsSafety(near || { entity: { name: 'something unseen' }, distance: 0 }); }
+  if (bot._airAbort) { const { NeedsAir } = require('./vitals'); throw new NeedsAir(); }
+}
+
 function boundSyncWindow(bot) {
   const original = bot._syncWindow;
   if (typeof original !== 'function' || original._bounded) return;
@@ -63,9 +70,7 @@ function boundSyncWindow(bot) {
     original(window).then(() => { settled = true; }, err => { settled = true; failure = err; });
     const end = Date.now() + 2000;
     while (!settled && Date.now() < end) {
-      if (bot._preempt) throw require('./stillness').preempted(bot._preempt);
-      if (bot._threatAbort) { const { NeedsSafety, threats } = require('./danger'); let near = null; try { near = threats(bot, 16)[0]; } catch (_) { /* no entities yet */ } throw new NeedsSafety(near || { entity: { name: 'something unseen' }, distance: 0 }); }
-      if (bot._airAbort) { const { NeedsAir } = require('./vitals'); throw new NeedsAir(); }
+      throwIfStopped(bot);
       await new Promise(resolve => setTimeout(resolve, 50));
     }
     if (failure && !/did not fire within timeout/.test(failure.message)) throw failure;
@@ -92,6 +97,9 @@ function fixWake(bot) {
 function compatibilityPlugin(bot) {
   boundSyncWindow(bot);
   bot.once?.('spawn', () => boundSyncWindow(bot));
+  // Each craft click chosen from the server's whole answer to the one before (craft-clicks.js).
+  require('./craft-clicks').install(bot);
+  bot.once?.('spawn', () => require('./craft-clicks').install(bot));
   require('./flight').installFlight(bot);
   require('./block-search').installBlockSearch(bot);
   require('./furnace-properties').installFurnaceProperties(bot);
@@ -233,4 +241,4 @@ function fixPathfinderResults() {
   AStar.prototype[patched] = true;
 }
 
-module.exports = { clearHairlineOverlap, boundSyncWindow, fixMiningMaterials, compatibilityPlugin, fixPathfinderResults, fixPlayerDimensions, fixWake };
+module.exports = { clearHairlineOverlap, boundSyncWindow, throwIfStopped, fixMiningMaterials, compatibilityPlugin, fixPathfinderResults, fixPlayerDimensions, fixWake };

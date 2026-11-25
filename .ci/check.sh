@@ -59,6 +59,7 @@ OFFLINE_SUITES=(
   test/first-tools.test.js
   test/guide-talk.test.js
   test/table-afresh.test.js
+  test/craft-clicks.test.js
   test/any-material.test.js
   test/add-room.test.js
   test/player-build.test.js
