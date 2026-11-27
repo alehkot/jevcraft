@@ -419,3 +419,24 @@ test('a pen begun goes on with the trees there are, and with none waits for wood
   assert.equal(none, null);
   assert.ok(said.some(l => /the pen by .* waits for wood: 34 planks short and no tree of its own near it to fell/.test(l)), said.join(' | '));
 });
+
+test('a pen begun is finished with the herd gone out of sight, and with no wheat; none begun for a herd not about', () => {
+  const { w, registry } = homestead({ '-1,64,9': 'crafting_table' });
+  const bot = botIn(w, { registry, items: [['wheat', 8], ['oak_log', 3]] });
+  const house = houseOf(bot);
+  const { site } = pen.searchSite(bot, house, { herdAt: { x: 10, z: -6 } });
+  const p = quietly(() => pen.begin(bot, house, site, 'cow'))[0], s = pen.shapeOf(p);
+  for (const c of s.fences) w.set(c, 'oak_fence');
+  // The herd wandered off east while it stood half built: out of the bot's look and the house's.
+  for (const e of [animal('cow', s.centre.x + 22, s.centre.z), animal('cow', s.centre.x + 23, s.centre.z + 1)]) bot.entities[e.id] = e;
+  const d = quietly(() => animals.herdDue(bot, {}))[0];
+  assert.equal(d?.pen, 'build', JSON.stringify(d));
+  assert.equal(d.kind, 'cow');
+  assert.match(d.why, /the pen to finish: 2 fences and gates by .*; 8 planks wanted, 12 carried/);
+  bot.inventory.take('wheat', 8);
+  assert.equal(quietly(() => animals.herdDue(bot, {}))[0]?.pen, 'build', 'no wheat carried');
+  // No pen begun, and the herd as far: none begun.
+  const other = homestead({ '-1,64,9': 'crafting_table' });
+  const far = botIn(other.w, { registry: other.registry, items: [['wheat', 8], ['oak_log', 9]], herd: [animal('cow', 31, -6), animal('cow', 32, -5)] });
+  assert.equal(quietly(() => animals.herdDue(far, {}))[0], null);
+});

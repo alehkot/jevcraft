@@ -37,6 +37,7 @@ const HOME_FROM = 12;                       // the herd's place kept this near a
 const UP = 6;                               // and this near its level
 const SPREAD = 8;                           // this near the gathering point across: with the herd
 const LEAD_FROM = 24;                       // led from no farther off than this
+const PEN_REST_MS = 30000;                  // the chore's rest after a run that left the pen whole, the herd to bring in
 const HERD = 8;                             // of a kind about, babies too: none bred past it
 const PLOT_KEEP = 5;                        // the gathering point this far across from a plot's middle at least
 const BRED_MS = 5 * 60000;                  // fed, or would not take it: let be this long (the game's five minutes)
@@ -225,17 +226,25 @@ function housesNear(bot, me) {
 // wheat: two carried, or a garden by the house to grow it. -> pen.js buildDue's, with the herd's kind | null
 function penDue(bot, { houses, plots, player, now, goal = null }) {
   const garden = require('./garden');
+  let P;
+  try { P = require('./pen'); } catch (_) { return null; }
+  // A pen begun is finished, and one standing put back, whether or not the herd is about now or wheat carried: the
+  // herd wandered off from a pen half built (out of FIND of the bot and HOME_NEAR of the walls), and it stood a ring of
+  // fences without its gates by the house, nothing due.
+  const begun = houses.map(h => P.penBy(bot, h)).find(Boolean) || null;
+  const dueOf = (kind, herdAt, onlyBegun) => {
+    let due = null;
+    try { due = P.buildDue(bot, { houses, plots, player, herdAt, goal, now, onlyBegun }); } catch (err) { console.log('[animals] the pen: ' + err.message); }
+    return due ? { ...due, kind } : null;
+  };
   const fed = wheat(bot) >= 2 || plots.some(p => houses.some(h => gapTo(p.middle, h.min, h.max) <= garden.PLOT_TO + 2));
-  if (!fed) return null;
-  for (const kind of KINDS) {
+  if (fed) for (const kind of KINDS) {
     const adults = about(bot, kind, player, houses, memo(bot).home[kind] || null).filter(e => !baby(bot, e));
     if (adults.length < 2) continue;
     const herdAt = { x: adults.reduce((n, e) => n + e.position.x, 0) / adults.length, z: adults.reduce((n, e) => n + e.position.z, 0) / adults.length };
-    let due = null;
-    try { due = require('./pen').buildDue(bot, { houses, plots, player, herdAt, goal, now }); } catch (err) { console.log('[animals] the pen: ' + err.message); }
-    return due ? { ...due, kind } : null;
+    return dueOf(kind, herdAt, false);
   }
-  return null;
+  return begun ? dueOf(KINDS.includes(begun.kind) ? begun.kind : KINDS[0], null, true) : null;
 }
 
 // Due: a house about, and a pen to build there for a herd about (penDue); or wheat carried, two adults of a kind about,
@@ -347,7 +356,12 @@ async function herdStep(bot, task, goal, save, deps = {}) {
   const build = penDue(bot, { houses, plots, player, now, goal });
   if (build) {
     await require('./pen').buildStep(bot, task, goal, save, build, deps, now);
-    if (!penStanding(bot, houses) || Date.now() - started > 150000) { save?.(); return true; }
+    if (!penStanding(bot, houses) || Date.now() - started > 150000) {
+      // The pen whole with the run's time gone: the herd brought in soon after, before it wanders off (it did, out of
+      // reach, in the five minutes' rest after a pen built over two runs).
+      if (penStanding(bot, houses)) goal.restMs = PEN_REST_MS;
+      save?.(); return true;
+    }
   }
   let plan = null;
   for (const kind of [goal.herdKind, ...KINDS.filter(k => k !== goal.herdKind)].filter(Boolean)) {

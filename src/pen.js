@@ -140,9 +140,9 @@ function penBy(bot, house) {
   return here.find(p => p.house === house.key) || here.find(p => gapTo(shapeOf(p).centre, house.min, house.max) <= PEN_TO + SIZE) || null;
 }
 const refusedAt = (bot, house) => { load(bot); return (bot._pensRefused || {})[WORLD(bot) + ' ' + house.key] || 0; };
-function begin(bot, house, site) {
+function begin(bot, house, site, kind = null) {
   pensHere(bot);
-  const pen = { world: WORLD(bot), house: house.key, houseName: house.name, corner: site.corner, side: site.side, begunAt: new Date().toISOString() };
+  const pen = { world: WORLD(bot), house: house.key, houseName: house.name, ...(kind ? { kind } : {}), corner: site.corner, side: site.side, begunAt: new Date().toISOString() };
   bot._pens.push(pen);
   while (bot._pens.length > MOST_PENS) bot._pens.shift();
   saveAll(bot);
@@ -474,10 +474,11 @@ async function build(bot, task, goal, save, pen, { place, navigate }) {
 // Due to be built or put back by a house about: a herd about (the caller's), no pen there standing whole, none let go
 // there in a day, a place for it, and its wood: carried, or a tree to fell; with a table by it to make what is not
 // carried made. -> { house, pen, site, wood, tree, shape, why } | null
-function buildDue(bot, { houses = [], plots = [], player = null, herdAt = null, goal = null, now = Date.now() } = {}) {
+function buildDue(bot, { houses = [], plots = [], player = null, herdAt = null, goal = null, now = Date.now(), onlyBegun = false } = {}) {
   for (const house of houses) {
     if (now - refusedAt(bot, house) < REFUSED_MS) continue;
     const pen = penBy(bot, house), st = pen ? status(bot, pen) : null;
+    if (!pen && onlyBegun) continue;
     if (st && (st.unloaded || st.built)) continue;
     if (pen && (pen.restUntil || 0) > now) continue;
     if (pen?.builtAt && st.missing.length + st.gatesMissing > REPAIR_MOST) {
@@ -518,7 +519,7 @@ function noteOnce(bot, key, line) { const said = bot._penSaid ||= new Set(); if 
 // came to anything; goal.penFences, penGates, felled for the log.
 async function buildStep(bot, task, goal, save, due, deps, now = Date.now()) {
   let pen = due.pen;
-  if (!pen) { pen = begin(bot, due.house, due.site); goal.penBegun = true; }
+  if (!pen) { pen = begin(bot, due.house, due.site, due.kind); goal.penBegun = true; }
   let st = status(bot, pen), want = { missing: st.missing, gatesMissing: st.gatesMissing };
   let wood = woodFor(bot, want), did = 0;
   if (wood.short) {
