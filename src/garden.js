@@ -18,16 +18,21 @@
 // farmland (movement.js walks round it). It is kept once begun (bot._gardenFile, session.js), read again before each
 // run, and forgotten once half of it is built on or dug. No water at the ground's level by the house: no garden.
 //
-// A run is one pass (work.js): a hoe made if none is carried and a cell wants tilling (planks and sticks from the wood
+// A run is one pass (work.js). Ripe crops first: dug from a stand beside the plot (one reaches all eight cells), what
+// they drop picked up from the ground round the plot, never from the farmland (an item is taken up within about a
+// block and a third across of the player, so the ring's cell nearest it is walked to), and the cells sown again with
+// the seeds that came off. Then a hoe made if none is carried and a cell wants tilling (planks and sticks from the wood
 // carried, the hoe at a crafting table already standing within TABLE_NEAR), seeds picked up from the grass about the
 // plot when too few are carried (one round of GRASS_MOST a garden an in-game day: on the copy, 2026-11-27, a seed came
 // from one grass in twenty, and a garden begun with none would clear the lawn about a house in a few runs; the day is
 // the Overworld's count, world-clock.js, so a night slept through is a new one), then as many cells tilled as there are
-// seeds for, and sown, from a stand beside the
-// plot. Nothing is laid, no table is set down, nothing is fetched from farther off, nothing is picked up into full
-// pockets. Wheat seeds first, then beetroot seeds, then a carrot or a potato past the one of each kept to eat. A run
-// that came to nothing rests the garden five minutes, then ten, twenty, thirty.
-// Not yet: the harvest, bread, torches about it at dusk. A cell trampled back to dirt is tilled and sown again.
+// seeds for, and sown, from a stand beside the plot. Last, bread baked at that table from the wheat carried, three a
+// loaf, all in one window. Nothing is laid, no table is set down, nothing is fetched from farther off, nothing is
+// picked up into full pockets. Wheat seeds first, then beetroot seeds, then a carrot or a potato past the one of each
+// kept to eat. A run that came to nothing rests the garden five minutes, then ten, twenty, thirty. A plot whose side has
+// no ground beside it to stand on (water up to it, a wall) is passed over for another where there is one: the harvest
+// on that side's middle cell would lie out of reach.
+// Not yet: torches about it at dusk. A cell trampled back to dirt is tilled and sown again.
 const fs = require('fs');
 const { Vec3 } = require('vec3');
 const { goals } = require('mineflayer-pathfinder');
@@ -49,6 +54,10 @@ const MOST_PLOTS = 8;
 const SOWN = Object.freeze(['wheat_seeds', 'beetroot_seeds', 'carrot', 'potato']);
 const KEEP = Object.freeze({ carrot: 1, potato: 1 });
 const RIPE = Object.freeze({ wheat: 7, carrots: 7, potatoes: 7, beetroots: 3 });
+const BREAD_WHEAT = 3;                      // wheat a loaf
+const DROPS = /^(wheat|wheat_seeds|beetroot|beetroot_seeds|carrot|potato|poisonous_potato)$/;
+const PICK = 1.3;                           // an item lying this near across is taken up where the bot stands
+const SIDE_COST = 25;                       // a side of the plot with no ground beside it to stand on: as 2.5 blocks farther out
 const GROUND = /^(grass_block|dirt)$/;
 const COVER = /^(short_grass|tall_grass|fern|large_fern)$/;
 const AIR = /^(air|cave_air|void_air)$/;
@@ -311,7 +320,9 @@ function searchSite(bot, house) {
     if (!cells.every(fit)) continue;
     const stands = [{ x: x0 + 1, z: z0 - 1 }, { x: x0 + 1, z: z0 + 3 }, { x: x0 - 1, z: z0 + 1 }, { x: x0 + 3, z: z0 + 1 }].map(s => ({ ...s, y: gy })).filter(standsOn);
     if (stands.length < 2) continue;
-    const score = gap * 10 - stands.length;
+    // A side with no ground beside it to stand on: what the harvest drops on its middle cell would lie out of reach.
+    const sides = [[0, -1, 1, 0], [0, 3, 1, 0], [-1, 0, 0, 1], [3, 0, 0, 1]].filter(([ox, oz, ix, iz]) => [0, 1, 2].some(i => standsOn({ x: x0 + ox + ix * i, y: gy, z: z0 + oz + iz * i }))).length;
+    const score = gap * 10 - stands.length + (4 - sides) * SIDE_COST;
     if (!best || score < best.score) best = { score, site: { origin: { x: x0, y: gy, z: z0 }, middle, cells: outer, stands } };
   }
   return best ? { site: best.site } : { why: 'no level grass by the water there, clear of the house, its door and anything built' };
@@ -400,18 +411,19 @@ function dueBy(bot, house, now) {
   }
   const site = plot ? null : siteBy(bot, house, now).site;
   if (!plot && !site) return null;
-  const s = plot ? plotStatus(bot, plot, now) : { untilled: site.cells, bare: [] };
+  const s = plot ? plotStatus(bot, plot, now) : { untilled: site.cells, bare: [], ripe: [] };
   const spot = plot || site;
   const canTill = !!hoeCarried(bot) || (!!hoePlan(bot) && freeSlots(bot) > 0 && !!tableNear(bot, spot.middle, now));
-  const cells = s.bare.length + (canTill ? s.untilled.length : 0);
-  if (!cells) return null;
+  const cells = s.bare.length + (canTill ? s.untilled.length : 0), ripe = s.ripe.length, loaves = plot ? loavesFor(bot, plot, now) : 0;
+  // Sowing wants seeds: carried, in the grass about, or coming off the ripe crops. A harvest or a loaf wants none.
   const seeds = seedsCarried(bot), allowance = grassLeftToday(bot, plot, now);
-  const about = seeds >= cells || !allowance || !room(bot, 'wheat_seeds') ? 0 : grassCount(bot, spot, house, now);
+  const about = !cells || ripe || seeds >= cells || !allowance || !room(bot, 'wheat_seeds') ? 0 : grassCount(bot, spot, house, now);
   const grass = Math.min(about, allowance);
-  if (!seeds && grass < GRASS_FEW) return null;
-  const why = (plot ? 'the garden by ' : 'a garden to begin by ') + house.name + ': ' + [s.bare.length && s.bare.length + ' bare', canTill && s.untilled.length && s.untilled.length + ' to till']
-    .filter(Boolean).join(', ') + '; ' + seeds + ' seeds carried' + (about ? ', ' + about + ' grass about' + (allowance < GRASS_MOST ? ' (' + allowance + ' more to break today)' : '') : '') + (hoeCarried(bot) ? '' : ', a hoe to make');
-  return { chore: 'garden', why, fresh: !plot, house: house.key, houseName: house.name, untilled: s.untilled.length, bare: s.bare.length, seeds, grass };
+  const sowing = cells > 0 && (seeds > 0 || ripe > 0 || grass >= GRASS_FEW);
+  if (!ripe && !loaves && !sowing) return null;
+  const why = (plot ? 'the garden by ' : 'a garden to begin by ') + house.name + ': ' + [ripe && ripe + ' ripe', s.bare.length && s.bare.length + ' bare', canTill && s.untilled.length && s.untilled.length + ' to till', loaves && loaves + ' loaves to bake']
+    .filter(Boolean).join(', ') + '; ' + seeds + ' seeds carried' + (about ? ', ' + about + ' grass about' + (allowance < GRASS_MOST ? ' (' + allowance + ' more to break today)' : '') : '') + (canTill && s.untilled.length && !hoeCarried(bot) ? ', a hoe to make' : '');
+  return { chore: 'garden', why, fresh: !plot, house: house.key, houseName: house.name, untilled: s.untilled.length, bare: s.bare.length, ripe, loaves, seeds, grass };
 }
 
 async function makeHoe(bot, task, goal, save, plot, { navigate, openWindow }) {
@@ -553,10 +565,93 @@ async function sow(bot, task, goal, save, plot) {
   return n;
 }
 
-// One run (work.js, kind 'garden'): -> true, with goal.tilled, goal.planted, goal.seedsFound, goal.grassBroken and
-// goal.hoeMade for the line in the log (session.js). Throws when there is no house or no garden to tend after all.
+// ---- the harvest, and the bread
+// The ground round the plot: the sixteen cells about its three by three, at its level.
+function ringOf(plot) {
+  const m = plot.middle, out = [];
+  for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) if (Math.max(Math.abs(dx), Math.abs(dz)) === 2) out.push({ x: m.x + dx, y: m.y, z: m.z + dz });
+  return out;
+}
+// What lies on or about the plot of what a harvest drops.
+function dropsAbout(bot, plot) {
+  const m = plot.middle;
+  return Object.values(bot.entities || {}).filter(e => e?.name === 'item' && e.isValid !== false && e.position && DROPS.test(e.getDroppedItem?.()?.name || '') &&
+    Math.abs(e.position.x - (m.x + 0.5)) <= 2.6 && Math.abs(e.position.z - (m.z + 0.5)) <= 2.6 && e.position.y >= m.y && e.position.y <= m.y + 2.5);
+}
+// The ripe crops dug from where the bot stands beside the plot, counted as they come off.
+async function harvest(bot, task, goal, save, plot, cells, { dig }) {
+  let n = 0;
+  for (const c of cells) {
+    task.check();
+    const crop = up(c), b = blockOf(bot, crop);
+    if (!b || !CROP.test(b.name) || ageOf(b) < RIPE[b.name] || !inReachOf(bot, crop)) continue;
+    goal.step = { action: 'garden_harvest', cell: c, crop: b.name }; save?.();
+    try { await dig(bot, task, at(crop), { requireDrops: false }); }
+    catch (err) { task.check(); if (fatal(err)) throw err; continue; }
+    if (await waitFor(task, () => !CROP.test(nameOf(bot, crop) || ''), 1500)) { n++; (goal.reaped ||= {})[b.name] = (goal.reaped[b.name] || 0) + 1; }
+  }
+  return n;
+}
+// The drops picked up from the ring round the plot: the ring's cell with the most of them in the server's reach first,
+// each cell tried once, nothing into full pockets. -> what reached the pockets.
+async function pickUp(bot, task, goal, save, plot, navigate) {
+  const before = count(bot, DROPS), tried = new Set();
+  const inPick = (s, e) => Math.abs(e.position.x - (s.x + 0.5)) <= PICK && Math.abs(e.position.z - (s.z + 0.5)) <= PICK;
+  for (let round = 0; round < 8; round++) {
+    task.check();
+    const left = dropsAbout(bot, plot).filter(e => room(bot, e.getDroppedItem().name));
+    if (!left.length) break;
+    const here = bot.entity.position;
+    const best = ringOf(plot).filter(s => !tried.has(keyOf(s)) && standable(bot, s)).map(s => ({ s, n: left.filter(e => inPick(s, e)).length }))
+      .filter(o => o.n > 0).sort((a, b) => b.n - a.n || at(a.s).distanceTo(here) - at(b.s).distanceTo(here))[0];
+    if (!best) break;
+    tried.add(keyOf(best.s));
+    goal.step = { action: 'garden_pickup', position: up(best.s), lying: left.length }; save?.();
+    if (!onStand(bot, best.s)) {
+      if (!navigate) break;
+      try { await navigate(bot, task, new goals.GoalBlock(best.s.x, best.s.y + 1, best.s.z), { timeoutMs: 15000, stallMs: 5000 }); }
+      catch (err) { task.check(); if (fatal(err)) throw err; continue; }
+    }
+    await waitFor(task, () => !left.some(e => inPick(best.s, e) && bot.entities?.[e.id] === e && e.isValid !== false), 1500);
+  }
+  const got = Math.max(0, count(bot, DROPS) - before);
+  goal.pickedUp += got;
+  goal.dropsLeft = dropsAbout(bot, plot).length;
+  return got;
+}
+// The loaves the wheat carried makes at a crafting table standing by the garden (three a loaf), with room for them.
+function loavesFor(bot, plot, now = Date.now()) {
+  const n = Math.floor(count(bot, 'wheat') / BREAD_WHEAT);
+  return n > 0 && room(bot, 'bread') && tableNear(bot, plot.middle, now) ? n : 0;
+}
+// Bread at that table: as many loaves as the wheat makes, in one window, counted by what reached the pockets.
+async function bake(bot, task, goal, save, plot, { navigate, openWindow }) {
+  const loaves = loavesFor(bot, plot), table = loaves ? tableNear(bot, plot.middle) : null, id = bot.registry?.itemsByName?.bread?.id;
+  if (!loaves || !table || id === undefined || typeof bot.recipesFor !== 'function') return 0;
+  const tp = table.position;
+  goal.step = { action: 'garden_bake', loaves, table: plain(tp) }; save?.();
+  if (eye(bot).distanceTo(at(tp).offset(0.5, 0.5, 0.5)) > REACH) {
+    if (!navigate) return 0;
+    try { await navigate(bot, task, new goals.GoalNear(tp.x, tp.y, tp.z, 2), { timeoutMs: 30000, stallMs: 6000 }); }
+    catch (err) { task.check(); if (fatal(err)) throw err; return 0; }
+  }
+  const bench = blockOf(bot, tp), recipe = bench?.name === 'crafting_table' ? bot.recipesFor(id, null, 1, bench)?.[0] : null;
+  if (!recipe) return 0;
+  const before = count(bot, 'bread');
+  try {
+    if (openWindow) await openWindow(bot, task, () => bot.craft(recipe, loaves, bench), { block: bench, what: 'the crafting table', timeoutMs: 10000 });
+    else await bot.craft(recipe, loaves, bench);
+  } catch (err) { task.check(); if (fatal(err)) throw err; console.log('[garden] no bread baked: ' + err.message); }
+  await waitFor(task, () => count(bot, 'bread') >= before + loaves, 3000);
+  const made = Math.max(0, count(bot, 'bread') - before);
+  if (made) console.log('[garden] ' + made + ' bread baked at the crafting table at ' + where(tp));
+  return made;
+}
+
+// One run (work.js, kind 'garden'): -> true, with goal.harvested, goal.pickedUp, goal.tilled, goal.planted,
+// goal.seedsFound, goal.grassBroken, goal.loaves and goal.hoeMade for the line in the log (session.js). Throws when there is no house or no garden to tend after all.
 async function gardenStep(bot, task, goal, save, { navigate, dig, collect, openWindow } = {}) {
-  goal.tilled ||= 0; goal.planted ||= 0; goal.seedsFound ||= 0; goal.grassBroken ||= 0;
+  goal.tilled ||= 0; goal.planted ||= 0; goal.seedsFound ||= 0; goal.grassBroken ||= 0; goal.harvested ||= 0; goal.pickedUp ||= 0; goal.loaves ||= 0;
   const me = bot.entity.position, houses = housesAbout(bot, me);
   const house = houses.find(h => h.key === goal.gardenHouse) || houses.filter(h => gapTo(me, h.min, h.max) <= HOUSE_NEAR).sort((a, b) => gapTo(me, a.min, a.max) - gapTo(me, b.min, b.max))[0];
   if (!house) throw new Error('No house about to make a garden by');
@@ -570,22 +665,30 @@ async function gardenStep(bot, task, goal, save, { navigate, dig, collect, openW
   }
   let failed = null;
   try {
-    if (plotStatus(bot, plot).untilled.length && !hoeCarried(bot) && hoePlan(bot)) goal.hoeMade = await makeHoe(bot, task, goal, save, plot, { navigate, openWindow });
     let s = plotStatus(bot, plot);
+    // The harvest first: what it drops lies five minutes, and its seeds sow the garden again before any grass is broken.
+    if (s.ripe.length && dig) {
+      if (!await toStand(bot, task, goal, save, plot, navigate)) throw new Error('No way to stand beside the garden');
+      goal.harvested += await harvest(bot, task, goal, save, plot, s.ripe, { dig });
+      if (goal.harvested) { await sleep(400); await pickUp(bot, task, goal, save, plot, navigate); }
+    }
+    if (plotStatus(bot, plot).untilled.length && !hoeCarried(bot) && hoePlan(bot)) goal.hoeMade = await makeHoe(bot, task, goal, save, plot, { navigate, openWindow });
+    s = plotStatus(bot, plot);
     const want = s.bare.length + (hoeCarried(bot) ? s.untilled.length : 0), allowance = grassLeftToday(bot, plot);
     if (want > seedsCarried(bot) && allowance > 0 && room(bot, 'wheat_seeds')) await gatherSeeds(bot, task, goal, save, plot, house, want, allowance, { navigate, dig, collect });
-    if (seedsCarried(bot)) {
+    if (want && seedsCarried(bot)) {
       if (!await toStand(bot, task, goal, save, plot, navigate)) throw new Error('No way to stand beside the garden');
       s = plotStatus(bot, plot);
       const tilling = hoeCarried(bot) ? Math.max(0, Math.min(s.untilled.length, seedsCarried(bot) - s.bare.length)) : 0;
       if (tilling) goal.tilled += await till(bot, task, goal, save, plot, s.untilled.slice(0, tilling), { dig });
       goal.planted += await sow(bot, task, goal, save, plot);
     }
+    goal.loaves += await bake(bot, task, goal, save, plot, { navigate, openWindow });
   } catch (err) { failed = err; throw err; }
   finally {
     // A run that came to nothing rests the garden, longer each time; one a player ended is not counted.
     if (failed?.name !== 'Cancelled') {
-      const did = goal.tilled + goal.planted + goal.seedsFound + (goal.hoeMade ? 1 : 0);
+      const did = goal.harvested + goal.pickedUp + goal.tilled + goal.planted + goal.seedsFound + goal.loaves + (goal.hoeMade ? 1 : 0);
       plot.lastRunAt = new Date().toISOString();
       if (did) { plot.idle = 0; delete plot.restUntil; }
       else { plot.idle = (plot.idle || 0) + 1; plot.restUntil = Date.now() + Math.min(30, 5 * 2 ** (plot.idle - 1)) * 60000; }
@@ -596,5 +699,5 @@ async function gardenStep(bot, task, goal, save, { navigate, dig, collect, openW
   return true;
 }
 
-module.exports = { gardenDue, gardenStep, housesAbout, searchSite, siteBy, plotStatus, plotsHere, hoePlan, seedsCarried, grassAbout, grassLeftToday,
+module.exports = { gardenDue, gardenStep, housesAbout, searchSite, siteBy, plotStatus, plotsHere, hoePlan, seedsCarried, grassAbout, grassLeftToday, ringOf, dropsAbout, loavesFor,
   HOUSE_NEAR, PLOT_FROM, PLOT_TO, DOOR_CLEAR, WET, GRASS_MOST, GRASS_FEW, TABLE_NEAR, SOWN, KEEP };

@@ -16,12 +16,13 @@ const task = { check() {} };
 const env = {};
 const EMPTY = /^(air|cave_air|water|lava|short_grass|tall_grass|fern|large_fern|wheat|carrots|potatoes|beetroots|torch|dandelion|poppy|.*_sapling)$/;
 const NAMES = ['red_bed', 'oak_door', 'crafting_table', 'short_grass', 'tall_grass', 'fern', 'large_fern', 'water', 'farmland', 'wheat', 'oak_planks', 'cobblestone', 'poppy', 'torch'];
-const ITEMS = ['wooden_hoe', 'stone_hoe', 'stick', 'oak_planks', 'oak_log', 'wheat_seeds', 'carrot', 'potato', 'beetroot_seeds', 'cobblestone'];
+const ITEMS = ['wooden_hoe', 'stone_hoe', 'stick', 'oak_planks', 'oak_log', 'wheat_seeds', 'carrot', 'potato', 'beetroot_seeds', 'cobblestone', 'wheat', 'bread', 'beetroot', 'poisonous_potato'];
 const RECIPES = {
   oak_planks: { needs: [['oak_log', 1]], makes: 4 },
   stick: { needs: [[/_planks$/, 2]], makes: 4 },
   wooden_hoe: { needs: [[/_planks$/, 2], ['stick', 2]], makes: 1, table: true },
   stone_hoe: { needs: [['cobblestone', 2], ['stick', 2]], makes: 1, table: true },
+  bread: { needs: [['wheat', 3]], makes: 1, table: true },
 };
 const CROP = { wheat_seeds: 'wheat', carrot: 'carrots', potato: 'potatoes', beetroot_seeds: 'beetroots' };
 const counted = (list, what) => list.reduce((n, i) => n + ((typeof what === 'string' ? i.name === what : what.test(i.name)) ? i.count : 0), 0);
@@ -43,7 +44,7 @@ function world(cells = {}) {
 }
 // A house of planks, x and z from -3 to 3, walls 64 to 66 and a roof at 67, a door in the east wall at (3, 64, 0) and
 // a bed inside; a pond east of it, x 9 to 12 and z -8 to 8, at the ground's level.
-function homestead(extra = {}, { pond = true, door = true, bed = true } = {}) {
+function homestead(extra = {}, { pond = true, door = true, bed = true, pondX = 9 } = {}) {
   const cells = {}, blocks = [];
   const lay = (x, y, z, name, props) => { cells[x + ',' + y + ',' + z] = props ? [name, props] : name; blocks.push({ x, y, z, material: name }); };
   for (let x = -3; x <= 3; x++) for (let z = -3; z <= 3; z++) {
@@ -52,7 +53,7 @@ function homestead(extra = {}, { pond = true, door = true, bed = true } = {}) {
   }
   if (door) { lay(3, 64, 0, 'oak_door', { half: 'lower' }); lay(3, 65, 0, 'oak_door', { half: 'upper' }); }
   if (bed) { lay(0, 64, 0, 'red_bed', { part: 'foot' }); lay(-1, 64, 0, 'red_bed', { part: 'head' }); }
-  if (pond) for (let x = 9; x <= 12; x++) for (let z = -8; z <= 8; z++) cells[x + ',63,' + z] = 'water';
+  if (pond) for (let x = pondX; x <= pondX + 3; x++) for (let z = -8; z <= 8; z++) cells[x + ',63,' + z] = 'water';
   Object.assign(cells, extra);
   const entry = { id: 'h1', name: 'Oak starter house', kind: 'build', status: 'unfinished', origin: { x: -3, y: 63, z: -3 }, entrance: door ? { x: 4, y: 64, z: 0 } : null,
     bounds: { min: { x: -3, y: 63, z: -3 }, max: { x: 3, y: 67, z: 3 } }, blueprint: { blocks } };
@@ -85,7 +86,7 @@ function botIn(w, { at = v(0.5, 64, 12.5), items = [], registry = null, labels =
       if (crop && ref.name === 'farmland' && w.blockAt(p).name === 'air') { w.set(p, [crop, { age: 0 }]); inv.take(bot.held); }
     },
     recipesFor(id, meta, n, table) { const r = RECIPES[id]; return r && (!r.table || table) && r.needs.every(([what, k]) => counted(inv.items(), what) >= k) ? [{ id, ...r }] : []; },
-    async craft(recipe) { for (const [what, k] of recipe.needs) inv.take(what, k); inv.add(recipe.id, recipe.makes); },
+    async craft(recipe, n = 1) { for (let i = 0; i < n; i++) { for (const [what, k] of recipe.needs) inv.take(what, k); inv.add(recipe.id, recipe.makes); } },
   };
   if (registry) bot.buildRegistry = registry;
   if (labels) bot.labels = labels;
@@ -106,10 +107,14 @@ function helpers(bot, w, { seedEvery = 0 } = {}) {
       seen.under.push(w.blockAt(v(Math.floor(b.entity.position.x), goal.y - 1, Math.floor(b.entity.position.z))).name);
     },
     dig: async (b, t, p) => {
-      const name = w.blockAt(p).name;
+      const blk = w.blockAt(p), name = blk.name;
       w.set(p, 'air'); seen.digs.push(name); seen.dug.push({ x: p.x, z: p.z });
+      // A ripe wheat: a wheat and two seeds, lying on the farmland it grew on.
+      if (name === 'wheat' && Number(blk.getProperties().age) >= 7) for (const item of ['wheat', 'wheat_seeds', 'wheat_seeds']) {
+        const n = ++id; b.entities[n] = { id: n, name: 'item', isValid: true, position: v(p.x + 0.5, p.y - 0.06, p.z + 0.5), getDroppedItem: () => ({ name: item }) };
+      }
       if (seedEvery && /short_grass|tall_grass|fern/.test(name) && ++broken % seedEvery === 0)
-        b.entities[++id] = { name: 'item', isValid: true, position: v(p.x + 0.5, p.y + 0.2, p.z + 0.5), getDroppedItem: () => ({ name: 'wheat_seeds' }) };
+        { const n = ++id; b.entities[n] = { id: n, name: 'item', isValid: true, position: v(p.x + 0.5, p.y + 0.2, p.z + 0.5), getDroppedItem: () => ({ name: 'wheat_seeds' }) }; }
     },
     collect: async (b, t, item, { origin, radius }) => {
       for (const [k, e] of Object.entries(b.entities)) if (e.getDroppedItem().name === item && e.position.distanceTo(origin) <= radius) { delete b.entities[k]; b.inventory.add(item); return true; }
@@ -117,6 +122,24 @@ function helpers(bot, w, { seedEvery = 0 } = {}) {
     },
     openWindow: async (b, t, open, { block }) => { seen.windows.push(block.name); return open(); },
   };
+}
+// The server's own pickup: an item within a block and a third across of the player (and a little up or down) goes
+// into its pockets, looked at every tick; -> the stop.
+function pickupTicker(bot) {
+  const t = setInterval(() => {
+    const p = bot.entity.position;
+    for (const [k, e] of Object.entries(bot.entities)) if (e.name === 'item' && Math.abs(e.position.x - p.x) <= 1.425 && Math.abs(e.position.z - p.z) <= 1.425 &&
+      e.position.y >= p.y - 0.5 && e.position.y <= p.y + 2.3) { delete bot.entities[k]; e.isValid = false; bot.inventory.add(e.getDroppedItem().name); }
+  }, 20);
+  return () => clearInterval(t);
+}
+// A garden begun and sown by a run, then left ripe: -> { bot, plot }.
+async function ripeGarden(w, registry) {
+  const b0 = botIn(w, { registry, items: [['wooden_hoe', 1], ['wheat_seeds', 8]] });
+  await quietlyAsync(() => garden.gardenStep(b0, task, chores.goalFor(b0, garden.gardenDue(b0, {}), { now: 0 }), null, helpers(b0, w)));
+  const plot = garden.plotsHere(b0)[0];
+  for (const c of plot.cells) w.set(v(c.x, c.y + 1, c.z), ['wheat', { age: 7 }]);
+  return { file: b0._gardenFile, plot };
 }
 const quietly = fn => { const was = console.log, lines = []; console.log = (...a) => lines.push(a.join(' ')); try { return [fn(), lines]; } finally { console.log = was; } };
 const quietlyAsync = async fn => { const was = console.log, lines = []; console.log = (...a) => lines.push(a.join(' ')); try { return [await fn(), lines]; } finally { console.log = was; } };
@@ -378,6 +401,89 @@ test('grass broken one round a garden an in-game day; seeds carried are still so
   assert.ok(plot.grass.broken >= 1 && plot.grass.broken < garden.GRASS_MOST, 'counted: ' + plot.grass.broken);
   assert.equal(garden.grassLeftToday(bot, plot), garden.GRASS_MOST - plot.grass.broken);
   assert.equal(JSON.parse(fs.readFileSync(bot._gardenFile, 'utf8')).plots[0].grass.broken, plot.grass.broken, 'saved though cut short');
+});
+
+test('ripe crops: due with nothing carried; dug from beside the plot, the drops picked up from the ground round it, the cells sown again', async () => {
+  const { w, registry } = homestead({}, { pondX: 10 });
+  const { file: gf, plot } = await ripeGarden(w, registry);
+  const bot = botIn(w, { registry, file: gf });
+  const d = garden.gardenDue(bot, {});
+  assert.equal(d?.chore, 'garden', 'ripe, nothing carried');
+  assert.equal(d.ripe, 8);
+  assert.equal(chores.line(d), "I'll bring in the harvest from the garden.");
+  const goal = chores.goalFor(bot, d, { now: 0 }), h = helpers(bot, w), stop = pickupTicker(bot);
+  let lines;
+  try { [, lines] = await quietlyAsync(() => garden.gardenStep(bot, task, goal, null, h)); } finally { stop(); }
+  assert.equal(goal.harvested, 8);
+  assert.equal(goal.dropsLeft, 0, 'nothing left lying');
+  assert.equal(goal.planted, 8, 'sown again with the seeds that came off');
+  assert.equal(counted(bot.inventory.items(), 'wheat'), 8);
+  assert.equal(counted(bot.inventory.items(), 'wheat_seeds'), 8, 'sixteen came off, eight sown');
+  for (const c of plot.cells) { assert.equal(w.blockAt(v(c.x, c.y, c.z)).name, 'farmland'); assert.equal(w.blockAt(v(c.x, c.y + 1, c.z)).name, 'wheat'); assert.equal(w.blockAt(v(c.x, c.y + 1, c.z)).getProperties().age, 0); }
+  assert.ok(h.seen.under.every(n => n !== 'farmland'), 'never stood on the farmland: ' + h.seen.under);
+  assert.equal(garden.plotsHere(bot)[0].restUntil, undefined, 'a harvest is not a run that came to nothing');
+  assert.ok(!lines.some(l => /bread/.test(l)), 'no table about: no bread');
+});
+
+// Stone at the ground's level about the house but for the grass given (stood on, never farmed): the plot goes where it
+// is put. The pond and the house's own floor are left as they are.
+function stoneBut(grass, { pondX = 9 } = {}) {
+  const extra = {}, keep = new Set(grass.map(([x, z]) => x + ',' + z));
+  for (let x = -12; x <= 20; x++) for (let z = -14; z <= 14; z++) {
+    if (keep.has(x + ',' + z) || (x >= pondX && x <= pondX + 3 && z >= -8 && z <= 8) || (Math.abs(x) <= 3 && Math.abs(z) <= 3)) continue;
+    extra[x + ',63,' + z] = 'stone';
+  }
+  return extra;
+}
+const strip = (x0, x1, z0, z1) => { const out = []; for (let x = x0; x <= x1; x++) for (let z = z0; z <= z1; z++) out.push([x, z]); return out; };
+
+test('a plot that can only go against the water: the drops on the middle cell of its side with no ground beside it are left lying', async () => {
+  const { w, registry } = homestead(stoneBut(strip(6, 8, 4, 8)));
+  const { file: gf, plot } = await ripeGarden(w, registry);
+  assert.equal(plot.middle.x, 7, 'against the pond: ' + JSON.stringify(plot.middle));
+  const bot = botIn(w, { registry, file: gf });
+  const goal = chores.goalFor(bot, garden.gardenDue(bot, {}), { now: 0 }), stop = pickupTicker(bot);
+  try { await quietlyAsync(() => garden.gardenStep(bot, task, goal, null, helpers(bot, w))); } finally { stop(); }
+  assert.equal(goal.harvested, 8);
+  assert.equal(goal.dropsLeft, 3, 'the east middle cell\'s wheat and two seeds: water beside it');
+  const left = garden.dropsAbout(bot, plot);
+  assert.ok(left.every(e => Math.floor(e.position.x) === plot.middle.x + 1 && Math.floor(e.position.z) === plot.middle.z), JSON.stringify(left.map(e => e.position)));
+  assert.equal(goal.planted, 8);
+});
+
+test('a side of the plot with no ground beside it to stand on: a spot a block farther out is chosen over it', () => {
+  // North of the door, a plot can go three out but only against the water; south, four out with ground all round it.
+  const { w, registry } = homestead(stoneBut([...strip(6, 8, -8, -6), ...strip(5, 7, 7, 9)]));
+  const bot = botIn(w, { registry });
+  const house = garden.housesAbout(bot, bot.entity.position)[0];
+  const site = garden.siteBy(bot, house).site;
+  assert.ok(site, 'a site');
+  assert.deepEqual(site.middle, { x: 6, y: 63, z: 8 }, 'the south one, four out with ground on every side');
+  // With the south strip gone too, the one against the water is still taken: a garden there is better than none.
+  const { w: w2, registry: r2 } = homestead(stoneBut(strip(6, 8, -8, -6)));
+  const b2 = botIn(w2, { registry: r2 });
+  assert.deepEqual(garden.siteBy(b2, garden.housesAbout(b2, b2.entity.position)[0]).site?.middle, { x: 7, y: 63, z: -7 });
+});
+
+test('bread at the table by the garden: three wheat a loaf, all in one window; due for it with nothing else to do', async () => {
+  const { w, registry } = homestead({ '-6,64,0': 'crafting_table' }, { pondX: 10 });
+  const b0 = botIn(w, { registry, items: [['wooden_hoe', 1], ['wheat_seeds', 8]] });
+  await quietlyAsync(() => garden.gardenStep(b0, task, chores.goalFor(b0, garden.gardenDue(b0, {}), { now: 0 }), null, helpers(b0, w)));
+  const bot = botIn(w, { registry, file: b0._gardenFile, items: [['wheat', 7]] });
+  const d = garden.gardenDue(bot, {});
+  assert.equal(d?.chore, 'garden');
+  assert.equal(d.loaves, 2);
+  assert.equal(chores.line(d), "I'll bake some bread.");
+  const goal = chores.goalFor(bot, d, { now: 0 }), h = helpers(bot, w);
+  const [, lines] = await quietlyAsync(() => garden.gardenStep(bot, task, goal, null, h));
+  assert.equal(goal.loaves, 2);
+  assert.equal(counted(bot.inventory.items(), 'bread'), 2);
+  assert.equal(counted(bot.inventory.items(), 'wheat'), 1);
+  assert.deepEqual(h.seen.windows, ['crafting_table'], 'one window');
+  assert.ok(lines.some(l => /^\[garden\] 2 bread baked at the crafting table at \(-6, 64, 0\)/.test(l)), lines.join(' | '));
+  assert.equal(garden.gardenDue(bot, {}), null, 'one wheat left: nothing to do');
+  const none = botIn(world({}), { items: [['wheat', 9]] });
+  assert.equal(garden.gardenDue(none, {}), null, 'no house, no garden: no bread either');
 });
 
 test('read again before each run: a cell built on is left; half of it gone, the garden is forgotten', async () => {
