@@ -232,7 +232,13 @@ function completion(goal) {
     const places = [...new Set(chest.map(e => `${e.position.x}, ${e.position.y}, ${e.position.z}`))];
     return places.length === 1 ? `All done! I left items for you in the chest at ${places[0]}.` : 'All done! I left items in the chests I pointed out.';
   }
-  if (['obtain', 'craft'].includes(goal.kind)) return goal.deliver ? `You got ${goal.count} ${name(goal.item)}!` : `I've got ${goal.count} ${name(goal.item)}.`;
+  if (['obtain', 'craft'].includes(goal.kind)) {
+    if (!goal.deliver) return `I've got ${goal.count} ${name(goal.item)}.`;
+    // Handed over: to the player the request named, or picked up by another player (delivery.js).
+    const to = goal.deliverTo || goal.from, by = [...new Set((goal.deliveryEvidence || []).map(e => e.by).filter(Boolean))];
+    if (by.length && !(goal.deliveryEvidence || []).some(e => !e.by)) return `${by.join(' and ')} picked up the ${goal.count} ${name(goal.item)}.`;
+    return goal.deliverTo && goal.deliverTo !== goal.from ? `${to} got ${goal.count} ${name(goal.item)}!` : `You got ${goal.count} ${name(goal.item)}!`;
+  }
   if (goal.kind === 'bundle') return `All done! ${list(goal.tasks)}. ${goal.tasks.every(t => t.deliver) ? 'You have the whole list.' : 'I kept the items you asked me to keep.'}`;
   if (goal.kind === 'find') {
     const p = goal.discovery.found.position;

@@ -5906,7 +5906,7 @@ async function obtainStep(bot, task, goal, save, client, onStep) {
   const remaining = (goal.deliver ? Math.min(goal.count, goal.deliveryTarget ?? goal.count) : goal.count) - (goal.delivered || 0);
   if (goal.pendingDelivery || goal.pendingChestDelivery || goal.deliveryMode === 'chest' || countOf(bot, goal.item) >= remaining) {
     if (!goal.deliver) return true;
-    goal.step = { action: 'deliver', item: goal.item, count: remaining, recipient: goal.from }; save();
+    goal.step = { action: 'deliver', item: goal.item, count: remaining, recipient: require('./delivery').recipientOf(bot, goal) }; save();
     return deliver(bot, task, goal, save);
   }
   const stock = await withUsableWorkstations(bot, task, planningInventory(bot), [goal.item], goal.workSite);

@@ -6,6 +6,9 @@ const { navigate, surveyRoute, countOf } = require('./skills');
 const { dryBodySpace, dryPassable, damagingTerrain } = require('./terrain');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Whom the items go to: the player the request named ("for <player>", goal.deliverTo) while they are online, else the
+// player who asked.
+const recipientOf = (bot, goal) => goal?.deliverTo && bot?.players?.[goal.deliverTo] ? goal.deliverTo : goal?.from;
 function handoverAim(bot, receiver, from = bot.entity?.position) {
   const feet = receiver.position.floored();
   // Aim down toward the center of supported ground beneath the recipient.
@@ -138,6 +141,18 @@ async function deliver(bot, task, goal, save, { timeout = 12000 } = {}) {
   finally { if (movement) movement.scafoldingBlocks = previous; }
 }
 
+// Whether a pickup the server reported is the handover's: one of this throw's drops, of the item handed over, taken
+// by the receiver or by another player. A player standing beside the receiver took the whole stack meant for them in
+// play, and the bot, counting only the receiver's pickups, said it was not sure anyone got the items. A mob's pickup,
+// or the bot's own, is not one. -> { by: null | the other player's name } or null.
+function handoverPickup(bot, packet, receiver, knownEntities, itemName) {
+  const id = packet?.collectorEntityId, collector = bot.entities?.[id];
+  const by = id !== receiver?.id && id !== bot.entity?.id && collector?.type === 'player' && collector.username ? collector.username : null;
+  if ((id !== receiver?.id && !by) || knownEntities.has(packet.collectedEntityId)) return null;
+  if (bot.entities?.[packet.collectedEntityId]?.getDroppedItem?.()?.name !== itemName) return null;
+  return { by };
+}
+
 async function deliverItems(bot, task, goal, save, { timeout }) {
   const itemName = goal.item || 'purple_concrete';
   const label = itemName.replaceAll('_', ' ');
@@ -170,10 +185,11 @@ async function deliverItems(bot, task, goal, save, { timeout }) {
   if (!receiver) return false;
   await approachForHandover(bot, task, receiver);
   task.check();
-  receiver = bot.players[goal.from]?.entity;
+  const who = recipientOf(bot, goal);
+  receiver = bot.players[who]?.entity;
   if (!receiver || receiver.position.distanceTo(bot.entity.position) > 3) throw new Error('Requester moved out of handover range');
   const aimDrop = async () => {
-    const current = bot.players[goal.from]?.entity;
+    const current = bot.players[who]?.entity;
     if (!current || current.position.distanceTo(bot.entity.position) > 3 ||
         (bot.blockAt && !safeHandoverPosition(bot, bot.entity.position, current))) throw new Error('Requester moved away from the safe handover spot');
     receiver = current;
@@ -187,14 +203,15 @@ async function deliverItems(bot, task, goal, save, { timeout }) {
   save();
   const onCollect = packet => {
     bot.emit?.('handover', { event: 'pickup', packet, item: bot.entities[packet.collectedEntityId]?.getDroppedItem?.()?.name, recipientId: receiver.id });
-    if (packet.collectorEntityId !== receiver.id || knownEntities.has(packet.collectedEntityId)) return;
-    const entity = bot.entities[packet.collectedEntityId];
-    if (entity?.getDroppedItem?.()?.name !== itemName) return;
+    const taken = handoverPickup(bot, packet, receiver, knownEntities, itemName);
+    if (!taken) return;
+    const { by } = taken;
     const amount = Math.min(packet.pickupItemCount, target - (goal.delivered || 0));
     if (!Number.isInteger(amount) || amount <= 0) return;
     goal.delivered = (goal.delivered || 0) + amount;
     goal.deliveryEvidence ||= [];
-    goal.deliveryEvidence.push({ recipient: goal.from, entity: packet.collectedEntityId, count: amount, at: new Date().toISOString() });
+    goal.deliveryEvidence.push({ recipient: who, ...(by && { by }), entity: packet.collectedEntityId, count: amount, at: new Date().toISOString() });
+    if (by) console.log(`[deliver] ${by} picked up ${amount} ${itemName} handed to ${who}`);
     if (goal.delivered >= target) delete goal.pendingDelivery;
     save();
   };
@@ -219,7 +236,7 @@ async function deliverItems(bot, task, goal, save, { timeout }) {
         delete goal.pendingDelivery; save();
         throw Object.assign(new Error('Recovered the throw; use a chest for the remaining items'), { code: 'HANDOVER_SPACE' });
       }
-      const err = new Error(`Dropped ${label} for ${goal.from}, but pickup of all ${remaining} items was not confirmed`);
+      const err = new Error(`Dropped ${label} for ${who}, but pickup of all ${remaining} items was not confirmed`);
       err.name = 'Blocked'; err.needsPlayer = true; throw err;
     }
     return (goal.delivered || 0) >= goal.count;
@@ -227,13 +244,14 @@ async function deliverItems(bot, task, goal, save, { timeout }) {
 }
 
 async function approachReceiver(bot, task, goal) {
-  let receiver = bot.players[goal.from]?.entity;
-  if (!receiver && goal.requesterPosition) {
+  const who = recipientOf(bot, goal);
+  let receiver = bot.players[who]?.entity;
+  if (!receiver && goal.requesterPosition && who === goal.from) {
     const p = goal.requesterPosition;
     await navigate(bot, task, new goals.GoalNear(p.x, p.y, p.z, 2));
-    receiver = bot.players[goal.from]?.entity;
+    receiver = bot.players[who]?.entity;
   }
-  if (!receiver) throw new Error(`Cannot see ${goal.from} to deliver the items`);
+  if (!receiver) throw new Error(`Cannot see ${who} to deliver the items`);
   // Returning from a mine is a trip, not a local drop-position survey. A
   // visible player can be far above us, and the final corridor may only become
   // available after approaching through terrain or loading nearby chunks.
@@ -241,15 +259,15 @@ async function approachReceiver(bot, task, goal) {
     const target = receiver.position.clone();
     await navigate(bot, task, new goals.GoalNear(target.x, target.y, target.z, 3), {
       stopWhen: () => {
-        const current = bot.players[goal.from]?.entity;
+        const current = bot.players[who]?.entity;
         return !current || current.position.distanceTo(target) > 4;
       },
     });
     task.check();
-    receiver = bot.players[goal.from]?.entity;
-    if (!receiver) throw new Error(`Cannot see ${goal.from} to deliver the items`);
+    receiver = bot.players[who]?.entity;
+    if (!receiver) throw new Error(`Cannot see ${who} to deliver the items`);
     if (bot.entity.position.distanceTo(receiver.position) > 6) return false;
   }
   return receiver;
 }
-module.exports = { deliver, dropHeld, safeHandoverPosition, approachReceiver };
+module.exports = { deliver, dropHeld, safeHandoverPosition, approachReceiver, recipientOf, handoverPickup };

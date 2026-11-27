@@ -42,7 +42,7 @@ function reconcileChestDeposit(goal, window, save) {
       (goal.delivered || 0) !== pending.deliveredBefore)
     throw Object.assign(blocked(`Chest handover is unconfirmed at ${vec(pending.position)}. Check that chest before asking for replacements.`), { needsPlayer: true });
   goal.delivered = pending.deliveredBefore + added;
-  (goal.deliveryEvidence ||= []).push({ method: 'chest', recipient: goal.from, item: pending.item,
+  (goal.deliveryEvidence ||= []).push({ method: 'chest', recipient: goal.deliverTo || goal.from, item: pending.item,
     count: added, position: pending.position, dimension: pending.dimension, at: new Date().toISOString() });
   delete goal.pendingChestDelivery; save();
   return added;
@@ -131,7 +131,7 @@ async function deliverToChest(bot, task, goal, save, actions = require('./work')
   }
   const receiver = await require('./delivery').approachReceiver(bot, task, goal);
   if (!receiver) return false;
-  goal.step = { action: 'store_delivery', item, count: target - (goal.delivered || 0), recipient: goal.from }; save();
+  goal.step = { action: 'store_delivery', item, count: target - (goal.delivered || 0), recipient: require('./delivery').recipientOf(bot, goal) }; save();
   const positions = bot.findBlocks({ matching: bot.registry.blocksByName.chest.id, point: receiver.position, maxDistance: 6, count: 8 })
     .filter(p => p.offset(.5, .5, .5).distanceTo(receiver.position) <= 4 && dryPassable(bot.blockAt(p.offset(0, 1, 0))) &&
       new ConstructionGoal(bot, p, 'interact').reachable(receiver.position, .2));
@@ -153,7 +153,7 @@ async function deliverToChest(bot, task, goal, save, actions = require('./work')
   const p = selected.position;
   const face = await approachConstruction(bot, task, access, p, 'place', { material: 'chest' });
   task.check();
-  const current = bot.players[goal.from]?.entity;
+  const current = bot.players[require('./delivery').recipientOf(bot, goal)]?.entity;
   if (!current || !chestSites(bot, current).some(site => site.equals(p))) throw blocked('I need a free block near you for a chest.');
   await actions.place(bot, task, p, 'chest', { face });
   goal.deliveryChest = { position: { ...p }, dimension: bot.game.dimension }; save();

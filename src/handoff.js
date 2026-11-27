@@ -8,8 +8,14 @@
 // this is the task-replacement case only, kept in memory because a question
 // is worth ninety seconds and no longer.
 const same = (a, b) => String(a || '').toLowerCase() === String(b || '').toLowerCase();
-const YES = /^(yes|yeah|yep|sure|ok|okay|go ahead|do it|fine|yes please|let (him|her|them) )/i;
-const NO = /^(no|nope|nah|not now|later|no thanks|stay)\b/i;
+// A yes said the way players say it. "yea" was not one, the holder's yes went on to the language layer as a line of
+// its own, and that started the held request again in the holder's name: the items went to the wrong player. The
+// short words count only as the whole answer ("go home" is a request, not a yes).
+const YES = /^(?:(?:yes|yea|yeah|yeh|yah|ya|yep|yup|yes please|sure|ok|okay|okey|alright|all right|of course|absolutely|definitely|go ahead|go for it|do it|please do|sounds good|no problem|fine|let (?:him|her|them))\b|(?:y|k|kk|go|np|why not)$)/i;
+const NO = /^(?:(?:no|nope|nah|not now|later|no thanks|stay|don't|do not)\b|n$)/i;
+// The request as said, for comparing two sayings of it: no name in front, no case, no punctuation.
+const plain = (text, botName) => String(text || '').toLowerCase().replace(new RegExp(`^\\s*${String(botName || '').toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[,:]?\\s+`), '')
+  .replace(/[.!?,]+/g, ' ').replace(/\s+/g, ' ').trim();
 
 function createHandoff({ now = Date.now, questionMs = 90000, approvalMs = 120000 } = {}) {
   let question = null;           // { holder, asker, payload, request, until }
@@ -42,6 +48,18 @@ function createHandoff({ now = Date.now, questionMs = 90000, approvalMs = 120000
       question = null;
       if (verdict === 'yes') approvals.set(key(q.asker, q.request), now() + approvalMs);
       return { verdict, question: q };
+    },
+    // The language layer's reading of the holder's line, when it asks for the held request itself: that is the
+    // holder's yes said another way, and the request stays the asker's (with "for <asker>" or without).
+    // -> { verdict: 'yes', question } or null.
+    approvesByRequest(from, requests, botName) {
+      const q = live();
+      if (!q || !same(q.holder, from) || !Array.isArray(requests) || !requests.length) return null;
+      const held = plain(q.request, botName), asker = plain(q.asker), said = plain(requests[0], botName);
+      if (said !== held && said !== `${held} for ${asker}`) return null;
+      question = null;
+      approvals.set(key(q.asker, q.request), now() + approvalMs);
+      return { verdict: 'yes', question: q };
     },
     pending: () => live(),
     clear() { question = null; approvals.clear(); },

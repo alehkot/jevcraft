@@ -1127,6 +1127,17 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         if (labelled) out.options = null;
         const said = labelled ? sayCounted(labelled) : out.say ? sayCounted(out.say) : false;
         if (said) talkWith.set(from, Date.now());
+        // The holder's yes to "may I switch?" in words the yes list does not know, read by the language layer as the held
+        // request itself (handoff.js approvesByRequest): it runs as the asker's request, for the asker, not again in the
+        // holder's name for the holder.
+        const approved = !labelled && !out.options?.length && handoff?.approvesByRequest(from, out.requests, bot.username);
+        if (approved) {
+          noteHeard();
+          console.log(`[handoff] ${from} agreed in other words: ${approved.question.asker}'s request goes ahead as theirs`);
+          if (!said) bot.chat(`Thanks. Switching to ${approved.question.asker}'s request.`);
+          onPlayerChat(approved.question.payload);
+          return;
+        }
         const useBuildings = !!out.useBuildings && require('./built').on();
         // Choices offered: the pick is read when it comes (above), within the question's minute and a half, once said.
         if (out.options?.length) {
@@ -1345,7 +1356,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         spec.kind === 'bundle' ? `Working on the whole list: ${bundleSummary(spec)}.` :
         spec.kind === 'find' ? `I will look for ${spec.discoveryTarget.name.replaceAll('_', ' ')} and tell you where I find it.` :
         spec.kind === 'house' ? `Building a small ${spec.material} house with a floor, doorway and roof.` :
-        ['obtain', 'craft'].includes(spec.kind) ? `I'll get ${spec.count} ${spec.item.replaceAll('_', ' ')}${spec.deliver ? ` for ${from}` : ''}.` :
+        ['obtain', 'craft'].includes(spec.kind) ? `I'll get ${spec.count} ${spec.item.replaceAll('_', ' ')}${spec.deliver ? ` for ${spec.deliverTo || from}` : ''}.` :
         spec.kind === 'light_area' ? (spec.radius > 6 ? `I'll light the ground within ${spec.radius} blocks so nothing spawns there.` : "I'll check the ground for dark spots and light them.") :
         spec.kind === 'place_at_site' ? `I'll place the ${spec.item} beside the ${spec.workSite.name.replaceAll('_', ' ')}.` :
         spec.kind === 'climb_ladder' ? `I'll climb ${spec.direction} the nearby ladder.` :

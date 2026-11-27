@@ -49,6 +49,21 @@ function quantityCandidates(request) {
   return [...values].filter(n => Number.isInteger(n) && n > 0 && n <= 1024).map(String);
 }
 
+// "get me 64 acacia logs for <player>", "bring 64 logs to <player>": the items go to the player named, one online and
+// not the speaker, rather than to the speaker. A name said without its leading dot, in another case or without the
+// digits at its end is the same player. -> the player's name as the game has it, or null.
+function namedRecipient(text, players = [], username, from) {
+  const bare = s => String(s || '').toLowerCase().replace(/^\./, '');
+  const stem = s => bare(s).replace(/\d+$/, '');
+  const others = players.filter(p => p && bare(p) !== bare(username) && bare(p) !== bare(from));
+  for (const [, said] of String(text || '').matchAll(/\b(?:for|to)\s+(\.?[A-Za-z0-9_]{3,})/gi)) {
+    const word = bare(said);
+    const hit = others.find(p => bare(p) === word) || others.find(p => stem(p).length >= 3 && stem(p) === word.replace(/\d+$/, ''));
+    if (hit) return hit;
+  }
+  return null;
+}
+
 async function interpret(client, request, from, username, context = {}) {
   const address = parseAddress(request, username);
   const numbers = quantityCandidates(address.text);
@@ -172,7 +187,8 @@ async function interpret(client, request, from, username, context = {}) {
   if (['obtain', 'craft'].includes(kind) && a.outputs?.choice === 'multiple') {
     const resolution = await resolveItemBundle(client, registry, request, numbers, { inventory: context.inventory || {}, memory: context.memory });
     if (!resolution.items.length) return clarify('I could not resolve the whole item list. Please name the items or armor material so I can keep every part of your request.', { reason: 'incomplete_bundle' });
-    return { ...spec, kind: 'bundle', tasks: resolution.items.map(item => ({ ...item, from, status: 'pending' })), itemResolution: resolution };
+    const to = namedRecipient(address.text, context.players, username, from);
+    return { ...spec, kind: 'bundle', ...(to && { deliverTo: to }), tasks: resolution.items.map(item => ({ ...item, from, ...(to && { deliver: true, deliverTo: to }), status: 'pending' })), itemResolution: resolution };
   }
   const houseMaterial = Boolean(spec.starterBeds) || kind === 'house';
   const materialChoice = a.material?.choice;
@@ -199,6 +215,8 @@ async function interpret(client, request, from, username, context = {}) {
       spec.item = resolution.item; spec.count = a.quantity.choice === 'unspecified' ? resolution.item.endsWith('_concrete') ? 32 : 1 : Number(a.quantity.choice);
       if (!['speaker', 'bot', 'unspecified'].includes(a.delivery?.choice)) throw new Error('Invalid item recipient');
       spec.deliver = a.delivery.choice === 'speaker';
+      const to = namedRecipient(address.text, context.players, username, from);
+      if (to) { spec.deliver = true; spec.deliverTo = to; }
     }
   } else if (houseMaterial) {
     if (a.material?.choice && a.material.choice !== 'local_wood') spec.material = a.material.choice;
@@ -324,4 +342,4 @@ function verifyHouse(bot, blueprint) {
   return { ok: !missing.length && !obstructed.length, missing: missing.length, obstructed: obstructed.length };
 }
 
-module.exports = { interpret, quantityCandidates, GoalStore, houseBlueprint, verifyHouse, CONFIDENCE, TYPES };
+module.exports = { interpret, namedRecipient, quantityCandidates, GoalStore, houseBlueprint, verifyHouse, CONFIDENCE, TYPES };
