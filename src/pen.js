@@ -417,24 +417,45 @@ async function build(bot, task, goal, save, pen, { place, navigate }) {
   const st = status(bot, pen), s = st.shape;
   goal.step = { action: 'animals_pen', building: s.centre, fences: st.missing.length, gates: st.gatesMissing }; save?.();
   const out = { fences: 0, gates: 0 };
-  const todo = st.missing.slice();
-  while (todo.length) {
-    task.check();
-    const here = bot.entity.position;
-    todo.sort((a, b) => here.distanceTo(at(a).offset(0.5, 0, 0.5)) - here.distanceTo(at(b).offset(0.5, 0, 0.5)));
-    const c = todo.shift(), name = items(bot).find(i => FENCE.test(i.name))?.name;
-    if (!name) break;
-    if (FENCE.test(nameOf(bot, c) || '')) continue;
-    try { await place(bot, task, at(c), name); } catch (err) { task.check(); if (fatal(err)) throw err; console.log('[pen] no fence put at ' + where(c) + ': ' + String(err.message).slice(0, 120)); }
-    if (FENCE.test(nameOf(bot, c) || '')) out.fences++;
+  // An animal standing in a fence's cell (the pen goes up by the herd): the cell tried again after the others, twice,
+  // a few seconds apart, for it to have stepped off.
+  let todo = st.missing.slice();
+  for (let pass = 0; pass < 3 && todo.length; pass++) {
+    if (pass) await sleep(3000);
+    const later = [];
+    while (todo.length) {
+      task.check();
+      const here = bot.entity.position;
+      todo.sort((a, b) => here.distanceTo(at(a).offset(0.5, 0, 0.5)) - here.distanceTo(at(b).offset(0.5, 0, 0.5)));
+      const c = todo.shift(), name = items(bot).find(i => FENCE.test(i.name))?.name;
+      if (!name) { todo = []; later.length = 0; break; }
+      if (FENCE.test(nameOf(bot, c) || '')) continue;
+      if (someoneIn(bot, c) && pass < 2) { later.push(c); continue; }
+      try { await place(bot, task, at(c), name); } catch (err) {
+        task.check(); if (fatal(err)) throw err;
+        if (/obstructed/i.test(err.message) && pass < 2) later.push(c);
+        else console.log('[pen] no fence put at ' + where(c) + ': ' + String(err.message).slice(0, 120));
+      }
+      if (FENCE.test(nameOf(bot, c) || '')) out.fences++;
+    }
+    todo = later;
   }
   for (const [i, g] of st.gates.entries()) {
     if (g.there) continue;
     task.check();
-    const name = items(bot).find(it => GATE.test(it.name))?.name;
-    if (!name) break;
-    try { await require('./home-base').placeOriented(bot, task, { navigate }, s.stands[i], g.cell, name, () => GATE.test(nameOf(bot, g.cell) || '')); out.gates++; }
-    catch (err) { task.check(); if (fatal(err)) throw err; console.log('[pen] no gate put at ' + where(g.cell) + ': ' + String(err.message).slice(0, 120)); }
+    // The gate chosen again after a miss for want of it: the pockets read just after the other gate went in can still
+    // show that one (an acacia gate and an oak one carried, the acacia one put in first: "Need acacia fence gate").
+    for (let tries = 0; tries < 2; tries++) {
+      const name = items(bot).find(it => GATE.test(it.name))?.name;
+      if (!name) break;
+      try { await require('./home-base').placeOriented(bot, task, { navigate }, s.stands[i], g.cell, name, () => GATE.test(nameOf(bot, g.cell) || '')); out.gates++; break; }
+      catch (err) {
+        task.check(); if (fatal(err)) throw err;
+        if (!tries && /^Need /.test(err.message)) { await sleep(500); continue; }
+        console.log('[pen] no gate put at ' + where(g.cell) + ': ' + String(err.message).slice(0, 120));
+        break;
+      }
+    }
   }
   return out;
 }

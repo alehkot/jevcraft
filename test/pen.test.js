@@ -336,3 +336,42 @@ test('a herd about and wood carried: the chore builds a pen first, said so', () 
   const none = botIn(w, { registry, items: [['oak_log', 9]], herd: cows.map(e => ({ ...e })) });
   assert.equal(quietly(() => animals.herdDue(none, {}))[0], null);
 });
+
+test('the second gate chosen again when the pockets, read late, still show the first one put in', async () => {
+  const { w, registry } = homestead();
+  const bot = botIn(w, { registry, items: [['oak_fence', 14], ['acacia_fence_gate', 1], ['oak_fence_gate', 1]] });
+  const house = houseOf(bot);
+  const { site } = pen.searchSite(bot, house);
+  const p = quietly(() => pen.begin(bot, house, site))[0];
+  // The pockets read once late after a gate goes in: they still show it.
+  const live = bot.inventory.items, place0 = bot.placeBlock;
+  let stale = null;
+  bot.placeBlock = async (ref, face) => {
+    const before = live().map(i => ({ ...i }));
+    await place0(ref, face);
+    if (/_fence_gate$/.test(w.blockAt(ref.position.plus(face)).name)) stale = before;
+  };
+  bot.inventory.items = () => { if (stale) { const s = stale; stale = null; return s; } return live(); };
+  const [put, lines] = await quietlyAsync(() => pen.build(bot, task, {}, null, p, helpers(bot)));
+  assert.deepEqual(put, { fences: 14, gates: 2 }, lines.join(' | '));
+  assert.equal(pen.status(bot, p).built, true);
+});
+
+test('a fence cell a cow stands in is tried again after the others, once it has stepped off', async () => {
+  const { w, registry } = homestead();
+  const bot = botIn(w, { registry, items: [['oak_fence', 14], ['oak_fence_gate', 2]] });
+  const house = houseOf(bot);
+  const { site } = pen.searchSite(bot, house);
+  const p = quietly(() => pen.begin(bot, house, site))[0], s = pen.shapeOf(p);
+  const cell = s.fences[0], cow = animal('cow', cell.x, cell.z);
+  bot.entities[cow.id] = cow;
+  // The game puts no block where a body is; the cow steps off a second in.
+  const h = { ...helpers(bot) }, place0 = h.place;
+  h.place = async (b, t, q, name) => {
+    if (Object.values(b.entities).some(e => Math.floor(e.position.x) === q.x && Math.floor(e.position.z) === q.z)) throw new Error('Placement obstructed: a cow stands in the cell');
+    return place0(b, t, q, name);
+  };
+  setTimeout(() => { cow.position = v(s.centre.x + 0.5, 64, s.centre.z + 0.5); }, 1000);
+  const [put, lines] = await quietlyAsync(() => pen.build(bot, task, {}, null, p, h));
+  assert.deepEqual(put, { fences: 14, gates: 2 }, lines.join(' | '));
+});
