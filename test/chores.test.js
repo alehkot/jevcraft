@@ -91,7 +91,7 @@ test('none while stopped, threatened, hurt, hungry, by night or near dusk, resti
   assert.equal(chores.due(mk(), { env: { JEV_CHORES: 'off' } }), null);
   assert.equal(chores.due(mk(), { env: { JEV_CHORES: 'sweeping' } }), null, 'none named that is a chore');
   assert.ok(chores.due(mk(), { env: { JEV_CHORES: 'trees' } }));
-  assert.deepEqual([...chores.enabled({})], ['trees', 'garden'], 'all on unless named');
+  assert.deepEqual([...chores.enabled({})], ['trees', 'garden', 'animals'], 'all on unless named');
   assert.deepEqual([...chores.enabled({ JEV_CHORES: 'trees' })], ['trees'], 'the garden left out');
   const nether = mk(); nether.game.dimension = 'the_nether';
   assert.equal(chores.due(nether, { env }), null);

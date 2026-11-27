@@ -15,6 +15,10 @@
 //            for 2026-11-27, "basically there should be gardener set of activities", "only if there is a house/shelter
 //            nearby"); its ripe crops brought in and the cells sown again, bread baked at a table by it, and what is
 //            past what the bot keeps put in a chest by the house
+//   animals  by a house about too: the cows, sheep and mooshrooms there kept together, those away from the herd led to
+//            it with wheat in hand, and pairs of adults fed the garden's wheat to breed, no more than eight of a kind
+//            about (animals.js; asked for 2026-11-27 with the garden, "by giving them wheat and nudging them to stay
+//            close to each other")
 //
 // More come as their work can be done quietly where the bot waits (2026-11-27 on the copy: torches made from the pockets
 // as a request would be took three minutes, said each plank and stick, and dropped tools for room; left out).
@@ -25,9 +29,10 @@ const { Vec3 } = require('vec3');
 const LOOK_MS = 10000;
 const CHORE_MS = 4 * 60000;                 // a chore still at it after this is ended
 // The leaves come down over minutes: looked again soon. A garden rests longer itself after a run that did nothing.
-const REST_MS = Object.freeze({ trees: 90000, garden: 150000 });
+// The animals: the game's five minutes between breedings.
+const REST_MS = Object.freeze({ trees: 90000, garden: 150000, animals: 300000 });
 const SAID_MS = 10 * 60000;                 // a chore's line said once in this long
-const ORDER = Object.freeze(['trees', 'garden']);
+const ORDER = Object.freeze(['trees', 'garden', 'animals']);
 const WITHIN = 32;                          // the chore's place this near the bot, and the player waited with
 const HEALTH = 12, FOOD = 6;
 const DAY_LEFT = 1800;                      // ticks of daylight a chore is begun with at least (a minute and a half)
@@ -78,7 +83,10 @@ function due(bot, { now = Date.now(), dark = false, paused = false, threatened =
     if (!on.has(name) || resting(name)) continue;
     let d = null;
     // A chore whose look fails is passed over, not the others with it.
-    try { d = name === 'trees' ? treesDue(bot, { player, now }) : name === 'garden' ? require('./garden').gardenDue(bot, { player, now }) : null; }
+    try {
+      d = name === 'trees' ? treesDue(bot, { player, now }) : name === 'garden' ? require('./garden').gardenDue(bot, { player, now })
+        : name === 'animals' ? require('./animals').herdDue(bot, { player, now }) : null;
+    }
     catch (err) { console.error(`[chore] the look for ${name}: ${err.message}`); d = null; }
     if (d) return d;
   }
@@ -90,6 +98,7 @@ function goalFor(bot, chore, { player = null, now = Date.now() } = {}) {
   const base = { chore: chore.chore, deliver: false, from: player?.name || bot.username, choreUntil: now + CHORE_MS };
   if (chore.chore === 'trees') return { ...base, kind: 'replant', request: 'tidy up where I cut trees' };
   if (chore.chore === 'garden') return { ...base, kind: 'garden', request: 'plant a garden by the house', gardenHouse: chore.house };
+  if (chore.chore === 'animals') return { ...base, kind: 'animals', request: 'look after the animals by the house', herdKind: chore.kind };
   throw new Error(`No chore named ${chore.chore}`);
 }
 
@@ -105,6 +114,10 @@ function line(chore) {
   if (chore.chore === 'garden') return chore.fresh ? "I'll make a little garden by the house." : chore.ripe ? "I'll bring in the harvest from the garden."
     : chore.sowing === false && chore.loaves ? "I'll bake some bread." : chore.sowing === false && chore.stash ? (chore.stashBread ? "I'll put the bread in the chest." : "I'll put the harvest away in the chest.")
     : "I'll plant some seeds in the garden.";
+  if (chore.chore === 'animals') {
+    const many = { cow: 'cows', sheep: 'sheep', mooshroom: 'mooshrooms' }[chore.kind] || 'animals';
+    return chore.strays ? "I'll bring the " + many + ' together.' : "I'll give the " + many + ' some wheat.';
+  }
   if (chore.chore !== 'trees') return '';
   if (chore.owed) return "I'll plant saplings where I cut trees.";
   if (chore.felled) return "I'll pick up what came down from the trees I cut.";

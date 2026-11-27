@@ -628,9 +628,12 @@ async function pickUp(bot, task, goal, save, plot, navigate) {
   goal.dropsLeft = dropsAbout(bot, plot).length;
   return got;
 }
-// The loaves the wheat carried makes at a crafting table standing by the garden (three a loaf), with room for them.
+// The loaves the wheat carried makes at a crafting table standing by the garden (three a loaf), with room for them; the
+// animals' wheat left out.
+// The wheat kept for the animals about (animals.js wheatWanted): left out of the bread, and kept from the chest.
+const herdWheat = bot => { try { return require('./animals').wheatWanted(bot); } catch (_) { return 0; } };
 function loavesFor(bot, plot, now = Date.now()) {
-  const n = Math.floor(count(bot, 'wheat') / BREAD_WHEAT);
+  const n = Math.floor((count(bot, 'wheat') - herdWheat(bot)) / BREAD_WHEAT);
   return n > 0 && room(bot, 'bread') && tableNear(bot, plot.middle, now) ? n : 0;
 }
 // Bread at that table: as many loaves as the wheat makes, in one window, counted by what reached the pockets.
@@ -681,7 +684,8 @@ function breadKept(bot) {
 // -> { name: count } to put away.
 function surplusOf(bot) {
   const out = {};
-  for (const [name, past] of Object.entries(STORE_PAST)) { const n = count(bot, name) - past; if (n > 0) out[name] = n; }
+  const herd = herdWheat(bot);
+  for (const [name, past] of Object.entries(STORE_PAST)) { const n = count(bot, name) - past - (name === 'wheat' ? herd : 0); if (n > 0) out[name] = n; }
   const bread = count(bot, 'bread') - breadKept(bot);
   if (bread > 0) out.bread = bread;
   return out;
