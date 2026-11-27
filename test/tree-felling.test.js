@@ -175,3 +175,21 @@ test('a player asks it in the words players use', () => {
 test('saplings are kept, eight of a kind, no longer dropped as a kind no rung takes', () => {
   for (const n of ['oak_sapling', 'acacia_sapling', 'dark_oak_sapling', 'mangrove_propagule']) assert.equal(tidy.capFor(n, 'overworld'), 8, n);
 });
+
+test('what the bot laid itself about the trees it cut is taken down; not before the work, not far off, not the soil put back, not a kept cell', async () => {
+  const w = world({ '2,64,0': 'dirt', '2,65,0': 'dirt', '-1,64,1': 'cobblestone', '9,64,9': 'dirt', '1,63,0': 'dirt', '0,64,2': 'dirt', '3,64,3': 'cobblestone' });
+  const bot = botIn(w);
+  const rec = (name, at) => ({ name, at });
+  bot._laid = new Map([['2,64,0', rec('dirt', 200)], ['2,65,0', rec('dirt', 210)], ['-1,64,1', rec('cobblestone', 50)], ['9,64,9', rec('dirt', 300)],
+    ['1,63,0', rec('dirt', 220)], ['0,64,2', rec('dirt', 230)]]);
+  const dug = [];
+  const dig = async (b, t, p) => { dug.push(`${p.x},${p.y},${p.z}`); w.set(p, 'air'); };
+  const n = await felling.clearLaidAbout(bot, task, { dig, since: 100, trees: [v(0, 64, 0)], forbidden: c => c.x === 0 && c.z === 2 });
+  assert.equal(n, 2);
+  assert.deepEqual(dug, ['2,65,0', '2,64,0'], 'from the top: ' + dug.join(' | '));
+  assert.equal(w.blockAt(v(-1, 64, 1)).name, 'cobblestone', 'laid before the work began');
+  assert.equal(w.blockAt(v(9, 64, 9)).name, 'dirt', 'far from the tree');
+  assert.equal(w.blockAt(v(1, 63, 0)).name, 'dirt', 'the soil put back in a hole');
+  assert.equal(w.blockAt(v(0, 64, 2)).name, 'dirt', 'a cell kept');
+  assert.equal(w.blockAt(v(3, 64, 3)).name, 'cobblestone', 'not laid by the bot');
+});

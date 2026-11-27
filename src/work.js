@@ -2520,6 +2520,7 @@ async function workSource(bot, task, step, goal, save, source) {
   // sapling put back where its trunk stood. Asked for in play: the bot cut a trunk's reach, up to eight logs, and left
   // the tops of the acacias standing, tree after tree, with no tree planted again.
   const felling = LOG.test(source.block) && bot.game?.gameMode !== 'creative' ? require('./tree-felling') : null;
+  const fellingSince = Date.now();
   const treeAt = q => felling.treeLogs(bot, q, { block: source.block, mine: c => !built.leftAlone(bot, goal, c) });
   let tree = felling ? treeAt(p) : null;
   const stumps = tree?.length ? [felling.stumpOf(bot, tree, source.block)] : [];
@@ -2599,6 +2600,9 @@ async function workSource(bot, task, step, goal, save, source) {
       if (felling) {
         // The trees cut, kept a while for what comes down with their leaves (chores.js).
         for (const stump of stumps) if (stump) felling.noteFelled(bot, source.block, stump.cells[0]);
+        // What the bot laid itself about them that no stand took down: a walk's climb, a tower to a drop.
+        try { await felling.clearLaidAbout(bot, task, { dig, since: fellingSince, trees: stumps.filter(Boolean).map(s => s.cells[0]), forbidden: treeDeps(bot, goal).forbidden }); }
+        catch (err) { task.check(); if (['NeedsAir', 'NeedsSafety', 'Cancelled'].includes(err.name)) throw err; }
         const left = standing().length;
         if (left) console.log(`[tree] ${left} ${source.block.replaceAll('_', ' ')}s of the tree at ${stumps.at(-1)?.cells[0] || p} left standing: ${String(goal.lastMiningError || 'none could be reached').slice(0, 140)}`);
         // A sapling where each trunk cut stood, if one is carried or lies about; else owed, planted on the way back.

@@ -238,6 +238,31 @@ async function clearLeftStands(bot, task, { dig, within = 24 } = {}) {
   return done;
 }
 
+// Blocks of the stand kinds the bot laid itself about the trees it cut since the work began, a stand's or not: the
+// pathfinder's own climb and a walk's tower up to a drop leave one standing too (on the copy, 2026-11-27: two of them
+// after six acacias, in no stand laid). About a tree is within four of its trunk's column, from its stump's height to
+// sixteen over it, so the soil put back in a hole dug for a stand is left. Never one a building keeps or a player's
+// (forbidden). Taken down from the top. -> how many
+async function clearLaidAbout(bot, task, { dig, since = 0, trees = [], forbidden = () => false } = {}) {
+  if (!dig || !bot._laid?.size || !trees.length) return 0;
+  const own = require('./own-blocks'), cells = [];
+  for (const [k, rec] of bot._laid) {
+    if ((rec?.at || 0) < since || !STAND.includes(rec?.name)) continue;
+    const [x, y, z] = k.split(',').map(Number), c = new Vec3(x, y, z);
+    if (!trees.some(t => Math.abs(t.x - x) <= 4 && Math.abs(t.z - z) <= 4 && y >= t.y && y <= t.y + 16)) continue;
+    if (forbidden(c) || !own.laidAt(bot, c)) continue;
+    cells.push(c);
+  }
+  let done = 0;
+  for (const c of cells.sort((a, b) => b.y - a.y)) {
+    task.check();
+    try { await dig(bot, task, c, { requireDrops: false }); } catch (err) { task.check(); if (fatal(err)) throw err; }
+    if (!STAND.includes(bot.blockAt(c)?.name)) done++;
+  }
+  if (cells.length) console.log(`[tree] ${done} of the ${cells.length} blocks the bot laid itself about the trees cut taken down (a walk's climb, a tower)`);
+  return done;
+}
+
 // Soil dug for a stand when too few blocks are carried: next to the foot, never the foot's own ground or the stump's,
 // each hole kept to be filled again after. -> the holes dug.
 async function digStandBlocks(bot, task, foot, need, { dig, collect, forbidden = () => false, stump = null, tree = [] } = {}) {
@@ -551,6 +576,8 @@ async function replantStep(bot, task, goal, save, { navigate, place, collect, fo
     }
   };
   goal.planted ||= 0; goal.picked ||= 0;
+  // What it laid itself about the trees it walks to since they were cut (FELLED_MS ago at most), not before.
+  const since = Date.now() - FELLED_MS - 60000, about = [];
   if (chore && dig) goal.standsDown = await clearLeftStands(bot, task, { dig, within: 40 });
   const owed = nearest(near().filter(s => !chore || ready(s)));
   goal.replantNone = !owed.length;
@@ -563,10 +590,13 @@ async function replantStep(bot, task, goal, save, { navigate, place, collect, fo
       if (!kinds.length) continue;
       goal.step = { action: 'pick_up', item: kinds[0], position: { x: o.x, y: o.y, z: o.z } }; save?.();
       if (!await walkTo(o)) continue;
+      about.push(o);
       for (const k of kinds) if (room(bot, k)) goal.picked += await gatherAll(bot, task, collect, k, o, { radius: 10, waitForSpawnMs: 0, timeoutMs: 3000, rounds: 8 });
     }
     // The stumps the saplings picked up there are for.
     await plantOwed(nearest(near().filter(s => ready(s) && !visited.some(c => c.equals(at(s.cells[0]))))));
+    // And what it laid itself on the way about them (a walk's climb, a tower to a drop).
+    if (dig) goal.laidDown = await clearLaidAbout(bot, task, { dig, since, trees: [...visited, ...about], forbidden });
   }
   goal.replantLeft = near().length;
   // Nothing owed about here and saplings carried: planted about the player who asked, on open soil a few apart.
@@ -594,4 +624,4 @@ async function replantStep(bot, task, goal, save, { navigate, place, collect, fo
 }
 
 module.exports = { LOG, SAPLING, STAND, gatherAll, treeLogs, stumpOf, standFor, withinArm, cutInReach, digUnder, lowerStand, clearLeftStands, fellFromStands,
-  plantCells, spotsNear, stumpTaken, replant, replantOwed, replantStep, owe, forget, owedHere, loadOwed, saveOwed, lyingLow, noteFelled, felledHere, toStump, FOUR, FELLED_MS, room };
+  plantCells, spotsNear, stumpTaken, replant, replantOwed, replantStep, owe, forget, owedHere, loadOwed, saveOwed, lyingLow, noteFelled, felledHere, toStump, FOUR, FELLED_MS, room, clearLaidAbout };
