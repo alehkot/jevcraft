@@ -5,8 +5,11 @@
 // house about (garden.js housesAbout), and only within the chore's reach of the player waited with.
 //
 // A run is one pass (work.js, kind 'animals'), for one kind:
-//   - the herd's gathering point: where most of the kind already stand together (SPREAD across), never within
-//     PLOT_KEEP of a garden's plot (an animal jumping onto farmland tramples it) nor in or against a house;
+//   - the herd's gathering point: where most of the kind already stand together (SPREAD across) within HOME_FROM of a
+//     house's walls, never within PLOT_KEEP of a garden's plot (an animal jumping onto farmland tramples it) nor in or
+//     against a house; kept while it stays so, and the herd led back to it, so that it stays by the house (on the copy,
+//     2026-11-27, a point taken afresh each run went off with the herd's middle, and in ten minutes the cows were out
+//     of the bot's sight and the bread took their wheat);
 //   - those of the kind farther off, up to LEAD_FROM, led there with wheat in hand, a few blocks a leg, waiting at each
 //     for it to come (an animal follows a player holding its food from about ten blocks off and stops two and a half
 //     from it); one that does not come (a fence, a lead) is let be half an hour;
@@ -25,6 +28,7 @@ const HOME_NEAR = 16;                       // or this near a house's walls: the
                                             // the bot waits by its player (on the copy 2026-11-27, three cows 23 to 25
                                             // off by the pond were never about, and the bread took their wheat)
 const SEEN_MS = 10 * 60000;                 // a herd seen about keeps its wheat from the bread this long after
+const HOME_FROM = 12;                       // the herd's place kept this near a house's walls
 const UP = 6;                               // and this near its level
 const SPREAD = 8;                           // this near the gathering point across: with the herd
 const LEAD_FROM = 20;                       // led from no farther off than this
@@ -52,7 +56,7 @@ function baby(bot, e) {
   return i >= 0 && e.metadata?.[i] === true;
 }
 // Who was fed, would not take it, was led, or would not come, and when: five minutes to half an hour, kept in memory.
-const memo = bot => (bot._herd ||= { fed: {}, untaken: {}, led: {}, stayed: {}, seen: {} });
+const memo = bot => (bot._herd ||= { fed: {}, untaken: {}, led: {}, stayed: {}, seen: {}, home: {} });
 const since = (bot, list, e, now) => now - (memo(bot)[list][idOf(e)] || 0);
 async function waitFor(task, fn, ms, every = 100) {
   const end = Date.now() + ms;
@@ -60,12 +64,13 @@ async function waitFor(task, fn, ms, every = 100) {
   return !!fn();
 }
 
-// The kind about: near the bot or by a house about, near the bot's level, and near the player waited with.
-function about(bot, kind, player, houses = []) {
+// The kind about: near the bot, by a house about or within LEAD_FROM of the herd's place, near the bot's level, and
+// near the player waited with.
+function about(bot, kind, player, houses = [], home = null) {
   const me = bot.entity.position;
   return Object.values(bot.entities || {}).filter(e => e?.name === kind && e.isValid !== false && e.position && Math.abs(e.position.y - me.y) <= UP &&
     (!player?.position || across(player.position, e.position) <= WITHIN) &&
-    (e.position.distanceTo(me) <= FIND || houses.some(h => gapTo(plain(e.position), h.min, h.max) <= HOME_NEAR)));
+    (e.position.distanceTo(me) <= FIND || houses.some(h => gapTo(plain(e.position), h.min, h.max) <= HOME_NEAR) || (home && across(e.position, home) <= LEAD_FROM)));
 }
 // A herd seen: two adults of a kind about, and whether there are HERD of it. Kept for the bread's wheat (wheatWanted).
 function noteSeen(bot, kind, herd, adults, now) { if (adults >= 2) memo(bot).seen[kind] = { at: now, full: herd >= HERD }; }
@@ -75,24 +80,38 @@ function offLimits(p, houses, plots) {
   if (plots.some(pl => Math.max(Math.abs(c.x - pl.middle.x), Math.abs(c.z - pl.middle.z)) < PLOT_KEEP)) return true;
   return houses.some(h => gapTo(c, h.min, h.max) <= 1 && c.y >= h.min.y - 1 && c.y <= h.max.y + 1);
 }
-// Where most of the kind about stand together, off limits aside; the nearer a house the better at a tie.
-function pointFor(herd, houses, plots) {
+// Where most of the kind about stand together, off limits aside (and, with by, only within that of a house's walls); the
+// nearer a house the better at a tie.
+function pointFor(herd, houses, plots, { by = Infinity } = {}) {
   let best = null;
   for (const e of herd) {
     if (offLimits(e.position, houses, plots)) continue;
+    if (by < Infinity && !houses.some(h => gapTo(plain(e.position), h.min, h.max) <= by)) continue;
     const n = herd.filter(o => across(o.position, e.position) <= SPREAD).length;
     const home = houses.length ? Math.min(...houses.map(h => gapTo(plain(e.position), h.min, h.max))) : 0;
     if (!best || n > best.n || (n === best.n && home < best.home)) best = { n, home, p: plain(e.position) };
   }
   return best ? { ...best.p, n: best.n } : null;
 }
+// The herd's place: the one kept while it is still off limits of nothing and by a house about; else where most of the
+// kind stand by a house (kept from now on); else, with none of them by a house, where most stand (not kept).
+function homeFor(bot, kind, herd, houses, plots) {
+  const m = memo(bot), kept = m.home[kind];
+  if (kept && !offLimits(kept, houses, plots) && houses.some(h => gapTo(kept, h.min, h.max) <= HOME_FROM)) return { point: kept, kept: true };
+  const p = pointFor(herd, houses, plots, { by: HOME_FROM });
+  if (p) { m.home[kind] = { x: p.x, y: p.y, z: p.z }; return { point: m.home[kind], kept: true }; }
+  delete m.home[kind];
+  const free = pointFor(herd, houses, plots);
+  return free ? { point: { x: free.x, y: free.y, z: free.z }, kept: false } : null;
+}
 // What a run for a kind would do now: those to lead, the adults ready for the wheat, the pairs to feed.
 function planFor(bot, kind, { player, houses, plots, now }) {
-  const herd = about(bot, kind, player, houses), adults = herd.filter(e => !baby(bot, e));
+  const first = about(bot, kind, player, houses, memo(bot).home[kind] || null);
+  const home = homeFor(bot, kind, first, houses, plots);
+  const herd = home?.kept ? about(bot, kind, player, houses, home.point) : first, adults = herd.filter(e => !baby(bot, e));
   noteSeen(bot, kind, herd.length, adults.length, now);
-  if (adults.length < 2) return null;
-  const point = pointFor(herd, houses, plots);
-  if (!point) return null;
+  if (adults.length < 2 || !home) return null;
+  const point = home.point;
   const strays = adults.filter(e => { const d = across(e.position, point); return d > SPREAD && d <= LEAD_FROM && since(bot, 'led', e, now) >= LED_MS && since(bot, 'stayed', e, now) >= STAYED_MS; })
     .sort((a, b) => across(a.position, point) - across(b.position, point)).slice(0, MOST_LED);
   const ready = adults.filter(e => across(e.position, point) <= LEAD_FROM && since(bot, 'fed', e, now) >= BRED_MS && since(bot, 'untaken', e, now) >= BRED_MS);
@@ -100,7 +119,7 @@ function planFor(bot, kind, { player, houses, plots, now }) {
   const spot = e => strays.includes(e) ? point : e.position;
   const pairable = ready.filter(e => ready.some(o => o !== e && across(spot(o), spot(e)) <= 6));
   const pairs = Math.max(0, Math.min(MOST_PAIRS, Math.floor(pairable.length / 2), Math.floor(wheat(bot) / 2), HERD - herd.length));
-  return { kind, point, herd, strays, ready, pairs };
+  return { kind, point, kept: home.kept, herd, strays, ready, pairs };
 }
 function housesNear(bot, me) {
   const garden = require('./garden');
@@ -198,8 +217,10 @@ async function herdStep(bot, task, goal, save, { navigate } = {}) {
       task.check();
       if (await lead(bot, task, goal, save, e, plan.point, navigate)) goal.led++; else goal.stayed++;
     }
+    // None would come (penned elsewhere, say): the place is let go, and taken afresh where most of them stand.
+    if (plan.kept && plan.strays.length && !goal.led) { delete memo(bot).home[plan.kind]; console.log('[animals] none of the ' + SAYS[plan.kind][1] + ' would come to ' + where(plan.point) + ': the place let go'); }
     // The pairs: a first that takes the wheat, then the nearest of the kind to it that does.
-    const fresh = () => { const t = Date.now(); return about(bot, plan.kind, player, houses).filter(e => !baby(bot, e) && across(e.position, plan.point) <= LEAD_FROM &&
+    const fresh = () => { const t = Date.now(); return about(bot, plan.kind, player, houses, plan.kept ? plan.point : null).filter(e => !baby(bot, e) && across(e.position, plan.point) <= LEAD_FROM &&
       since(bot, 'fed', e, t) >= BRED_MS && since(bot, 'untaken', e, t) >= BRED_MS); };
     // Only one with another ready within six: a lone one fed is wheat spent on nothing.
     const pairable = list => list.filter(e => list.some(o => o !== e && across(o.position, e.position) <= 6));
@@ -235,10 +256,10 @@ function wheatWanted(bot, { env = process.env, now = Date.now() } = {}) {
   if (!me) return 0;
   const houses = housesNear(bot, me);
   if (!houses.length) return 0;
-  for (const kind of KINDS) { const herd = about(bot, kind, null, houses); noteSeen(bot, kind, herd.length, herd.filter(e => !baby(bot, e)).length, now); }
+  for (const kind of KINDS) { const herd = about(bot, kind, null, houses, memo(bot).home[kind] || null); noteSeen(bot, kind, herd.length, herd.filter(e => !baby(bot, e)).length, now); }
   let want = 0;
   for (const seen of Object.values(memo(bot).seen)) if (now - seen.at < SEEN_MS) want = Math.max(want, seen.full ? 1 : 2 * MOST_PAIRS);
   return want;
 }
 
-module.exports = { herdDue, herdStep, wheatWanted, pointFor, planFor, KINDS, FIND, HOME_NEAR, SEEN_MS, SPREAD, LEAD_FROM, HERD, PLOT_KEEP, BRED_MS, MOST_PAIRS };
+module.exports = { herdDue, herdStep, wheatWanted, pointFor, planFor, KINDS, FIND, HOME_NEAR, HOME_FROM, SEEN_MS, SPREAD, LEAD_FROM, HERD, PLOT_KEEP, BRED_MS, MOST_PAIRS };

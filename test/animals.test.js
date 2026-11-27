@@ -222,6 +222,41 @@ test('a herd by the house, farther than twenty-four from where the bot waits, is
   assert.equal(animals.wheatWanted(botIn(world({}), { items: [['wheat', 7]], herd: [animal('cow', 0, 0), animal('cow', 1, 1)] })), 0, 'no house about: none kept');
 });
 
+test('the herd\'s place is kept by the house: the herd gone off together is led back to it, not followed', async () => {
+  const { w, registry } = homestead();
+  const herd = [animal('cow', -8, 8), animal('cow', -7, 10), animal('cow', -9, 9)];
+  const bot = botIn(w, { registry, items: [['wheat', 6]], herd });
+  const d = animals.herdDue(bot, {});
+  assert.deepEqual(d.point, { x: -8, y: 64, z: 8 });
+  const goal = chores.goalFor(bot, d, { now: 0 });
+  await quietlyAsync(() => animals.herdStep(bot, task, goal, null, helpers(bot)));
+  assert.equal(goal.pairs, 1);
+  // All three wander off together, twelve blocks south: their middle is no longer the herd's place.
+  for (const e of herd) e.position = v(e.position.x, 64, e.position.z + 12);
+  const later = animals.planFor(bot, 'cow', { player: null, houses: require('../src/garden').housesAbout(bot, bot.entity.position), plots: [], now: Date.now() });
+  assert.deepEqual({ x: later.point.x, z: later.point.z }, { x: -8, z: 8 }, 'the place kept');
+  assert.equal(later.strays.length, 3, 'all three to lead back');
+  // A place by no house any more (the house gone): one taken afresh where they stand, not kept.
+  const far = botIn(world({}), { items: [['wheat', 6]], herd: [animal('cow', 40, 40), animal('cow', 41, 41)] });
+  assert.equal(animals.planFor(far, 'cow', { player: null, houses: [], plots: [], now: Date.now() })?.kept, undefined, 'no house: no plan kept');
+});
+
+test('none would come to the kept place: it is let go, and taken afresh where most of them stand', async () => {
+  const { w, registry } = homestead();
+  const herd = [animal('cow', -8, 8), animal('cow', -7, 10)];
+  const bot = botIn(w, { registry, items: [['wheat', 6]], herd });
+  const houses = require('../src/garden').housesAbout(bot, bot.entity.position);
+  assert.deepEqual(animals.planFor(bot, 'cow', { player: null, houses, plots: [], now: Date.now() }).point, { x: -8, y: 64, z: 8 });
+  // Penned by a player north of the house, behind a fence: they never come.
+  for (const [i, e] of herd.entries()) { e.position = v(-6.5 + i, 64, -10.5); e.fenced = true; }
+  const goal = { from: 'Jev', kind: 'animals', herdKind: 'cow' };
+  const [, lines] = await quietlyAsync(() => animals.herdStep(bot, task, goal, null, helpers(bot)));
+  assert.equal(goal.stayed, 2);
+  assert.ok(lines.some(l => /the place let go/.test(l)), lines.join(' | '));
+  const again = animals.planFor(bot, 'cow', { player: null, houses, plots: [], now: Date.now() });
+  assert.equal(again.point.z, -11, 'by the pen now');
+});
+
 test('a run cut short: the wheat is put away from the hand all the same', async () => {
   const { w, registry } = homestead();
   const bot = botIn(w, { registry, items: [['wheat', 6]], herd: [animal('cow', -8, 8), animal('cow', -7, 10), animal('cow', -8, 22)] });
