@@ -178,6 +178,11 @@ function activity(step = {}) {
     case 'place_at_site': return `I'm placing the ${item} beside the ${name(step.landmark)}.`;
     case 'climb_ladder': return `I'm climbing ${step.direction} the ladder.`;
     case 'replant': return `I'm planting ${item ? `a ${item}` : 'a sapling'} where I cut a tree.`;
+    case 'garden_hoe': return "I'm making a hoe for the garden.";
+    case 'garden_seeds': return "I'm looking for seeds in the grass.";
+    case 'garden_walk': return "I'm going over to the garden.";
+    case 'garden_till': return "I'm tilling the garden by the house.";
+    case 'garden_plant': return "I'm planting seeds in the garden.";
     case 'boat_travel': return "I'm taking a boat across the water.";
     case 'reach_shore': return "I'm swimming back to dry land.";
     case 'prepare_build_site': return step.operation === 'fill' ? "I'm filling in a solid base for the building." : "I'm making the ground level for the building.";

@@ -195,6 +195,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   bot.labels = new (require('./labels').Labels)(path.join(stateDirectory, `${memoryIdentity}-labels.json`));
   // The saplings owed where trees were cut (tree-felling.js), kept across restarts.
   bot._replantFile = path.join(stateDirectory, `${memoryIdentity}-replant.json`);
+  // The gardens it began by the houses about (garden.js), kept across restarts.
+  bot._gardenFile = path.join(stateDirectory, `${memoryIdentity}-garden.json`);
   bot.loadPlugin(require('./player-build').placedPlugin);
   // The dream: what the bot works toward when nobody has asked for
   // anything. Kept per world, beside the builds it produces.
@@ -398,7 +400,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       if (goal.chore && !session.relaunch) {
         const how = String(goal.choreFailed || goal.choreEnded || goal.choreStopped || 'done').slice(0, 160);
         setAside(survival, 'chore', goal.chore, how, require('./chores').REST_MS[goal.chore] || 180000); saveSurvival();
-        console.log(`[chore] ${goal.chore} over: ${how}${goal.kind === 'replant' ? ` (${goal.planted || 0} planted, ${goal.picked || 0} picked up, ${goal.standsDown || 0} stands taken down)` : ''}`);
+        console.log(`[chore] ${goal.chore} over: ${how}${goal.kind === 'replant' ? ` (${goal.planted || 0} planted, ${goal.picked || 0} picked up, ${goal.standsDown || 0} stands taken down)` : ''}${goal.kind === 'garden' ? ` (${goal.tilled || 0} tilled, ${goal.planted || 0} sown, ${goal.seedsFound || 0} seeds found in ${goal.grassBroken || 0} grass${goal.hoeMade ? ', a hoe made' : ''}${goal.gardenBegun ? ', the garden begun' : ''})` : ''}`);
       }
       if (session.relaunch) {
         relaunching = true;

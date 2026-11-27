@@ -10,6 +10,10 @@
 //   trees    about the trees the bot cut here: a stand left up a trunk taken down, the logs that lay on the leaves and
 //            have come down with them picked up, and saplings planted where the trunks stood (the stump first, else
 //            close by) when one is carried or has fallen there (tree-felling.js replantStep)
+//   garden   by a house about (the bot's own, one a player named theirs, or a bed or a door inside walls): a little plot
+//            by water tilled with a hoe and sown with the seeds carried or found in the grass about it (garden.js; asked
+//            for 2026-11-27, "basically there should be gardener set of activities", "only if there is a house/shelter
+//            nearby")
 //
 // More come as their work can be done quietly where the bot waits (2026-11-27 on the copy: torches made from the pockets
 // as a request would be took three minutes, said each plank and stick, and dropped tools for room; left out).
@@ -19,9 +23,10 @@ const { Vec3 } = require('vec3');
 
 const LOOK_MS = 10000;
 const CHORE_MS = 4 * 60000;                 // a chore still at it after this is ended
-const REST_MS = Object.freeze({ trees: 90000 });       // the leaves come down over minutes: looked again soon
+// The leaves come down over minutes: looked again soon. A garden rests longer itself after a run that did nothing.
+const REST_MS = Object.freeze({ trees: 90000, garden: 150000 });
 const SAID_MS = 10 * 60000;                 // a chore's line said once in this long
-const ORDER = Object.freeze(['trees']);
+const ORDER = Object.freeze(['trees', 'garden']);
 const WITHIN = 32;                          // the chore's place this near the bot, and the player waited with
 const HEALTH = 12, FOOD = 6;
 const DAY_LEFT = 1800;                      // ticks of daylight a chore is begun with at least (a minute and a half)
@@ -70,7 +75,10 @@ function due(bot, { now = Date.now(), dark = false, paused = false, threatened =
   if ((bot.health ?? 20) < HEALTH || (bot.food ?? 20) < FOOD || dayLeft(bot) < DAY_LEFT) return null;
   for (const name of ORDER) {
     if (!on.has(name) || resting(name)) continue;
-    const d = name === 'trees' ? treesDue(bot, { player, now }) : null;
+    let d = null;
+    // A chore whose look fails is passed over, not the others with it.
+    try { d = name === 'trees' ? treesDue(bot, { player, now }) : name === 'garden' ? require('./garden').gardenDue(bot, { player, now }) : null; }
+    catch (err) { console.error(`[chore] the look for ${name}: ${err.message}`); d = null; }
     if (d) return d;
   }
   return null;
@@ -80,6 +88,7 @@ function due(bot, { now = Date.now(), dark = false, paused = false, threatened =
 function goalFor(bot, chore, { player = null, now = Date.now() } = {}) {
   const base = { chore: chore.chore, deliver: false, from: player?.name || bot.username, choreUntil: now + CHORE_MS };
   if (chore.chore === 'trees') return { ...base, kind: 'replant', request: 'tidy up where I cut trees' };
+  if (chore.chore === 'garden') return { ...base, kind: 'garden', request: 'plant a garden by the house', gardenHouse: chore.house };
   throw new Error(`No chore named ${chore.chore}`);
 }
 
@@ -92,6 +101,7 @@ function over(goal, bot, now = Date.now()) {
 
 // Said as it sets out, when it walks off: nothing for what it does where it stands.
 function line(chore) {
+  if (chore.chore === 'garden') return chore.fresh ? "I'll make a little garden by the house." : "I'll plant some seeds in the garden.";
   if (chore.chore !== 'trees') return '';
   if (chore.owed) return "I'll plant saplings where I cut trees.";
   if (chore.felled) return "I'll pick up what came down from the trees I cut.";
