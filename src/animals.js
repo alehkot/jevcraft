@@ -20,7 +20,11 @@ const { goals } = require('mineflayer-pathfinder');
 
 const KINDS = Object.freeze(['cow', 'sheep', 'mooshroom']);
 const FOOD = 'wheat';
-const FIND = 24;                            // animals this near the bot
+const FIND = 24;                            // animals this near the bot,
+const HOME_NEAR = 16;                       // or this near a house's walls: the herd by the house, out of FIND of where
+                                            // the bot waits by its player (on the copy 2026-11-27, three cows 23 to 25
+                                            // off by the pond were never about, and the bread took their wheat)
+const SEEN_MS = 10 * 60000;                 // a herd seen about keeps its wheat from the bread this long after
 const UP = 6;                               // and this near its level
 const SPREAD = 8;                           // this near the gathering point across: with the herd
 const LEAD_FROM = 20;                       // led from no farther off than this
@@ -48,7 +52,7 @@ function baby(bot, e) {
   return i >= 0 && e.metadata?.[i] === true;
 }
 // Who was fed, would not take it, was led, or would not come, and when: five minutes to half an hour, kept in memory.
-const memo = bot => (bot._herd ||= { fed: {}, untaken: {}, led: {}, stayed: {} });
+const memo = bot => (bot._herd ||= { fed: {}, untaken: {}, led: {}, stayed: {}, seen: {} });
 const since = (bot, list, e, now) => now - (memo(bot)[list][idOf(e)] || 0);
 async function waitFor(task, fn, ms, every = 100) {
   const end = Date.now() + ms;
@@ -56,12 +60,15 @@ async function waitFor(task, fn, ms, every = 100) {
   return !!fn();
 }
 
-// The kind about the bot: this near it and its level, and near the player waited with.
-function about(bot, kind, player) {
+// The kind about: near the bot or by a house about, near the bot's level, and near the player waited with.
+function about(bot, kind, player, houses = []) {
   const me = bot.entity.position;
-  return Object.values(bot.entities || {}).filter(e => e?.name === kind && e.isValid !== false && e.position && e.position.distanceTo(me) <= FIND &&
-    Math.abs(e.position.y - me.y) <= UP && (!player?.position || across(player.position, e.position) <= WITHIN));
+  return Object.values(bot.entities || {}).filter(e => e?.name === kind && e.isValid !== false && e.position && Math.abs(e.position.y - me.y) <= UP &&
+    (!player?.position || across(player.position, e.position) <= WITHIN) &&
+    (e.position.distanceTo(me) <= FIND || houses.some(h => gapTo(plain(e.position), h.min, h.max) <= HOME_NEAR)));
 }
+// A herd seen: two adults of a kind about, and whether there are HERD of it. Kept for the bread's wheat (wheatWanted).
+function noteSeen(bot, kind, herd, adults, now) { if (adults >= 2) memo(bot).seen[kind] = { at: now, full: herd >= HERD }; }
 // Kept off a garden (PLOT_KEEP across of its middle), out of a house and off the ground against its walls.
 function offLimits(p, houses, plots) {
   const c = plain(p);
@@ -81,7 +88,8 @@ function pointFor(herd, houses, plots) {
 }
 // What a run for a kind would do now: those to lead, the adults ready for the wheat, the pairs to feed.
 function planFor(bot, kind, { player, houses, plots, now }) {
-  const herd = about(bot, kind, player), adults = herd.filter(e => !baby(bot, e));
+  const herd = about(bot, kind, player, houses), adults = herd.filter(e => !baby(bot, e));
+  noteSeen(bot, kind, herd.length, adults.length, now);
   if (adults.length < 2) return null;
   const point = pointFor(herd, houses, plots);
   if (!point) return null;
@@ -191,7 +199,7 @@ async function herdStep(bot, task, goal, save, { navigate } = {}) {
       if (await lead(bot, task, goal, save, e, plan.point, navigate)) goal.led++; else goal.stayed++;
     }
     // The pairs: a first that takes the wheat, then the nearest of the kind to it that does.
-    const fresh = () => { const t = Date.now(); return about(bot, plan.kind, player).filter(e => !baby(bot, e) && across(e.position, plan.point) <= LEAD_FROM &&
+    const fresh = () => { const t = Date.now(); return about(bot, plan.kind, player, houses).filter(e => !baby(bot, e) && across(e.position, plan.point) <= LEAD_FROM &&
       since(bot, 'fed', e, t) >= BRED_MS && since(bot, 'untaken', e, t) >= BRED_MS); };
     // Only one with another ready within six: a lone one fed is wheat spent on nothing.
     const pairable = list => list.filter(e => list.some(o => o !== e && across(o.position, e.position) <= 6));
@@ -219,18 +227,18 @@ async function herdStep(bot, task, goal, save, { navigate } = {}) {
 }
 
 // The wheat the garden's bread leaves for the herd about (garden.js loavesFor, surplusOf): two pairs' worth while two
-// adults of a kind are about under HERD, one to lead with while there are two at all; none with the chore off.
-function wheatWanted(bot, { env = process.env } = {}) {
+// adults of a kind are about under HERD, one to lead with while there are two at all, and for SEEN_MS after the herd
+// was last about (it wanders off and back); none with no house about or the chore off.
+function wheatWanted(bot, { env = process.env, now = Date.now() } = {}) {
   try { if (!require('./chores').enabled(env).has('animals')) return 0; } catch (_) { return 0; }
   const me = bot.entity?.position;
   if (!me) return 0;
+  const houses = housesNear(bot, me);
+  if (!houses.length) return 0;
+  for (const kind of KINDS) { const herd = about(bot, kind, null, houses); noteSeen(bot, kind, herd.length, herd.filter(e => !baby(bot, e)).length, now); }
   let want = 0;
-  for (const kind of KINDS) {
-    const herd = Object.values(bot.entities || {}).filter(e => e?.name === kind && e.isValid !== false && e.position && e.position.distanceTo(me) <= FIND);
-    if (herd.filter(e => !baby(bot, e)).length < 2) continue;
-    want = Math.max(want, herd.length < HERD ? 2 * MOST_PAIRS : 1);
-  }
+  for (const seen of Object.values(memo(bot).seen)) if (now - seen.at < SEEN_MS) want = Math.max(want, seen.full ? 1 : 2 * MOST_PAIRS);
   return want;
 }
 
-module.exports = { herdDue, herdStep, wheatWanted, pointFor, planFor, KINDS, FIND, SPREAD, LEAD_FROM, HERD, PLOT_KEEP, BRED_MS, MOST_PAIRS };
+module.exports = { herdDue, herdStep, wheatWanted, pointFor, planFor, KINDS, FIND, HOME_NEAR, SEEN_MS, SPREAD, LEAD_FROM, HERD, PLOT_KEEP, BRED_MS, MOST_PAIRS };

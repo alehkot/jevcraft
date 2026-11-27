@@ -554,8 +554,12 @@ async function till(bot, task, goal, save, plot, cells, { dig }) {
   }
   return n;
 }
+// Twice over: on the copy, 2026-11-27, the first run of the garden sowed seven of eight twice with eight seeds carried,
+// the eighth left for the next run two and a half minutes on.
 async function sow(bot, task, goal, save, plot) {
   let n = 0;
+  for (let pass = 0; pass < 2; pass++) {
+  if (pass) { if (!plotStatus(bot, plot).bare.length || !seedFor(bot)) break; await sleep(500); }
   for (const c of plotStatus(bot, plot).bare) {
     task.check();
     const seed = seedFor(bot);
@@ -570,6 +574,8 @@ async function sow(bot, task, goal, save, plot) {
     await bot.lookAt(at(c).offset(0.5, 1, 0.5), true);
     try { await bot.placeBlock(farmland, new Vec3(0, 1, 0)); } catch (err) { task.check(); if (fatal(err)) throw err; }
     if (await waitFor(task, () => CROP.test(nameOf(bot, up(c)) || ''), 2500)) { n++; (goal.sown ||= {})[seed] = (goal.sown[seed] || 0) + 1; }
+    else console.log('[garden] a ' + seed.replaceAll('_', ' ') + ' did not take at ' + where(c) + (pass ? '' : ', tried again after'));
+  }
   }
   return n;
 }

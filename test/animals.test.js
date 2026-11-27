@@ -205,6 +205,23 @@ test('the bread leaves the herd its wheat: two pairs\' worth under eight, one to
   assert.deepEqual(garden.surplusOf(botIn(w, { items: [['wheat', 20]], herd: pair() })), { wheat: 14 }, 'twenty: two past a loaf and four for the herd kept');
 });
 
+test('a herd by the house, farther than twenty-four from where the bot waits, is about; its wheat kept ten minutes after it wanders off', async () => {
+  const { w, registry } = homestead({ '-6,64,0': 'crafting_table' });
+  // The bot waits by its player 22 west of the house; the cows stand by its east wall, 27 to 29 off.
+  const herd = [animal('cow', 5, 1), animal('cow', 6, -1), animal('cow', 4, 2)];
+  const bot = botIn(w, { registry, at: v(-21.5, 64, 0.5), items: [['wheat', 7]], herd });
+  assert.ok(herd.every(e => e.position.distanceTo(bot.entity.position) > animals.FIND));
+  const d = animals.herdDue(bot, {});
+  assert.equal(d?.kind, 'cow', 'by the house');
+  assert.equal(d.pairs, 1);
+  const now = Date.now();
+  assert.equal(animals.wheatWanted(bot, { now }), 4);
+  for (const e of herd) delete bot.entities[e.id];
+  assert.equal(animals.wheatWanted(bot, { now: now + 60000 }), 4, 'gone a minute: still kept');
+  assert.equal(animals.wheatWanted(bot, { now: now + animals.SEEN_MS + 1000 }), 0, 'gone ten minutes');
+  assert.equal(animals.wheatWanted(botIn(world({}), { items: [['wheat', 7]], herd: [animal('cow', 0, 0), animal('cow', 1, 1)] })), 0, 'no house about: none kept');
+});
+
 test('a run cut short: the wheat is put away from the hand all the same', async () => {
   const { w, registry } = homestead();
   const bot = botIn(w, { registry, items: [['wheat', 6]], herd: [animal('cow', -8, 8), animal('cow', -7, 10), animal('cow', -8, 22)] });
