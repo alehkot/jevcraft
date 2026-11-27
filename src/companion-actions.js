@@ -38,6 +38,9 @@ function companionAction(text, workSite) {
       return { kind: 'place_at_site', item: placement[2].startsWith('torch') ? 'torch' : 'chest', count, workSite };
     }
   }
+  // Saplings planted where the bot cut trees (tree-felling.js replantStep; asked for 2026-11-26): "replant the trees".
+  if (/^(?:re-?plant(?: (?:the |those |these |all the |your |our |my )?(?:trees?|saplings?|forest|stumps?))?(?: (?:you|we|i) (?:cut|chopped)(?: down)?)?(?: (?:back|again|here|now))?|plant (?:the |those |these |some |all the |your |more )?(?:saplings?|trees?)(?: (?:back|again|now|where (?:you|we|the trees?) (?:cut|chopped|were|stood)(?: (?:them|it|down))?))?|put (?:the )?trees back)$/.test(ask))
+    return { kind: 'replant' };
   // The ground within sixteen blocks lit, so nothing spawns there (asked for 2026-11-22): a base or a house's yard.
   if (/^(?:light up (?:the whole (?:area|place)|everything(?: around (?:here|me))?|(?:the |this |our |my )?(?:base|camp|village|yard)|(?:the area )?around (?:the |our |my |this )?(?:house|home|base|camp))|make (?:this|the) (?:area|place) (?:safe|lit)(?: for the night)?|(?:put|place) torches (?:all )?around (?:the |our |my |this )?(?:house|home|base|camp))$/.test(ask))
     return { kind: 'light_area', radius: 16 };

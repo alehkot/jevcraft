@@ -193,6 +193,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
   // What the bot sees players lay (player-build.js): their dirt and stone told from the ground's, kept per world.
   bot.placedLog = new (require('./player-build').PlacedLog)(path.join(stateDirectory, `${memoryIdentity}-placed.json`));
   bot.labels = new (require('./labels').Labels)(path.join(stateDirectory, `${memoryIdentity}-labels.json`));
+  // The saplings owed where trees were cut (tree-felling.js), kept across restarts.
+  bot._replantFile = path.join(stateDirectory, `${memoryIdentity}-replant.json`);
   bot.loadPlugin(require('./player-build').placedPlugin);
   // The dream: what the bot works toward when nobody has asked for
   // anything. Kept per world, beside the builds it produces.
@@ -1360,6 +1362,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         spec.kind === 'light_area' ? (spec.radius > 6 ? `I'll light the ground within ${spec.radius} blocks so nothing spawns there.` : "I'll check the ground for dark spots and light them.") :
         spec.kind === 'place_at_site' ? `I'll place the ${spec.item} beside the ${spec.workSite.name.replaceAll('_', ' ')}.` :
         spec.kind === 'climb_ladder' ? `I'll climb ${spec.direction} the nearby ladder.` :
+        spec.kind === 'replant' ? "I'll plant saplings where I cut trees." :
         spec.kind === 'visit' ? `I'll head to ${spec.destination.label}.` :
         spec.kind === 'come' ? `Coming to ${spec.target}.` : spec.kind === 'follow' && spec.guard ? `I'll stay by you and fight off what comes at you, ${spec.target}. Say Jev stop to stop.` :
         spec.kind === 'follow' ? `Following ${spec.target}; say Jev stop to stop.` :

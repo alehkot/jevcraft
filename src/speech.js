@@ -177,6 +177,7 @@ function activity(step = {}) {
     case 'light_area': return "I'm placing a torch where the ground is dark.";
     case 'place_at_site': return `I'm placing the ${item} beside the ${name(step.landmark)}.`;
     case 'climb_ladder': return `I'm climbing ${step.direction} the ladder.`;
+    case 'replant': return `I'm planting ${item ? `a ${item}` : 'a sapling'} where I cut a tree.`;
     case 'boat_travel': return "I'm taking a boat across the water.";
     case 'reach_shore': return "I'm swimming back to dry land.";
     case 'prepare_build_site': return step.operation === 'fill' ? "I'm filling in a solid base for the building." : "I'm making the ground level for the building.";
@@ -247,6 +248,12 @@ function completion(goal) {
   // Arrived, and whether the two can see each other (company.js standInView).
   if (goal.kind === 'come') return goal.outOfView ? `I'm right by ${goal.target || goal.from}, but I can't get to where we can see each other.` : `I'm here with ${goal.target || goal.from}!`;
   if (goal.kind === 'climb_ladder') return `I'm at the ${goal.direction === 'up' ? 'top' : 'bottom'} of the ladder.`;
+  if (goal.kind === 'replant') {
+    const left = goal.replantLeft || 0, spots = n => `${n} ${n === 1 ? 'spot' : 'spots'}`;
+    if (goal.planted) return `I planted ${goal.planted} ${goal.planted === 1 ? 'sapling' : 'saplings'} where I cut trees.${left ? ` ${spots(left)} still ${left === 1 ? 'waits' : 'wait'} for saplings to drop from the leaves.` : ''}`;
+    if (goal.plantedHere) return `I planted ${goal.plantedHere === 1 ? 'a sapling' : `${goal.plantedHere} saplings`} here. I haven't cut any trees near here to plant again.`;
+    return goal.replantNone ? "I haven't cut any trees near here to plant again, and I have no saplings with me." : `I have no saplings yet for the ${spots(left)} where I cut trees. They drop from the leaves as they fall.`;
+  }
   if (goal.kind === 'place_at_site') return `I placed ${goal.count} ${goal.item}${goal.count > 1 ? goal.item === 'torch' ? 'es' : 's' : ''} beside the ${goal.workSite.name.replaceAll('_', ' ')}.`;
   if (goal.kind === 'light_area') return goal.torchesPlaced ? `I placed ${goal.torchesPlaced} ${goal.torchesPlaced === 1 ? 'torch' : 'torches'}. The ground here is lit.` : 'The ground here is already lit.';
   if (goal.kind === 'visit') return `I'm at ${goal.destination.label}!`;

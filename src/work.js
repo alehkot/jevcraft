@@ -2516,6 +2516,21 @@ async function workSource(bot, task, step, goal, save, source) {
   const p = nearestRemaining(bot, source);
   if (!p) throw new Error(`The ${source.block} source is no longer there`);
   goal.step = step; rememberSource(goal, source, step); save();
+  // A tree is taken down whole (tree-felling.js), its logs read before the first cut while they still join, and a
+  // sapling put back where its trunk stood. Asked for in play: the bot cut a trunk's reach, up to eight logs, and left
+  // the tops of the acacias standing, tree after tree, with no tree planted again.
+  const felling = LOG.test(source.block) && bot.game?.gameMode !== 'creative' ? require('./tree-felling') : null;
+  const treeAt = q => felling.treeLogs(bot, q, { block: source.block, mine: c => !built.leftAlone(bot, goal, c) });
+  let tree = felling ? treeAt(p) : null;
+  const stumps = tree?.length ? [felling.stumpOf(bot, tree, source.block)] : [];
+  // The foot as read now, for the stands (tree-felling.js fellFromStands keeps the soil there for the sapling).
+  if (felling) bot._fellingStump = stumps[0] || null;
+  const standing = () => tree ? tree.filter(q => bot.blockAt(q)?.name === source.block && !isSetAside(goal, 'reach', q)) : [];
+  if (felling) {
+    // The stands left up and the saplings owed about here first, while the saplings that fell are still lying.
+    try { await felling.clearLeftStands(bot, task, treeDeps(bot, goal)); await felling.replantOwed(bot, task, treeDeps(bot, goal)); }
+    catch (err) { task.check(); if (['NeedsAir', 'NeedsSafety', 'Cancelled'].includes(err.name)) throw err; }
+  }
   try {
     const before = countOf(bot, step.drops);
     await mine(bot, task, step, goal, save, p);
@@ -2541,12 +2556,18 @@ async function workSource(bot, task, step, goal, save, source) {
       // asked once for this source: the cap and what is carried are said.
       const cap = /_log$/.test(source.block) ? 8 : ore ? 32 : rock ? Math.max(24, before + (step.count || 1)) : before + (step.count || 1);
       let askedMore = false;
-      for (let extra = 0; extra < 24 && wanted(); extra++) {
-        if (!askedMore && countOf(bot, step.drops) >= before + (step.count || 1)) {
+      for (let extra = 0; extra < (felling ? 64 : 24) && (wanted() || standing().length); extra++) {
+        // The tree in hand is finished first, whatever the count: the ask for more is for another tree.
+        const rest = standing().sort((a, b) => a.distanceTo(bot.entity.position) - b.distanceTo(bot.entity.position));
+        if (!rest.length && !askedMore && countOf(bot, step.drops) >= before + (step.count || 1)) {
           askedMore = true;
           if (!await moreOfSource(bot, task, goal, save, step, source, cap)) break;
         }
-        let next = nearestRemaining(bot, source);
+        let next = rest[0] || nearestRemaining(bot, source);
+        if (felling && !rest.length && next && next.distanceTo(bot.entity.position) <= 6) {
+          tree = treeAt(next);
+          if (tree.length) { stumps.push(felling.stumpOf(bot, tree, source.block)); bot._fellingStump = stumps.at(-1); }
+        }
         if ((!next || next.distanceTo(bot.entity.position) > 6) && ore) {
           const here = bot.entity.position;
           next = (await miningCandidates(bot, task, step, goal)).filter(p => p.distanceTo(here) <= 6).sort((a, b) => a.distanceTo(here) - b.distanceTo(here))[0] || null;
@@ -2563,13 +2584,33 @@ async function workSource(bot, task, step, goal, save, source) {
               !built.leftAlone(bot, goal, p) && faces.some(f => air(bot.blockAt(p.plus(f)))))
             .sort((a, b) => a.distanceTo(here) - b.distanceTo(here))[0] || null;
         }
-        if (!next || next.distanceTo(bot.entity.position) > 6 || !workSites.within(workSites.forOutput(goal, step.drops), next)) break;
+        if (!next || next.distanceTo(bot.entity.position) > (rest.length ? 16 : 6) || !workSites.within(workSites.forOutput(goal, step.drops), next)) break;
         task.check(); checkAir(bot);
-        try { await mine(bot, task, step, goal, save, next); } catch (err) { task.check(); if (['NeedsAir', 'NeedsSafety'].includes(err.name)) throw err; break; }
+        try { await mine(bot, task, step, goal, save, next); }
+        catch (err) {
+          task.check(); if (['NeedsAir', 'NeedsSafety'].includes(err.name)) throw err;
+          // A log cut whose drop came to rest up on the leaves is the tree coming down, not a failure: on with the rest
+          // of it, the drop picked up once the leaves bring it down (chores.js). On the copy, 2026-11-27, "nothing
+          // collected ... acacia_log there before, air after" ended the tree with two of its logs left standing.
+          if (felling && bot.blockAt(next) && bot.blockAt(next).name !== source.block) continue;
+          break;
+        }
+      }
+      if (felling) {
+        const left = standing().length;
+        if (left) console.log(`[tree] ${left} ${source.block.replaceAll('_', ' ')}s of the tree at ${stumps.at(-1)?.cells[0] || p} left standing: ${String(goal.lastMiningError || 'none could be reached').slice(0, 140)}`);
+        // A sapling where each trunk cut stood, if one is carried or lies about; else owed, planted on the way back.
+        for (const stump of stumps) {
+          if (!stump || stump.cells.some(c => bot.blockAt(c)?.name === source.block)) continue;
+          try { await felling.replant(bot, task, stump, treeDeps(bot, goal)); }
+          catch (err) { task.check(); if (['NeedsAir', 'NeedsSafety', 'Cancelled'].includes(err.name)) throw err; felling.owe(bot, stump); }
+        }
       }
     }
   }
   catch (err) {
+    // The stumps cut this far are owed their saplings.
+    if (felling) for (const stump of stumps) if (stump && !stump.cells.some(c => bot.blockAt(c)?.name === source.block)) felling.owe(bot, stump);
     // A missing or worn-out tool is the bot's problem, not the vein's: the
     // tree or the ore is still there once a tool is in hand, and setting it
     // aside sent the bot looking for another after the pickaxe was made.
@@ -2649,6 +2690,10 @@ async function moveOnFromResource(bot, task, goal, save) {
 // oak and spruce looking for acacia (the user, 2026-09-24). Planks, sticks,
 // tables and fuel take any wood, and the next step plans from the pockets.
 const LOG = /^(oak|spruce|birch|jungle|acacia|dark_oak|mangrove|cherry|pale_oak)_log$/;
+// What the tree felling (tree-felling.js) works with: this module's walks, digs, places and pickups, and the cells a
+// stand may not be laid in or stood on (a build's, the player's chosen spot, a player's own blocks).
+const treeDeps = (bot, goal) => ({ navigate, dig, place, collect: collectNearbyDrops,
+  forbidden: c => reservedForConstruction(goal, c) || workSites.protects(goal?.workSite, c) || built.leftAlone(bot, goal, c) });
 // And either of the Nether's stems for the other: the Nether's search walks
 // to whichever forest is known (nether-gather.js, note 608).
 const NETHER_STEM = /^(crimson|warped)_stem$/;
@@ -3321,6 +3366,17 @@ async function mineAtSource(bot, task, step, goal, save, selected) {
       if (e.name === 'NeedsAir') { setAside(goal, 'reach', p, 'ran out of air there', 120000); save(); throw e; }
       if (e.name === 'NeedsSafety') throw e;
       goal.lastMiningError = e.message;
+      // A log no stand on the ground reaches: blocks laid to stand on under or beside it, the tree's logs in reach of
+      // the top cut, and the stand taken back down (tree-felling.js). Asked for in play, where the tops of the acacias
+      // were left, tree after tree, for want of a stand.
+      // A walk that found no way there counts too ('No route from here'): the bot stood on the tree's own foot.
+      if (!mined && /^(No reachable dry standing position|No route from here|Navigation timed out|navigation timed out|Foliage mining access changed)/i.test(e.message) &&
+          LOG.test(wasBlock || '') && bot.blockAt(p)?.name === wasBlock && bot.game?.gameMode !== 'creative') {
+        access?.restore(); access = undefined;
+        try { await require('./tree-felling').fellFromStands(bot, task, goal, save, p, treeDeps(bot, goal)); }
+        catch (err) { task.check(); if (['NeedsAir', 'NeedsSafety', 'Cancelled'].includes(err.name)) throw err; goal.lastMiningError = `${e.message}; the stand for it: ${String(err.message || err).slice(0, 120)}`; }
+        if (countOf(bot, step.drops) > before) { mined++; goal.lastMiningError = null; return; }
+      }
       // Ore in view with no stand beside it, nothing mined yet: the rock between is dug, a tunnel toward it (note
       // 2304), as the step does for ore out of view, not set aside for the next ore behind rock. full-10 (25586,
       // 2026-10-27 16:4x to 17:2xZ) failed 56 mines of iron it saw through 10 to 50 blocks of stone, 'No reachable
@@ -11464,6 +11520,7 @@ async function runGoal(bot, task, goal, store, { maxSteps = Infinity, onStep = (
         { prepare: () => prepareBundleStep(bot, task, goal, save, decisionClient, () => onStep(goal)) });
       if (goal.kind === 'climb_ladder') complete = await require('./companion-actions').climbLadder(bot, task, goal, save, navigate);
       if (goal.kind === 'light_area') complete = await require('./companion-actions').lightArea(bot, task, goal, save, { acquireStep, place, navigate });
+      if (goal.kind === 'replant') complete = await require('./tree-felling').replantStep(bot, task, goal, save, treeDeps(bot, goal));
       if (goal.kind === 'place_at_site') complete = await workSites.placeAtSite(bot, task, goal, save, {
         acquireStep, place, navigate, available: p => stationCellOk(bot, goal, p) && !occupant(bot, p) && bedFloor(bot.blockAt(p.offset(0, -1, 0)))
       });

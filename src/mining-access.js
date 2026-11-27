@@ -40,6 +40,7 @@ function miningReach(bot, point, blockPosition) {
   return !hit || hit.position?.equals(blockPosition) || eye.distanceTo(hit.intersect || hit.position) >= direction.norm() - 0.25;
 }
 
+const TREE_LOG = /^(oak|spruce|birch|jungle|acacia|dark_oak|mangrove|cherry|pale_oak)_log$/;
 function dryMiningPositions(bot, blockPosition, limit = 12) {
   const positions = [], seen = new Set(), current = bot.entity.position;
   const add = point => {
@@ -50,9 +51,13 @@ function dryMiningPositions(bot, blockPosition, limit = 12) {
     if (standingOk(bot, p) && miningReach(bot, standing, blockPosition) && safeFromHostiles(bot, standing)) positions.push(p);
   };
   add(current);
+  // A log is cut from the ground up to four over the feet, as a player cuts a trunk (tree-felling.js has the stands
+  // for those higher): the stands looked at went no lower than one under the block, and the trunk's fourth and fifth
+  // logs, in reach of the arm from the ground, were 'No reachable dry standing position'.
+  const low = TREE_LOG.test(bot.blockAt(blockPosition)?.name || '') ? [-2, -3, -4] : [];
   for (let distance = 1; distance <= 3 && positions.length < limit; distance++) {
     for (const [dx, dz] of [[distance, 0], [-distance, 0], [0, distance], [0, -distance]]) {
-      for (const dy of [0, 1, -1, 2, 3]) {
+      for (const dy of [0, 1, -1, 2, 3, ...low]) {
         add(blockPosition.offset(dx, dy, dz));
         if (positions.length >= limit) break;
       }

@@ -20,6 +20,10 @@ const SURPLUS = Object.freeze({
   // (note 944: the spans and tunnels lay them); out of it, none.
   leaf_litter: 32, short_grass: 0, seagrass: 0, kelp: 0, wheat_seeds: 32, raw_copper: 16, copper_ingot: 16,
   furnace: 2, crafting_table: 2, snowball: 0, ice: 0, clay_ball: 0, flint: 8,
+  // Saplings to plant where a tree was cut (tree-felling.js), eight of a kind: four make a dark oak. Kept to none
+  // before as no rung took them, and the trees cut in play were never planted again.
+  oak_sapling: 8, spruce_sapling: 8, birch_sapling: 8, jungle_sapling: 8, acacia_sapling: 8, dark_oak_sapling: 8,
+  cherry_sapling: 8, pale_oak_sapling: 8, mangrove_propagule: 8,
 });
 const FREE_SLOTS = 4;
 
@@ -134,7 +138,7 @@ const budgetOf = (name, dim) => BUDGETS.find(b => b.test(name, dim)) || null;
 // or the home's chest spends each. With a home chest known, these are the
 // chest's keepers (home-stash.js stashes oddities), not dropped.
 // (ctx.homeChest).
-const NO_RUNG = /^(rotten_flesh|spider_eye|armadillo_scute|rabbit_hide|rabbit_foot|phantom_membrane|magma_cream|ink_sac|glow_ink_sac|slime_ball|egg|brown_egg|blue_egg|redstone|glowstone_dust|rail|wither_skeleton_skull|ominous_bottle|cocoa_beans|snowball|clay_ball|nether_brick_fence|nether_brick_stairs|cobweb|hay_block|.*_sapling)$/;
+const NO_RUNG = /^(rotten_flesh|spider_eye|armadillo_scute|rabbit_hide|rabbit_foot|phantom_membrane|magma_cream|ink_sac|glow_ink_sac|slime_ball|egg|brown_egg|blue_egg|redstone|glowstone_dust|rail|wither_skeleton_skull|ominous_bottle|cocoa_beans|snowball|clay_ball|nether_brick_fence|nether_brick_stairs|cobweb|hay_block)$/;
 const capFor = (name, dim, ctx = {}) => {
   const own = capOf(name);
   if (own !== undefined) return own;
@@ -382,7 +386,7 @@ async function tidyInventory(bot, task, { force = false, away = null, keep = new
 // seeds go last, whole, when nothing else is left.
 const nether = bot => /nether/.test(String(bot.game?.dimension || ''));
 const EXPENDABLE = [
-  ['dirt', 0], ['gravel', 0], [/_sapling$/, 0], ['nether_brick_fence', 0], ['leaf_litter', 16], ['short_grass', 0],
+  ['dirt', 0], ['gravel', 0], [/_sapling$|^mangrove_propagule$/, 8], ['nether_brick_fence', 0], ['leaf_litter', 16], ['short_grass', 0],
   // Eggs kept (note 1754): a thrown egg breaks an end crystal as a snowball does (src/projectiles.js THROWABLE), and the eggs chickens lay are a projectile without snow or skeletons.
   ['nether_wart', 0], ['poisonous_potato', 0], ['spider_eye', 0],
   ['netherrack', bot => nether(bot) ? 96 : 0], ['cobbled_deepslate', 0], ['cobblestone', bot => nether(bot) ? 64 : 128], [/^soul_(sand|soil)$/, bot => nether(bot) ? 32 : 0], ['nether_bricks', 0],
