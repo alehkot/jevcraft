@@ -516,19 +516,19 @@ test('put away: the bread past what keeps the bot fed and the seeds past two sow
   const gf = await sownGarden(w, registry);
   const bot = botIn(w, { registry, file: gf, items: [['wooden_hoe', 1], ['bread', 10], ['wheat_seeds', 30], ['beetroot', 5], ['wheat', 2]] });
   const { contents, said } = chestsFor(bot);
-  assert.equal(garden.breadKept(bot), 3, 'three: fifteen points, over the twelve kept');
+  assert.equal(garden.breadKept(bot), 5, 'five: twenty-five points, over twice the twelve kept');
   const d = garden.gardenDue(bot, {});
   assert.equal(d?.chore, 'garden', 'nothing to sow, bake or bring in: due to put away');
-  assert.equal(d.stash, 26);
+  assert.equal(d.stash, 24);
   assert.equal(chores.line(d), "I'll put the bread in the chest.");
   const goal = chores.goalFor(bot, d, { now: 0 });
   const [, lines] = await quietlyAsync(() => garden.gardenStep(bot, task, goal, null, helpers(bot, w)));
-  assert.deepEqual(contents, { wheat_seeds: 14, beetroot: 5, bread: 7 });
-  assert.equal(goal.stored, 26);
-  assert.equal(counted(bot.inventory.items(), 'bread'), 3);
+  assert.deepEqual(contents, { wheat_seeds: 14, beetroot: 5, bread: 5 });
+  assert.equal(goal.stored, 24);
+  assert.equal(counted(bot.inventory.items(), 'bread'), 5);
   assert.equal(counted(bot.inventory.items(), 'wheat_seeds'), 16);
   assert.equal(counted(bot.inventory.items(), 'wheat'), 2, 'what makes no loaf is kept');
-  assert.deepEqual(said, ['I put 14 wheat seeds, 5 beetroots and 7 bread in the chest in the house.']);
+  assert.deepEqual(said, ['I put 14 wheat seeds, 5 beetroots and 5 bread in the chest in the house.']);
   assert.ok(lines.some(l => /^\[garden\] put in the chest at \(-2, 64, -2\)/.test(l)), lines.join(' | '));
   assert.equal(garden.gardenDue(bot, {}), null, 'all put away: nothing more to do');
   assert.equal(garden.plotsHere(bot)[0].restUntil, undefined);
@@ -554,7 +554,7 @@ test('the chest: one marked use first, then the nearest the plot; none a label k
 test('not worth the walk: a few seeds past what is kept and no bread; nor with no chest by the house; a full chest is passed over a while', async () => {
   const { w, registry } = homestead({ '-2,64,-2': 'chest' }, { pondX: 10 });
   const gf = await sownGarden(w, registry);
-  const few = botIn(w, { registry, file: gf, items: [['wooden_hoe', 1], ['wheat_seeds', 21], ['bread', 3]] });
+  const few = botIn(w, { registry, file: gf, items: [['wooden_hoe', 1], ['wheat_seeds', 21], ['bread', 5]] });
   assert.deepEqual(garden.surplusOf(few), { wheat_seeds: 5 });
   assert.equal(garden.gardenDue(few, {}), null, 'five seeds and no bread past what is kept');
   const { w: bare, registry: rb } = homestead({}, { pondX: 10 });

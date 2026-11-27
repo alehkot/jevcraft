@@ -62,7 +62,7 @@ const SIDE_COST = 25;                       // a side of the plot with no ground
 const STORE = /^(chest|barrel)$/;           // a trapped chest is left shut: opening one powers what is wired to it
 const STORE_NEAR = 6;                       // a chest this near across of the house's walls, or of the plot
 const STORE_FEW = 8;                        // fewer to put away than this, and no bread among them: not worth the walk
-const BREAD_KEPT = 3;
+const BREAD_KEPT = 5;
 const CHEST_MS = 20 * 60000;                // a chest that would not open or take anything is passed over this long
 const GROUND = /^(grass_block|dirt)$/;
 const COVER = /^(short_grass|tall_grass|fern|large_fern)$/;
@@ -670,9 +670,10 @@ const WORDS = Object.freeze({ bread: ['bread', 'bread'], wheat: ['wheat', 'wheat
   beetroot: ['beetroot', 'beetroots'], carrot: ['carrot', 'carrots'], potato: ['potato', 'potatoes'], poisonous_potato: ['poisonous potato', 'poisonous potatoes'] });
 const itemSays = (name, n) => n + ' ' + (WORDS[name]?.[n === 1 ? 0 : 1] || name.replaceAll('_', ' '));
 const listSays = parts => parts.length < 2 ? parts.join('') : parts.slice(0, -1).join(', ') + ' and ' + parts.at(-1);
-// The bread kept: three at least, and as many more as keep the food carried at what the bot keeps for healing and the
-// night (food-reserve.js wanted: twelve points in the Overworld) once the rest is put away. Under it the survival
-// layer goes for food, and the animals about the garden are its food.
+// The bread kept: five at least, and as many more as keep the food carried at twice what the bot keeps for healing and
+// the night (food-reserve.js wanted: twelve points in the Overworld) once the rest is put away. Hungry (under eighteen)
+// with less than that carried, the survival layer goes for food in a chore, and the animals about the garden are its
+// food: three loaves were one meal from it.
 function breadKept(bot) {
   const foods = bot.registry?.foodsByName || {}, points = name => foods[name]?.foodPoints || 0;
   let want = 12, safe = () => true;
@@ -680,7 +681,7 @@ function breadKept(bot) {
   try { const { safeFood } = require('./vitals'); safe = item => safeFood(bot, item); } catch (_) {}
   const others = items(bot).filter(i => i.name !== 'bread' && points(i.name) > 0 && safe(i))
     .reduce((n, i) => n + Math.min(i.count, STORE_PAST[i.name] ?? i.count) * points(i.name), 0);
-  return Math.max(BREAD_KEPT, Math.ceil((want - others) / (foods.bread?.foodPoints || 5)));
+  return Math.max(BREAD_KEPT, Math.ceil((2 * want - others) / (foods.bread?.foodPoints || 5)));
 }
 // -> { name: count } to put away.
 function surplusOf(bot) {
