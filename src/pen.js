@@ -36,6 +36,7 @@ const REFUSED_MS = 24 * 3600000;
 const REST_MS = [10, 20, 30].map(m => m * 60000);   // a build run that came to nothing: rested this long, then longer
 const TREE_FROM = 6, TREE_TO = 24;          // a tree felled for its wood this far out from the house's walls
 const TREE_LEAVES = 6;                      // its own leaves (not a player's, which keep) about its top, at least
+const FELL_MOST = 3;                        // trees felled for one pen's wood, at most
 const SITE_MS = 5 * 60000, NONE_MS = 10 * 60000;
 const TABLE_NEAR = 16;                      // a crafting table this near the pen or the house's middle makes its wood
 const MOST_PENS = 8;
@@ -353,16 +354,16 @@ async function makeWood(bot, task, goal, save, pen, want, { navigate, openWindow
   return madeN;
 }
 
-// A tree to fell for the pen's wood: a trunk's foot on soil near the house, TREE_FROM to TREE_TO out from its walls,
+// The trees to fell for the pen's wood: a trunk's foot on soil near the house, TREE_FROM to TREE_TO out from its walls,
 // within the reach of the player waited with, with its own leaves about its top (a player's leaves keep), not marked,
-// a player's or built. The nearest the pen first. -> { log, block, logs } | null
-function treeFor(bot, house, centre, { player = null, goal = null } = {}) {
+// a player's or built. The nearest the pen first. -> [{ log, block, logs, d }]
+function treesAbout(bot, house, centre, { player = null, goal = null } = {}) {
   const ids = (bot.registry?.blocksArray || []).filter(b => TREE_LOG.test(b.name)).map(b => b.id);
-  if (!ids.length || typeof bot.findBlocks !== 'function') return null;
+  if (!ids.length || typeof bot.findBlocks !== 'function') return [];
   let found = [];
-  try { found = bot.findBlocks({ point: at(centre), matching: ids, maxDistance: TREE_TO + 12, count: 160 }) || []; } catch (_) { return null; }
+  try { found = bot.findBlocks({ point: at(centre), matching: ids, maxDistance: TREE_TO + 12, count: 160 }) || []; } catch (_) { return []; }
   let felling, built;
-  try { felling = require('./tree-felling'); built = require('./built'); } catch (_) { return null; }
+  try { felling = require('./tree-felling'); built = require('./built'); } catch (_) { return []; }
   const seen = new Set(), out = [];
   for (const p0 of found) {
     const p = plain(p0), b = blockOf(bot, p);
@@ -384,7 +385,17 @@ function treeFor(bot, house, centre, { player = null, goal = null } = {}) {
     if (leaves < TREE_LEAVES) continue;
     out.push({ log: p, block: b.name, logs: logs.length, d: across(p, centre) });
   }
-  return out.sort((a, b) => a.d - b.d)[0] || null;
+  return out.sort((a, b) => a.d - b.d);
+}
+const treeFor = (bot, house, centre, opts) => treesAbout(bot, house, centre, opts)[0] || null;
+// Enough of them for the planks short, the nearest first (four planks a log), FELL_MOST at most. A pen begun on one tree
+// too few stood as a ring of fences with no gates by the house: a four-log oak felled for eighteen planks short.
+// -> { trees, logs, enough }
+function treesFor(trees, short) {
+  const want = Math.ceil(short / 4), out = [];
+  let logs = 0;
+  for (const t of trees) { if (logs >= want || out.length >= FELL_MOST) break; out.push(t); logs += t.logs; }
+  return { trees: out, logs, enough: logs >= want };
 }
 // The tree felled whole (tree-felling.js: from the ground, and stands for what the arm does not reach, taken back
 // after), its logs picked up and a sapling planted where it stood, or owed. -> the logs gained
@@ -481,22 +492,25 @@ function buildDue(bot, { houses = [], plots = [], player = null, herdAt = null, 
     let table = null;
     try { table = wood.crafts ? tableBy(bot, house, shape.centre, now) : null; } catch (_) { table = null; }
     if (wood.crafts && !table) { noteOnce(bot, house.key + ' table', '[pen] no pen by ' + house.name + ' yet: no crafting table standing by it to make the fences at'); continue; }
-    const tree = wood.short ? treeKept(bot, house, shape.centre, { player, goal }, now) : null;
-    if (wood.short && !tree) { noteOnce(bot, house.key + ' wood', '[pen] no pen by ' + house.name + ' yet: ' + wood.short + ' planks short and no tree of its own near it to fell'); continue; }
+    // Wood short: trees of its own near it to cover it. A pen is not begun on wood that does not come to it; one begun
+    // takes what trees there are, and waits for the rest (carried, or a tree grown) with none.
+    const fell = wood.short ? treesFor(treesKept(bot, house, shape.centre, { player, goal }, now), wood.short) : null, tree = fell?.trees[0] || null;
+    if (fell && !tree) { noteOnce(bot, house.key + ' wood', '[pen] ' + (pen ? 'the pen by ' + house.name + ' waits for wood: ' : 'no pen by ' + house.name + ' yet: ') + wood.short + ' planks short and no tree of its own near it to fell'); continue; }
+    if (fell && !fell.enough && !pen) { noteOnce(bot, house.key + ' trees', '[pen] no pen by ' + house.name + ' yet: ' + wood.short + ' planks short, and the trees of its own near it hold ' + fell.logs + ' logs'); continue; }
     const n = want.missing.length + want.gatesMissing;
     const why = (pen?.builtAt ? n + ' of the pen\'s fences and gates to put back' : pen ? 'the pen to finish: ' + n + ' fences and gates' : 'a pen to build: ' + n + ' fences and gates') +
-      ' by ' + house.name + ' at ' + where(shape.centre) + (wood.crafts ? '; ' + wood.planks + ' planks wanted, ' + wood.have + ' carried' + (tree ? ', a ' + tree.block.replace(/_log$/, '').replaceAll('_', ' ') + ' tree at ' + where(tree.log) + ' to fell' : '') : '; the fences carried');
-    return { house, pen, site, shape, wood, tree, why };
+      ' by ' + house.name + ' at ' + where(shape.centre) + (wood.crafts ? '; ' + wood.planks + ' planks wanted, ' + wood.have + ' carried' + (tree ? (fell.trees.length > 1 ? ', ' + fell.trees.length + ' trees to fell (' + fell.logs + ' logs), the nearest a ' : ', a ') + tree.block.replace(/_log$/, '').replaceAll('_', ' ') + ' tree at ' + where(tree.log) + (fell.trees.length > 1 ? '' : ' to fell') : '') : '; the fences carried');
+    return { house, pen, site, shape, wood, tree, trees: fell?.trees || [], why };
   }
   return null;
 }
-// treeFor, looked again every few minutes (asked by every idle look), and the tree kept while it stands.
-function treeKept(bot, house, centre, opts, now = Date.now()) {
+// treesAbout, looked again every few minutes (asked by every idle look), and the trees kept while they stand.
+function treesKept(bot, house, centre, opts, now = Date.now()) {
   const kept = bot._penTrees ||= new Map(), hit = kept.get(house.key);
-  if (hit && now - hit.at < SITE_MS && (!hit.tree || nameOf(bot, hit.tree.log) === hit.tree.block)) return hit.tree;
-  const tree = treeFor(bot, house, centre, opts);
-  kept.set(house.key, { at: now, tree });
-  return tree;
+  if (hit && now - hit.at < SITE_MS && hit.trees.every(t => nameOf(bot, t.log) === t.block)) return hit.trees;
+  const trees = treesAbout(bot, house, centre, opts);
+  kept.set(house.key, { at: now, trees });
+  return trees;
 }
 function noteOnce(bot, key, line) { const said = bot._penSaid ||= new Set(); if (!said.has(key)) { said.add(key); console.log(line); } }
 
@@ -508,8 +522,15 @@ async function buildStep(bot, task, goal, save, due, deps, now = Date.now()) {
   let st = status(bot, pen), want = { missing: st.missing, gatesMissing: st.gatesMissing };
   let wood = woodFor(bot, want), did = 0;
   if (wood.short) {
-    const tree = due.tree || treeFor(bot, due.house, shapeOf(pen).centre, { goal });
-    if (tree) { const got = await fell(bot, task, goal, save, tree, deps); if (got) { goal.felled = (goal.felled || 0) + 1; did += got; } }
+    // The trees in turn, the nearest first, till the wood is no longer short (logs cut from a stand can lie on the
+    // leaves till they fall: the trees chore picks them up, and the next run has them).
+    const trees = due.trees?.length ? due.trees : treesFor(treesAbout(bot, due.house, shapeOf(pen).centre, { goal }), wood.short).trees;
+    for (const tree of trees) {
+      if (!woodFor(bot, want).short) break;
+      if (nameOf(bot, tree.log) !== tree.block) continue;
+      const got = await fell(bot, task, goal, save, tree, deps);
+      if (got) { goal.felled = (goal.felled || 0) + 1; did += got; }
+    }
     wood = woodFor(bot, want);
   }
   if (wood.crafts) did += await makeWood(bot, task, goal, save, pen, want, { ...deps, house: due.house });
@@ -654,5 +675,5 @@ async function bringInHeld(bot, task, goal, save, pen, e, { lead, navigate, walk
   return { came: true, in: Math.max(0, after - before), inside: !gone() && within(s, e.position) };
 }
 
-module.exports = { layout, shapeOf, within, searchSite, siteBy, penBy, pensHere, status, ownAt, woodFor, treeFor, fell, makeWood, build, buildDue, buildStep,
+module.exports = { layout, shapeOf, within, searchSite, siteBy, penBy, pensHere, status, ownAt, woodFor, treeFor, treesAbout, treesFor, fell, makeWood, build, buildDue, buildStep,
   setGate, walkLine, leave, bringIn, letGo, begin, tableBy, gatesOpen, shutGates, SIZE, PEN_FROM, PEN_TO, HOLDS, REPAIR_MOST, REFUSED_MS, FENCE, GATE };

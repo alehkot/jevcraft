@@ -375,3 +375,47 @@ test('a fence cell a cow stands in is tried again after the others, once it has 
   const [put, lines] = await quietlyAsync(() => pen.build(bot, task, {}, null, p, h));
   assert.deepEqual(put, { fences: 14, gates: 2 }, lines.join(' | '));
 });
+
+// A tree of n logs, its trunk's foot at (x, 64, z), its own leaves over its top.
+function oak(w, x, z, n) {
+  for (let y = 64; y < 64 + n; y++) w.set(v(x, y, z), 'oak_log', { axis: 'y' });
+  for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) w.set(v(x + dx, 64 + n, z + dz), 'oak_leaves', { persistent: false });
+}
+
+test('wood short: trees near the house to cover it, the nearest first; no pen begun on too few', () => {
+  const { w, registry } = homestead({ '-1,64,9': 'crafting_table' });
+  const cows = [animal('cow', 12, -8), animal('cow', 13, -9), animal('cow', 11, -10)];
+  const bot = botIn(w, { registry, items: [['oak_log', 4], ['wheat', 4]], herd: cows });
+  const house = houseOf(bot), herdAt = { x: 12, z: -8 };
+  oak(w, -12, -12, 4);
+  const [none, said] = quietly(() => pen.buildDue(bot, { houses: [house], herdAt }));
+  assert.equal(none, null);
+  assert.ok(said.some(l => /no pen by .* yet: 18 planks short, and the trees of its own near it hold 4 logs/.test(l)), said.join(' | '));
+  assert.equal(pen.pensHere(bot).length, 0);
+  oak(w, -14, -16, 5);
+  const due = quietly(() => pen.buildDue(bot, { houses: [house], herdAt, now: Date.now() + 6 * 60000 }))[0];
+  assert.ok(due, 'due with two trees');
+  assert.equal(due.trees.length, 2);
+  assert.match(due.why, /34 planks wanted, 16 carried, 2 trees to fell \(9 logs\), the nearest a oak tree at \(-12, 64, -12\)/);
+  assert.deepEqual(pen.treesFor([{ logs: 4 }, { logs: 6 }, { logs: 6 }], 18), { trees: [{ logs: 4 }, { logs: 6 }], logs: 10, enough: true });
+  assert.equal(pen.treesFor([{ logs: 3 }, { logs: 3 }, { logs: 3 }, { logs: 3 }], 60).trees.length, 3);
+});
+
+test('a pen begun goes on with the trees there are, and with none waits for wood, said', () => {
+  const { w, registry } = homestead({ '-1,64,9': 'crafting_table' });
+  const cows = [animal('cow', 12, -8), animal('cow', 13, -9)];
+  const bot = botIn(w, { registry, items: [['wheat', 4]], herd: cows });
+  const house = houseOf(bot), herdAt = { x: 12, z: -8 };
+  const { site } = pen.searchSite(bot, house, { herdAt });
+  const p = quietly(() => pen.begin(bot, house, site))[0];
+  oak(w, -12, -12, 4);
+  const due = quietly(() => pen.buildDue(bot, { houses: [house], herdAt }))[0];
+  assert.ok(due, 'the one tree there is');
+  assert.equal(due.pen, p);
+  assert.equal(due.trees.length, 1);
+  assert.match(due.why, /the pen to finish: 16 fences and gates .*; 34 planks wanted, 0 carried, a oak tree at \(-12, 64, -12\) to fell/);
+  for (let y = 64; y < 68; y++) w.set(v(-12, y, -12), 'air');
+  const [none, said] = quietly(() => pen.buildDue(bot, { houses: [house], herdAt }));
+  assert.equal(none, null);
+  assert.ok(said.some(l => /the pen by .* waits for wood: 34 planks short and no tree of its own near it to fell/.test(l)), said.join(' | '));
+});
