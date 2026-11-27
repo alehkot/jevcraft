@@ -45,6 +45,12 @@ const BRED_MS = 5 * 60000;                  // fed, or would not take it: let be
 // grazing ten blocks off again within the quarter hour.
 const LED_MS = 5 * 60000, STAYED_MS = 30 * 60000;
 const MOST_LED = 3, MOST_PAIRS = 2;
+// With a pen: one led to its gate that ends the run outside it (it would not go in, or got out after), and one in it at
+// the run's start that ends it outside, has a miss; one seen in it has none. With MISS_MOST it is let be STAYED_MS.
+// Any still to bring in after a run bring the chore back in PEN_REST_MS, not its five minutes: on the copy (2026-11-27)
+// one of two led to the gate did not go in, and in the five minutes' rest the three cows outside wandered off 31 to 45
+// blocks, out of reach.
+const MISS_MOST = 3;
 const TAKE = 2.5;                           // this near an animal to hand it the food: the reach is three
 const OVER = 3.8;                           // eye to an animal's middle over a fence: handed the food from outside it
 const LEG = 3;                              // blocks a leg, leading
@@ -64,8 +70,10 @@ function baby(bot, e) {
   const keys = bot.registry?.entitiesByName?.[e.name]?.metadataKeys || [], i = keys.indexOf('baby');
   return i >= 0 && e.metadata?.[i] === true;
 }
-// Who was fed, would not take it, was led, or would not come, and when: five minutes to half an hour, kept in memory.
-const memo = bot => (bot._herd ||= { fed: {}, untaken: {}, led: {}, stayed: {}, seen: {}, home: {} });
+// Who was fed, would not take it, was led, or would not come, and when: five minutes to half an hour, kept in memory;
+// and the pen's misses, how many.
+const memo = bot => (bot._herd ||= { fed: {}, untaken: {}, led: {}, stayed: {}, seen: {}, home: {}, missed: {} });
+const missesOf = bot => (memo(bot).missed ||= {});
 const since = (bot, list, e, now) => now - (memo(bot)[list][idOf(e)] || 0);
 // ---- the herd spared (the user, 2026-11-27: "yes hunting should spare the herd")
 // An animal a hunt would take for food (foraging.js preyFood: a cow, a mooshroom, a sheep, a pig, a chicken, a rabbit)
@@ -183,6 +191,12 @@ function penStanding(bot, houses) {
   }
   return null;
 }
+// One of the kind outside a pen standing, to bring in: within LEAD_FROM of it, not penned elsewhere, not let be (it
+// would not come, or had MISS_MOST misses). One led a moment ago is no reason to wait with the pen standing: outside it
+// again, it is led again.
+function penStray(bot, s, e, now) {
+  return !require('./pen').within(s, e.position) && across(e.position, s.centre) <= LEAD_FROM && !penned(bot, e.position) && since(bot, 'stayed', e, now) >= STAYED_MS;
+}
 // With a pen: the herd's place is the pen; those of the kind outside it (not penned elsewhere) are led in while it has
 // room, and the adults in it are the ones fed.
 function penPlan(bot, kind, { pen, st }, { player, houses, now }) {
@@ -191,8 +205,7 @@ function penPlan(bot, kind, { pen, st }, { player, houses, now }) {
   noteSeen(bot, kind, herd.length, adults.length, now);
   const inPen = herd.filter(e => P.within(s, e.position)), room = Math.max(0, P.HOLDS - st.inside.length);
   if (adults.length < 2) return null;
-  const strays = adults.filter(e => !P.within(s, e.position) && across(e.position, point) <= LEAD_FROM && !penned(bot, e.position) &&
-    since(bot, 'led', e, now) >= LED_MS && since(bot, 'stayed', e, now) >= STAYED_MS)
+  const strays = adults.filter(e => penStray(bot, s, e, now))
     .sort((a, b) => across(a.position, point) - across(b.position, point)).slice(0, Math.min(MOST_LED, room));
   const ready = inPen.filter(e => !baby(bot, e) && since(bot, 'fed', e, now) >= BRED_MS && since(bot, 'untaken', e, now) >= BRED_MS);
   const pairs = Math.max(0, Math.min(MOST_PAIRS, Math.floor(ready.length / 2), Math.floor(wheat(bot) / 2), room - strays.length));
@@ -371,9 +384,19 @@ async function herdStep(bot, task, goal, save, deps = {}) {
   if (!plan) return true;
   goal.herdKind = plan.kind; goal.herdPoint = plain(plan.point);
   if (plan.pen) {
-    try { await penRun(bot, task, goal, save, plan, { navigate, player, houses }); }
+    const P = require('./pen'), s = P.shapeOf(plan.pen), came = new Set();
+    const inAtStart = new Set(about(bot, plan.kind, player, houses, s.centre).filter(e => P.within(s, e.position)).map(idOf));
+    try { await penRun(bot, task, goal, save, plan, { navigate, walk: deps.walk, inMs: deps.inMs, player, houses, came }); }
     finally { if (bot.heldItem?.name === FOOD) { try { await require('./skills').emptyHand(bot); } catch (_) {} } }
     if (goal.led || goal.penned || goal.pairs) console.log('[animals] ' + SAYS[plan.kind][1] + ' by the pen at ' + where(plan.point) + ': ' + goal.led + ' led, ' + (goal.penned || 0) + ' brought in, ' + goal.pairs + (goal.pairs === 1 ? ' pair' : ' pairs') + ' fed');
+    // Any still to bring in: the chore back in half a minute, before they wander off.
+    const left = penAfter(bot, plan, { player, houses, inAtStart, came });
+    if (left.length) {
+      goal.restMs = PEN_REST_MS;
+      const [one, many] = SAYS[plan.kind], m = missesOf(bot), n = e => m[idOf(e)] || 0;
+      console.log('[animals] ' + left.length + ' ' + (left.length === 1 ? one : many) + ' still outside the pen at ' + where(plan.point) + ', led again in half a minute: ' +
+        left.map(e => where(plain(e.position)) + (n(e) ? ' (' + n(e) + (n(e) === 1 ? ' miss)' : ' misses)') : '')).join(', '));
+    }
     save?.();
     return true;
   }
@@ -412,17 +435,34 @@ async function herdStep(bot, task, goal, save, deps = {}) {
   return true;
 }
 
+// After a run with the pen: the misses (MISS_MOST) of the adults of the kind about, and those still to bring in, with room
+// in the pen. inAtStart, came: the ids of those in the pen at the run's start, and of those led to its gate in the run.
+function penAfter(bot, plan, { player, houses, inAtStart, came, now = Date.now() }) {
+  const P = require('./pen'), s = P.shapeOf(plan.pen), m = missesOf(bot);
+  const adults = about(bot, plan.kind, player, houses, s.centre).filter(e => !baby(bot, e));
+  for (const e of adults) {
+    const id = idOf(e);
+    if (P.within(s, e.position)) { delete m[id]; continue; }
+    if (!came.has(id) && !inAtStart.has(id)) continue;
+    m[id] = (m[id] || 0) + 1;
+    if (m[id] < MISS_MOST) continue;
+    delete m[id]; memo(bot).stayed[id] = now;
+    console.log('[animals] the ' + SAYS[plan.kind][0] + ' at ' + where(plain(e.position)) + ' ended ' + MISS_MOST + ' runs outside the pen at ' + where(plan.point) + ': let be half an hour');
+  }
+  if (P.HOLDS - P.status(bot, plan.pen).inside.length < 1) return [];
+  return adults.filter(e => penStray(bot, s, e, now));
+}
 // A run with a pen: those outside it brought in, one at a time; then pairs in it fed over the fence from the stand
-// nearer them.
-async function penRun(bot, task, goal, save, plan, { navigate, player, houses }) {
+// nearer them. came: the ids of those that came to the gate, added to.
+async function penRun(bot, task, goal, save, plan, { navigate, walk, inMs, player, houses, came = new Set() }) {
   const P = require('./pen'), s = P.shapeOf(plan.pen);
   goal.penned ||= 0;
   goal.shut = (goal.shut || 0) + await P.shutGates(bot, task, plan.pen, { navigate });
   for (const e of plan.strays) {
     task.check();
     if (P.status(bot, plan.pen).inside.length >= P.HOLDS) break;
-    const r = await P.bringIn(bot, task, goal, save, plan.pen, e, { lead, navigate });
-    if (r.came) goal.led++; else goal.stayed++;
+    const r = await P.bringIn(bot, task, goal, save, plan.pen, e, { lead, navigate, walk, inMs });
+    if (r.came) { goal.led++; came.add(idOf(e)); } else goal.stayed++;
     goal.penned += r.in;
   }
   const inPen = () => { const t = Date.now(); return about(bot, plan.kind, player, houses, s.centre).filter(e => P.within(s, e.position) && !baby(bot, e) &&

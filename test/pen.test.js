@@ -440,3 +440,77 @@ test('a pen begun is finished with the herd gone out of sight, and with no wheat
   const far = botIn(other.w, { registry: other.registry, items: [['wheat', 8], ['oak_log', 9]], herd: [animal('cow', 31, -6), animal('cow', 32, -5)] });
   assert.equal(quietly(() => animals.herdDue(far, {}))[0], null);
 });
+
+// The pen standing, a cow by its near gate's stand outside it and one in it, one wheat carried (no pair fed).
+function gateScene() {
+  const { w, registry } = homestead();
+  const bot = botIn(w, { registry, items: [['wheat', 1]] });
+  const house = houseOf(bot), { p, s } = standUp(w, bot, house);
+  const ix = Math.sign(s.gates[1].x - s.gates[0].x), iz = Math.sign(s.gates[1].z - s.gates[0].z);
+  const cow = animal('cow', s.stands[0].x - 3 * ix + iz, s.stands[0].z - 3 * iz + ix);
+  const mate = animal('cow', s.line[1].x, s.line[1].z, { fenced: true });
+  for (const e of [cow, mate]) bot.entities[e.id] = e;
+  return { bot, p, s, cow, mate, ix, iz, h: helpers(bot) };
+}
+// One run of the animals chore as the idle look gives it. -> { d, goal, lines }
+async function choreRun(bot, deps) {
+  const d = quietly(() => animals.herdDue(bot, {}))[0];
+  assert.equal(d?.pen, 'in', 'due: ' + JSON.stringify(d));
+  const goal = chores.goalFor(bot, d, { now: 0 });
+  const [, lines] = await quietlyAsync(() => animals.herdStep(bot, task, goal, null, deps));
+  return { d, goal, lines };
+}
+
+test('one led to the gate that would not go in is led again on the next run, half a minute on; in, the chore rests as before', async () => {
+  const { bot, s, cow, h } = gateScene();
+  // It follows the wheat to the gate's stand and no farther: it does not follow the bot in.
+  let balk = true;
+  const deps = { ...h, inMs: 200, walk: async (b, t, cells) => { if (balk && cells.length > 1) cow.fenced = true; return h.walk(b, t, cells); } };
+  const first = await choreRun(bot, deps);
+  cow.fenced = false;
+  const said = first.lines.join(' | ');
+  assert.equal(first.goal.led, 1, said);
+  assert.equal(pen.within(s, cow.position), false, 'outside: ' + cow.position);
+  assert.equal(first.goal.restMs, 30000, said);
+  assert.match(said, /\[animals\] 1 cow still outside the pen at \(-?\d+, \d+, -?\d+\), led again in half a minute: \(-?\d+, \d+, -?\d+\) \(1 miss\)/);
+  assert.equal(quietly(() => animals.herdDue(bot, {}))[0]?.strays, 1, 'due again at once');
+  balk = false;
+  const second = await choreRun(bot, deps);
+  assert.equal(pen.within(s, cow.position), true, 'in: ' + cow.position + ' | ' + second.lines.join(' | '));
+  assert.equal(second.goal.restMs, undefined);
+  assert.equal(quietly(() => animals.herdDue(bot, {}))[0], null, 'nothing due after');
+});
+
+test('one that would not go in three runs running is let be half an hour, said, and the chore rests as before', async () => {
+  const { bot, s, cow, h } = gateScene();
+  const deps = { ...h, inMs: 200, walk: async (b, t, cells) => { if (cells.length > 1) cow.fenced = true; return h.walk(b, t, cells); } };
+  for (let run = 1; run <= 3; run++) {
+    const r = await choreRun(bot, deps);
+    cow.fenced = false;
+    assert.equal(pen.within(s, cow.position), false, 'run ' + run + ': ' + cow.position);
+    if (run < 3) { assert.equal(r.goal.restMs, 30000, 'run ' + run + ': ' + r.lines.join(' | ')); continue; }
+    assert.equal(r.goal.restMs, undefined, r.lines.join(' | '));
+    assert.ok(r.lines.some(l => /^\[animals\] the cow at .* ended 3 runs outside the pen at .*: let be half an hour$/.test(l)), r.lines.join(' | '));
+  }
+  assert.equal(quietly(() => animals.herdDue(bot, {}))[0], null, 'let be');
+});
+
+test('one in the pen that gets out while another is brought in is said, and is led back in on the next run', async () => {
+  const { bot, s, cow, mate, ix, iz, h } = gateScene();
+  // The one in the pen slips out by the near gate as the bot walks in, and stands off by the stand.
+  let slip = true;
+  const deps = { ...h, inMs: 200, walk: async (b, t, cells) => {
+    if (slip && cells.length > 1) { slip = false; mate.position = v(s.stands[0].x - 2 * ix + 0.5, 64, s.stands[0].z - 2 * iz + 0.5); }
+    return h.walk(b, t, cells);
+  } };
+  const first = await choreRun(bot, deps);
+  const said = first.lines.join(' | ');
+  assert.equal(pen.within(s, cow.position), true, 'the one led in: ' + said);
+  assert.equal(pen.within(s, mate.position), false);
+  assert.match(said, /\[pen\] 1 animal got out of the pen at \(-?\d+, \d+, -?\d+\) while a cow was brought in/);
+  assert.equal(first.goal.restMs, 30000, said);
+  cow.fenced = true; mate.fenced = false;
+  const second = await choreRun(bot, deps);
+  assert.equal(pen.within(s, mate.position), true, 'led back in: ' + second.lines.join(' | '));
+  assert.equal(second.goal.restMs, undefined);
+});

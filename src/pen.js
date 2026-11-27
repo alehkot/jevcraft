@@ -633,18 +633,19 @@ async function leave(bot, pen, walk = walkLine) {
 // the bot has stood on, and on the copy (2026-11-27) it was called "45 seconds on animals lead without getting
 // anywhere" in the middle of one, the bot taken off it with the far gate open.
 const BRING_MS = 150000;
+const IN_MS = 12000;                        // the one led waited for this long to come in after the bot
 async function bringIn(bot, task, goal, save, pen, e, deps) {
   let release = () => {};
   try { release = require('./stillness').holdWait(bot, 'the herd brought into the pen', BRING_MS); } catch (_) { /* no rule to hold */ }
   try { return await bringInHeld(bot, task, goal, save, pen, e, deps); } finally { release(); }
 }
-async function bringInHeld(bot, task, goal, save, pen, e, { lead, navigate, walk = walkLine }) {
+async function bringInHeld(bot, task, goal, save, pen, e, { lead, navigate, walk = walkLine, inMs = IN_MS }) {
   const s = shapeOf(pen);
   // In by the gate nearer the animal, out by the other: "near" and "far" here are the animal's.
   const i = across(e.position, { x: s.stands[0].x + 0.5, z: s.stands[0].z + 0.5 }) <= across(e.position, { x: s.stands[1].x + 0.5, z: s.stands[1].z + 0.5 }) ? 0 : 1;
   const standA = s.stands[i], gateA = s.gates[i], gateB = s.gates[1 - i], line = i === 0 ? s.line : s.line.slice().reverse();
   const foot = s.corner, avoid = (x, z) => x >= foot.x && x < foot.x + SIZE && z >= foot.z && z < foot.z + SIZE;
-  const before = status(bot, pen).inside.length;
+  const was = status(bot, pen).inside.map(x => x.id), before = was.length;
   goal.step = { action: 'animals_pen_in', kind: e.name, pen: s.centre }; save?.();
   if (!await lead(bot, task, goal, save, e, standA, navigate, { within: 4, avoid })) return { came: false, in: 0 };
   if (!onCell(bot, standA)) {
@@ -660,7 +661,7 @@ async function bringInHeld(bot, task, goal, save, pen, e, { lead, navigate, walk
     // In and across, the far gate opened and stood in, the animals following in after.
     if (!await walk(bot, task, [gateA, ...line])) console.log('[pen] the walk in stopped short at ' + where(plain(bot.entity.position)));
     if (await setGate(bot, task, gateB, true)) await walk(bot, task, [gateB]);
-    await waitFor(task, () => gone() || within(s, e.position), 12000);
+    await waitFor(task, () => gone() || within(s, e.position), inMs);
     await waitFor(task, () => !someoneIn(bot, gateA), 4000);
     await setGate(bot, task, gateA, false);
   } catch (err) { failed = err; throw err; } finally {
@@ -672,7 +673,10 @@ async function bringInHeld(bot, task, goal, save, pen, e, { lead, navigate, walk
       try { await shutGates(bot, light, pen, { navigate }); } catch (err) { console.log('[pen] the gates not shut after: ' + String(err.message).slice(0, 120)); }
     }
   }
-  const after = status(bot, pen).inside.length;
+  // One in it before that is out now (the gate stood open for the one led): said; the animals chore leads it back.
+  const nowIn = status(bot, pen).inside, after = nowIn.length;
+  const out = was.filter(id => bot.entities?.[id] && !nowIn.some(x => x.id === id)).length;
+  if (out) console.log('[pen] ' + out + (out === 1 ? ' animal' : ' animals') + ' got out of the pen at ' + where(s.centre) + ' while a ' + e.name + ' was brought in');
   return { came: true, in: Math.max(0, after - before), inside: !gone() && within(s, e.position) };
 }
 
