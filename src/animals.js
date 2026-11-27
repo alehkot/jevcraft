@@ -31,11 +31,13 @@ const SEEN_MS = 10 * 60000;                 // a herd seen about keeps its wheat
 const HOME_FROM = 12;                       // the herd's place kept this near a house's walls
 const UP = 6;                               // and this near its level
 const SPREAD = 8;                           // this near the gathering point across: with the herd
-const LEAD_FROM = 20;                       // led from no farther off than this
+const LEAD_FROM = 24;                       // led from no farther off than this
 const HERD = 8;                             // of a kind about, babies too: none bred past it
 const PLOT_KEEP = 5;                        // the gathering point this far across from a plot's middle at least
 const BRED_MS = 5 * 60000;                  // fed, or would not take it: let be this long (the game's five minutes)
-const LED_MS = 10 * 60000, STAYED_MS = 30 * 60000;
+// One led may be led again as soon as the chore comes round again: on the copy, 2026-11-27, cows led back were
+// grazing ten blocks off again within the quarter hour.
+const LED_MS = 5 * 60000, STAYED_MS = 30 * 60000;
 const MOST_LED = 3, MOST_PAIRS = 2;
 const TAKE = 2.5;                           // this near an animal to hand it the food: the reach is three
 const LEG = 3;                              // blocks a leg, leading
