@@ -415,6 +415,7 @@ test('ripe crops: due with nothing carried; dug from beside the plot, the drops 
   let lines;
   try { [, lines] = await quietlyAsync(() => garden.gardenStep(bot, task, goal, null, h)); } finally { stop(); }
   assert.equal(goal.harvested, 8);
+  assert.equal(goal.pickedUp, 24, 'all that came off, what fell by the stand too');
   assert.equal(goal.dropsLeft, 0, 'nothing left lying');
   assert.equal(goal.planted, 8, 'sown again with the seeds that came off');
   assert.equal(counted(bot.inventory.items(), 'wheat'), 8);
@@ -568,6 +569,14 @@ test('not worth the walk: a few seeds past what is kept and no bread; nor with n
   assert.deepEqual(said, ['I put 4 bread in the chest in the house.']);
   assert.equal(garden.plotsHere(bot)[0].chestFailed?.why, 'it filled up');
   assert.equal(garden.gardenDue(bot, {}), null, 'the only chest full: passed over');
+});
+
+test('a chest in a house found by its door is said to be in the house when it stands by the bed', () => {
+  const { w } = homestead({ '-2,64,-2': 'chest' }, { pondX: 10 });
+  const bot = botIn(w);
+  const byDoor = { key: 'found:door', kind: 'found', name: 'the house by the door', min: { x: 0, y: 63, z: -3 }, max: { x: 6, y: 68, z: 3 } };
+  assert.equal(garden.chestSays(bot, byDoor, { x: -2, y: 64, z: -2 }), 'in the house');
+  assert.equal(garden.chestSays(bot, byDoor, { x: 8, y: 64, z: 0 }), 'by the house');
 });
 
 test('read again before each run: a cell built on is left; half of it gone, the garden is forgotten', async () => {

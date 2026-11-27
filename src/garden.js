@@ -602,9 +602,10 @@ async function harvest(bot, task, goal, save, plot, cells, { dig }) {
   return n;
 }
 // The drops picked up from the ring round the plot: the ring's cell with the most of them in the server's reach first,
-// each cell tried once, nothing into full pockets. -> what reached the pockets.
-async function pickUp(bot, task, goal, save, plot, navigate) {
-  const before = count(bot, DROPS), tried = new Set();
+// each cell tried once, nothing into full pockets. -> what reached the pockets since before (from the harvest's start: what
+// lay by the stand was taken up as it fell).
+async function pickUp(bot, task, goal, save, plot, navigate, before = count(bot, DROPS)) {
+  const tried = new Set();
   const inPick = (s, e) => Math.abs(e.position.x - (s.x + 0.5)) <= PICK && Math.abs(e.position.z - (s.z + 0.5)) <= PICK;
   for (let round = 0; round < 8; round++) {
     task.check();
@@ -725,10 +726,13 @@ function stashDue(bot, house, plot, now = Date.now()) {
   const p = chestBy(bot, house, plot, now);
   return p ? { n: total(s), bread: s.bread || 0, p, block: nameOf(bot, p) } : null;
 }
-// Where the chest stands, said: in the house, by it, or by the garden.
-function chestSays(house, p) {
-  const gap = gapTo(p, house.min, house.max);
-  return gap === 0 && p.y >= house.min.y && p.y <= house.max.y ? 'in the house' : gap <= STORE_NEAR ? 'by the house' : 'by the garden';
+// Where the chest stands, said: in the house (this one, or the one about the chest: a house found by its door is its
+// door's few blocks about, by its bed its bed's, and the copy's chest by the bed was said "by the house", 2026-11-27),
+// by it, or by the garden.
+function chestSays(bot, house, p) {
+  const inside = h => gapTo(p, h.min, h.max) === 0 && p.y >= h.min.y && p.y <= h.max.y;
+  if (inside(house) || housesAbout(bot, at(p)).some(inside)) return 'in the house';
+  return gapTo(p, house.min, house.max) <= STORE_NEAR ? 'by the house' : 'by the garden';
 }
 // The produce past what is kept put in that chest, in one opening, counted by what left the pockets; said where.
 async function store(bot, task, goal, save, plot, house, { navigate }) {
@@ -768,7 +772,7 @@ async function store(bot, task, goal, save, plot, house, { navigate }) {
   if (!n) return miss(full ? 'it is full' : 'nothing went in');
   if (full) { plot.chestFailed = { key: keyOf(p), at: new Date().toISOString(), why: 'it filled up' }; bot._gardenChest = null; }
   console.log('[garden] put in the ' + block.name + ' at ' + where(p) + ': ' + JSON.stringify(put));
-  bot.chat?.('I put ' + listSays(Object.entries(put).map(([name, k]) => itemSays(name, k))) + ' in the ' + (block.name === 'barrel' ? 'barrel ' : 'chest ') + chestSays(house, p) + '.');
+  bot.chat?.('I put ' + listSays(Object.entries(put).map(([name, k]) => itemSays(name, k))) + ' in the ' + (block.name === 'barrel' ? 'barrel ' : 'chest ') + chestSays(bot, house, p) + '.');
   return n;
 }
 
@@ -793,8 +797,9 @@ async function gardenStep(bot, task, goal, save, { navigate, dig, collect, openW
     // The harvest first: what it drops lies five minutes, and its seeds sow the garden again before any grass is broken.
     if (s.ripe.length && dig) {
       if (!await toStand(bot, task, goal, save, plot, navigate)) throw new Error('No way to stand beside the garden');
+      const before = count(bot, DROPS);
       goal.harvested += await harvest(bot, task, goal, save, plot, s.ripe, { dig });
-      if (goal.harvested) { await sleep(400); await pickUp(bot, task, goal, save, plot, navigate); }
+      if (goal.harvested) { await sleep(400); await pickUp(bot, task, goal, save, plot, navigate, before); }
     }
     if (plotStatus(bot, plot).untilled.length && !hoeCarried(bot) && hoePlan(bot)) goal.hoeMade = await makeHoe(bot, task, goal, save, plot, { navigate, openWindow });
     s = plotStatus(bot, plot);
@@ -824,5 +829,5 @@ async function gardenStep(bot, task, goal, save, { navigate, dig, collect, openW
   return true;
 }
 
-module.exports = { gardenDue, gardenStep, housesAbout, searchSite, siteBy, plotStatus, plotsHere, hoePlan, seedsCarried, grassAbout, grassLeftToday, ringOf, dropsAbout, loavesFor, surplusOf, breadKept, chestBy, STORE_PAST,
+module.exports = { gardenDue, gardenStep, housesAbout, searchSite, siteBy, plotStatus, plotsHere, hoePlan, seedsCarried, grassAbout, grassLeftToday, ringOf, dropsAbout, loavesFor, surplusOf, breadKept, chestBy, chestSays, STORE_PAST,
   HOUSE_NEAR, PLOT_FROM, PLOT_TO, DOOR_CLEAR, WET, GRASS_MOST, GRASS_FEW, TABLE_NEAR, SOWN, KEEP };
