@@ -126,6 +126,29 @@ test('the test window\'s pickaxe: a resend of the window as it was, ahead of a c
   assert.ok(lines.some(l => /read again and laid afresh/.test(l)), lines.join('\n'));
 });
 
+test('refreshing a stale output answer makes the next requested pickaxe without taking the first output twice', async () => {
+  let outputs = 0;
+  const t = table({ pockets: [[10, P, 16], [11, S, 8]], staleFirst: p => p.slot === 0 && p.mode === 1 && ++outputs === 1 });
+  await craft(t.bot, pickaxe, 2, { position: { x: 0, y: 64, z: 0 } });
+  assert.deepEqual(t.pocketsNow(), { [P]: 10, [S]: 4, wooden_pickaxe: 2 });
+  assert.equal(outputs, 2);
+  assert.deepEqual(t.gridNow(), Array(9).fill(null));
+  assert.equal(t.server.carried, null);
+  assert.deepEqual(t.closed, [1]);
+});
+
+test('a full inventory still stops after one output attempt and returns the ingredients', async () => {
+  const pockets = [[10, P, 16], [11, S, 8], ...Array.from({ length: 34 }, (_, i) => [i + 12, 'cobblestone', 64])];
+  const t = table({ pockets });
+  const before = t.pocketsNow();
+  await craft(t.bot, pickaxe, 2, { position: { x: 0, y: 64, z: 0 } });
+  assert.deepEqual(t.pocketsNow(), before);
+  assert.equal(t.clicks.filter(c => c.slot === 0 && c.mode === 1).length, 1);
+  assert.deepEqual(t.gridNow(), Array(9).fill(null));
+  assert.equal(t.server.carried, null);
+  assert.deepEqual(t.closed, [1]);
+});
+
 test('a grid the server makes nothing of is put back, and the craft ends with nothing made', async () => {
   const t = table({ pockets: [[10, P, 16], [11, S, 4]], makesNothing: true });
   const lines = [], log = console.log;

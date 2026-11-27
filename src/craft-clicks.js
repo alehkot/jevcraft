@@ -153,10 +153,12 @@ async function craftOnce(bot, window, recipe, width) {
     await b.emptyGrid();
     return false;
   }
-  const before = b.count(recipe.result.id);
+  const expected = b.count(recipe.result.id) + recipe.result.count;
   await click(0, LEFT, QUICK_MOVE);
-  if (b.count(recipe.result.id) < before + recipe.result.count) {
-    console.log(`[craft] ${resultName}: the output stayed in the grid's output slot (${said(window.slots[0])}), no room for it in the pockets`);
+  // A resend may show the window as it was before the output click. Read it again without clicking the output twice.
+  if (b.count(recipe.result.id) < expected) await b.read();
+  if (b.count(recipe.result.id) < expected) {
+    console.log(`[craft] ${resultName}: the server did not confirm that the output reached the pockets; put back what is left in the grid`);
     await b.emptyGrid();
     return false;
   }
