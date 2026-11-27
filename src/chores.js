@@ -13,7 +13,8 @@
 //   garden   by a house about (the bot's own, one a player named theirs, or a bed or a door inside walls): a little plot
 //            by water tilled with a hoe and sown with the seeds carried or found in the grass about it (garden.js; asked
 //            for 2026-11-27, "basically there should be gardener set of activities", "only if there is a house/shelter
-//            nearby"); its ripe crops brought in and the cells sown again, and bread baked at a table by it
+//            nearby"); its ripe crops brought in and the cells sown again, bread baked at a table by it, and what is
+//            past what the bot keeps put in a chest by the house
 //
 // More come as their work can be done quietly where the bot waits (2026-11-27 on the copy: torches made from the pockets
 // as a request would be took three minutes, said each plank and stick, and dropped tools for room; left out).
@@ -102,7 +103,8 @@ function over(goal, bot, now = Date.now()) {
 // Said as it sets out, when it walks off: nothing for what it does where it stands.
 function line(chore) {
   if (chore.chore === 'garden') return chore.fresh ? "I'll make a little garden by the house." : chore.ripe ? "I'll bring in the harvest from the garden."
-    : !chore.bare && !chore.untilled && chore.loaves ? "I'll bake some bread." : "I'll plant some seeds in the garden.";
+    : chore.sowing === false && chore.loaves ? "I'll bake some bread." : chore.sowing === false && chore.stash ? (chore.stashBread ? "I'll put the bread in the chest." : "I'll put the harvest away in the chest.")
+    : "I'll plant some seeds in the garden.";
   if (chore.chore !== 'trees') return '';
   if (chore.owed) return "I'll plant saplings where I cut trees.";
   if (chore.felled) return "I'll pick up what came down from the trees I cut.";

@@ -186,6 +186,7 @@ function activity(step = {}) {
     case 'garden_harvest': return "I'm bringing in the harvest from the garden.";
     case 'garden_pickup': return "I'm picking up what the harvest dropped.";
     case 'garden_bake': return "I'm baking bread at the crafting table.";
+    case 'garden_store': return "I'm putting the harvest away in the chest.";
     case 'boat_travel': return "I'm taking a boat across the water.";
     case 'reach_shore': return "I'm swimming back to dry land.";
     case 'prepare_build_site': return step.operation === 'fill' ? "I'm filling in a solid base for the building." : "I'm making the ground level for the building.";

@@ -26,8 +26,9 @@
 // plot when too few are carried (one round of GRASS_MOST a garden an in-game day: on the copy, 2026-11-27, a seed came
 // from one grass in twenty, and a garden begun with none would clear the lawn about a house in a few runs; the day is
 // the Overworld's count, world-clock.js, so a night slept through is a new one), then as many cells tilled as there are
-// seeds for, and sown, from a stand beside the plot. Last, bread baked at that table from the wheat carried, three a
-// loaf, all in one window. Nothing is laid, no table is set down, nothing is fetched from farther off, nothing is
+// seeds for, and sown, from a stand beside the plot. Then bread baked at that table from the wheat carried, three a
+// loaf, all in one window, and last what is past what a run keeps (bread past what keeps the bot fed, seeds past two
+// sowings, STORE_PAST) put in a chest by the house or the garden, one marked use first, said where. Nothing is laid, no table is set down, nothing is fetched from farther off, nothing is
 // picked up into full pockets. Wheat seeds first, then beetroot seeds, then a carrot or a potato past the one of each
 // kept to eat. A run that came to nothing rests the garden five minutes, then ten, twenty, thirty. A plot whose side has
 // no ground beside it to stand on (water up to it, a wall) is passed over for another where there is one: the harvest
@@ -58,6 +59,11 @@ const BREAD_WHEAT = 3;                      // wheat a loaf
 const DROPS = /^(wheat|wheat_seeds|beetroot|beetroot_seeds|carrot|potato|poisonous_potato)$/;
 const PICK = 1.3;                           // an item lying this near across is taken up where the bot stands
 const SIDE_COST = 25;                       // a side of the plot with no ground beside it to stand on: as 2.5 blocks farther out
+const STORE = /^(chest|barrel)$/;           // a trapped chest is left shut: opening one powers what is wired to it
+const STORE_NEAR = 6;                       // a chest this near across of the house's walls, or of the plot
+const STORE_FEW = 8;                        // fewer to put away than this, and no bread among them: not worth the walk
+const BREAD_KEPT = 3;
+const CHEST_MS = 20 * 60000;                // a chest that would not open or take anything is passed over this long
 const GROUND = /^(grass_block|dirt)$/;
 const COVER = /^(short_grass|tall_grass|fern|large_fern)$/;
 const AIR = /^(air|cave_air|void_air)$/;
@@ -420,10 +426,13 @@ function dueBy(bot, house, now) {
   const about = !cells || ripe || seeds >= cells || !allowance || !room(bot, 'wheat_seeds') ? 0 : grassCount(bot, spot, house, now);
   const grass = Math.min(about, allowance);
   const sowing = cells > 0 && (seeds > 0 || ripe > 0 || grass >= GRASS_FEW);
-  if (!ripe && !loaves && !sowing) return null;
-  const why = (plot ? 'the garden by ' : 'a garden to begin by ') + house.name + ': ' + [ripe && ripe + ' ripe', s.bare.length && s.bare.length + ' bare', canTill && s.untilled.length && s.untilled.length + ' to till', loaves && loaves + ' loaves to bake']
+  const stash = plot ? stashDue(bot, house, plot, now) : null;
+  if (!ripe && !loaves && !sowing && !stash) return null;
+  const why = (plot ? 'the garden by ' : 'a garden to begin by ') + house.name + ': ' + [ripe && ripe + ' ripe', s.bare.length && s.bare.length + ' bare', canTill && s.untilled.length && s.untilled.length + ' to till', loaves && loaves + ' loaves to bake',
+    stash && stash.n + ' to put in the ' + stash.block + ' at ' + where(stash.p)]
     .filter(Boolean).join(', ') + '; ' + seeds + ' seeds carried' + (about ? ', ' + about + ' grass about' + (allowance < GRASS_MOST ? ' (' + allowance + ' more to break today)' : '') : '') + (canTill && s.untilled.length && !hoeCarried(bot) ? ', a hoe to make' : '');
-  return { chore: 'garden', why, fresh: !plot, house: house.key, houseName: house.name, untilled: s.untilled.length, bare: s.bare.length, ripe, loaves, seeds, grass };
+  return { chore: 'garden', why, fresh: !plot, house: house.key, houseName: house.name, untilled: s.untilled.length, bare: s.bare.length, ripe, loaves, seeds, grass, sowing,
+    stash: stash?.n || 0, stashBread: stash?.bread || 0 };
 }
 
 async function makeHoe(bot, task, goal, save, plot, { navigate, openWindow }) {
@@ -648,10 +657,121 @@ async function bake(bot, task, goal, save, plot, { navigate, openWindow }) {
   return made;
 }
 
+// ---- the produce put away
+// What of the garden's produce is put in a chest by the house: what is past what a run keeps here, and the bread past
+// what keeps the bot fed. The seeds for two sowings, a carrot and a potato to eat besides eight to sow, and what wheat
+// makes no loaf are kept.
+const STORE_PAST = Object.freeze({ wheat: 2, wheat_seeds: 16, beetroot_seeds: 8, beetroot: 0, carrot: 9, potato: 9, poisonous_potato: 0 });
+const WORDS = Object.freeze({ bread: ['bread', 'bread'], wheat: ['wheat', 'wheat'], wheat_seeds: ['wheat seed', 'wheat seeds'], beetroot_seeds: ['beetroot seed', 'beetroot seeds'],
+  beetroot: ['beetroot', 'beetroots'], carrot: ['carrot', 'carrots'], potato: ['potato', 'potatoes'], poisonous_potato: ['poisonous potato', 'poisonous potatoes'] });
+const itemSays = (name, n) => n + ' ' + (WORDS[name]?.[n === 1 ? 0 : 1] || name.replaceAll('_', ' '));
+const listSays = parts => parts.length < 2 ? parts.join('') : parts.slice(0, -1).join(', ') + ' and ' + parts.at(-1);
+// The bread kept: three at least, and as many more as keep the food carried at what the bot keeps for healing and the
+// night (food-reserve.js wanted: twelve points in the Overworld) once the rest is put away. Under it the survival
+// layer goes for food, and the animals about the garden are its food.
+function breadKept(bot) {
+  const foods = bot.registry?.foodsByName || {}, points = name => foods[name]?.foodPoints || 0;
+  let want = 12, safe = () => true;
+  try { want = require('./food-reserve').wanted(bot, null).points; } catch (_) {}
+  try { const { safeFood } = require('./vitals'); safe = item => safeFood(bot, item); } catch (_) {}
+  const others = items(bot).filter(i => i.name !== 'bread' && points(i.name) > 0 && safe(i))
+    .reduce((n, i) => n + Math.min(i.count, STORE_PAST[i.name] ?? i.count) * points(i.name), 0);
+  return Math.max(BREAD_KEPT, Math.ceil((want - others) / (foods.bread?.foodPoints || 5)));
+}
+// -> { name: count } to put away.
+function surplusOf(bot) {
+  const out = {};
+  for (const [name, past] of Object.entries(STORE_PAST)) { const n = count(bot, name) - past; if (n > 0) out[name] = n; }
+  const bread = count(bot, 'bread') - breadKept(bot);
+  if (bread > 0) out.bread = bread;
+  return out;
+}
+const total = s => Object.values(s).reduce((a, b) => a + b, 0);
+const worthStoring = s => !!s.bread || total(s) >= STORE_FEW;
+// A block on a chest's lid keeps it shut; glass, a slab, a fence and the like do not.
+const shutsLid = b => solid(b) && !/(chest|glass|_leaves|_slab|_stairs|_fence|_wall|_pane|iron_bars|_trapdoor|shulker_box|_sign|_carpet)$/.test(b.name);
+// The chest to put it in: by the house (STORE_NEAR across of its walls, near its floor) or by the plot; one marked use
+// first, then the nearest the plot. None a label keeps shut, none with TNT about it (looting.js trapped), none with its
+// lid blocked, a trapped chest never, nor one that would not open or take anything a while ago.
+function chestBy(bot, house, plot, now = Date.now()) {
+  const kept = bot._gardenChest, from = keyOf(plot.middle) + '|' + house.key;
+  let p = null;
+  if (kept && now - kept.at < HOUSES_MS && kept.from === from) p = kept.p;
+  else {
+    const labels = require('./labels'), looting = require('./looting'), m = plot.middle;
+    const failed = plot.chestFailed && now - Date.parse(plot.chestFailed.at) < CHEST_MS ? plot.chestFailed.key : null;
+    const near = q => (gapTo(q, house.min, house.max) <= STORE_NEAR && q.y >= house.min.y - 1 && q.y <= house.max.y + 1) ||
+      (Math.max(Math.abs(q.x - m.x), Math.abs(q.z - m.z)) <= STORE_NEAR + 1 && Math.abs(q.y - m.y) <= 2);
+    const open = q => {
+      const b = blockOf(bot, q);
+      return b && STORE.test(b.name) && keyOf(q) !== failed && near(q) && !labels.refusesOpen(bot, b) && !(b.name === 'chest' && shutsLid(blockOf(bot, up(q))));
+    };
+    p = find(bot, m, STORE, HOUSE_NEAR + STORE_NEAR + PLOT_TO, 32).filter(open)
+      .map(q => ({ q, use: labels.labelAt(bot, at(q))?.kind === 'use', d: at(q).distanceTo(at(m)) }))
+      .sort((a, b) => Number(b.use) - Number(a.use) || a.d - b.d).find(o => !looting.trapped(bot, at(o.q)))?.q || null;
+    bot._gardenChest = { at: now, from, p };
+  }
+  const b = p && blockOf(bot, p);
+  return b && STORE.test(b.name) ? p : null;
+}
+// Due to put away: enough past what is kept, and a chest to put it in. -> { n, bread, p, block } | null
+function stashDue(bot, house, plot, now = Date.now()) {
+  const s = surplusOf(bot);
+  if (!worthStoring(s)) return null;
+  const p = chestBy(bot, house, plot, now);
+  return p ? { n: total(s), bread: s.bread || 0, p, block: nameOf(bot, p) } : null;
+}
+// Where the chest stands, said: in the house, by it, or by the garden.
+function chestSays(house, p) {
+  const gap = gapTo(p, house.min, house.max);
+  return gap === 0 && p.y >= house.min.y && p.y <= house.max.y ? 'in the house' : gap <= STORE_NEAR ? 'by the house' : 'by the garden';
+}
+// The produce past what is kept put in that chest, in one opening, counted by what left the pockets; said where.
+async function store(bot, task, goal, save, plot, house, { navigate }) {
+  const want = surplusOf(bot);
+  if (!worthStoring(want)) return 0;
+  const p = chestBy(bot, house, plot);
+  if (!p) return 0;
+  const miss = why => { plot.chestFailed = { key: keyOf(p), at: new Date().toISOString(), why }; bot._gardenChest = null; console.log('[garden] nothing put away in the chest at ' + where(p) + ': ' + why); return 0; };
+  goal.step = { action: 'garden_store', chest: plain(p), items: want }; save?.();
+  const centre = at(p).offset(0.5, 0.5, 0.5);
+  if (eye(bot).distanceTo(centre) > REACH) {
+    if (!navigate) return 0;
+    try { await navigate(bot, task, new goals.GoalNear(p.x, p.y, p.z, 2), { timeoutMs: 30000, stallMs: 6000 }); }
+    catch (err) { task.check(); if (fatal(err) && err.name !== 'Blocked') throw err; return miss('no way to it'); }
+    if (eye(bot).distanceTo(centre) > REACH + 0.5) return miss('out of reach');
+  }
+  const block = blockOf(bot, p);
+  if (!block || !STORE.test(block.name)) return miss('gone');
+  const before = Object.fromEntries(Object.keys(want).map(name => [name, count(bot, name)]));
+  let window;
+  try { window = await require('./chest-delivery').openChest(bot, task, block); }
+  catch (err) { task.check(); if (fatal(err) && err.name !== 'Blocked') throw err; return miss('it did not open'); }
+  let full = false;
+  try {
+    if (bot._syncWindow) await bot._syncWindow(window);
+    for (const [name, n] of Object.entries(want)) {
+      task.check();
+      const id = bot.registry?.itemsByName?.[name]?.id;
+      if (id === undefined) continue;
+      try { await window.deposit(id, null, n); }
+      catch (err) { task.check(); if (fatal(err)) throw err; full = true; console.log('[garden] ' + itemSays(name, n) + ' not put away: ' + String(err.message || err).slice(0, 80)); break; }
+    }
+  } finally { try { window.close?.(); } catch (_) {} }
+  const put = {};
+  for (const name of Object.keys(want)) { const d = before[name] - count(bot, name); if (d > 0) put[name] = d; }
+  const n = total(put);
+  if (!n) return miss(full ? 'it is full' : 'nothing went in');
+  if (full) { plot.chestFailed = { key: keyOf(p), at: new Date().toISOString(), why: 'it filled up' }; bot._gardenChest = null; }
+  console.log('[garden] put in the ' + block.name + ' at ' + where(p) + ': ' + JSON.stringify(put));
+  bot.chat?.('I put ' + listSays(Object.entries(put).map(([name, k]) => itemSays(name, k))) + ' in the ' + (block.name === 'barrel' ? 'barrel ' : 'chest ') + chestSays(house, p) + '.');
+  return n;
+}
+
 // One run (work.js, kind 'garden'): -> true, with goal.harvested, goal.pickedUp, goal.tilled, goal.planted,
-// goal.seedsFound, goal.grassBroken, goal.loaves and goal.hoeMade for the line in the log (session.js). Throws when there is no house or no garden to tend after all.
+// goal.seedsFound, goal.grassBroken, goal.loaves, goal.stored and goal.hoeMade for the line in the log (session.js). Throws when there is no house or no garden to tend after all.
 async function gardenStep(bot, task, goal, save, { navigate, dig, collect, openWindow } = {}) {
-  goal.tilled ||= 0; goal.planted ||= 0; goal.seedsFound ||= 0; goal.grassBroken ||= 0; goal.harvested ||= 0; goal.pickedUp ||= 0; goal.loaves ||= 0;
+  goal.tilled ||= 0; goal.planted ||= 0; goal.seedsFound ||= 0; goal.grassBroken ||= 0; goal.harvested ||= 0; goal.pickedUp ||= 0; goal.loaves ||= 0; goal.stored ||= 0;
   const me = bot.entity.position, houses = housesAbout(bot, me);
   const house = houses.find(h => h.key === goal.gardenHouse) || houses.filter(h => gapTo(me, h.min, h.max) <= HOUSE_NEAR).sort((a, b) => gapTo(me, a.min, a.max) - gapTo(me, b.min, b.max))[0];
   if (!house) throw new Error('No house about to make a garden by');
@@ -684,11 +804,12 @@ async function gardenStep(bot, task, goal, save, { navigate, dig, collect, openW
       goal.planted += await sow(bot, task, goal, save, plot);
     }
     goal.loaves += await bake(bot, task, goal, save, plot, { navigate, openWindow });
+    goal.stored += await store(bot, task, goal, save, plot, house, { navigate });
   } catch (err) { failed = err; throw err; }
   finally {
     // A run that came to nothing rests the garden, longer each time; one a player ended is not counted.
     if (failed?.name !== 'Cancelled') {
-      const did = goal.harvested + goal.pickedUp + goal.tilled + goal.planted + goal.seedsFound + goal.loaves + (goal.hoeMade ? 1 : 0);
+      const did = goal.harvested + goal.pickedUp + goal.tilled + goal.planted + goal.seedsFound + goal.loaves + goal.stored + (goal.hoeMade ? 1 : 0);
       plot.lastRunAt = new Date().toISOString();
       if (did) { plot.idle = 0; delete plot.restUntil; }
       else { plot.idle = (plot.idle || 0) + 1; plot.restUntil = Date.now() + Math.min(30, 5 * 2 ** (plot.idle - 1)) * 60000; }
@@ -699,5 +820,5 @@ async function gardenStep(bot, task, goal, save, { navigate, dig, collect, openW
   return true;
 }
 
-module.exports = { gardenDue, gardenStep, housesAbout, searchSite, siteBy, plotStatus, plotsHere, hoePlan, seedsCarried, grassAbout, grassLeftToday, ringOf, dropsAbout, loavesFor,
+module.exports = { gardenDue, gardenStep, housesAbout, searchSite, siteBy, plotStatus, plotsHere, hoePlan, seedsCarried, grassAbout, grassLeftToday, ringOf, dropsAbout, loavesFor, surplusOf, breadKept, chestBy, STORE_PAST,
   HOUSE_NEAR, PLOT_FROM, PLOT_TO, DOOR_CLEAR, WET, GRASS_MOST, GRASS_FEW, TABLE_NEAR, SOWN, KEEP };

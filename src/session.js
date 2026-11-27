@@ -400,7 +400,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       if (goal.chore && !session.relaunch) {
         const how = String(goal.choreFailed || goal.choreEnded || goal.choreStopped || 'done').slice(0, 160);
         setAside(survival, 'chore', goal.chore, how, require('./chores').REST_MS[goal.chore] || 180000); saveSurvival();
-        console.log(`[chore] ${goal.chore} over: ${how}${goal.kind === 'replant' ? ` (${goal.planted || 0} planted, ${goal.picked || 0} picked up, ${goal.standsDown || 0} stands taken down)` : ''}${goal.kind === 'garden' ? ` (${goal.harvested ? `${goal.harvested} harvested, ${goal.pickedUp || 0} picked up${goal.dropsLeft ? `, ${goal.dropsLeft} left lying` : ''}, ` : ''}${goal.tilled || 0} tilled, ${goal.planted || 0} sown, ${goal.seedsFound || 0} seeds found in ${goal.grassBroken || 0} grass${goal.loaves ? `, ${goal.loaves} bread baked` : ''}${goal.hoeMade ? ', a hoe made' : ''}${goal.gardenBegun ? ', the garden begun' : ''})` : ''}`);
+        console.log(`[chore] ${goal.chore} over: ${how}${goal.kind === 'replant' ? ` (${goal.planted || 0} planted, ${goal.picked || 0} picked up, ${goal.standsDown || 0} stands taken down)` : ''}${goal.kind === 'garden' ? ` (${goal.harvested ? `${goal.harvested} harvested, ${goal.pickedUp || 0} picked up${goal.dropsLeft ? `, ${goal.dropsLeft} left lying` : ''}, ` : ''}${goal.tilled || 0} tilled, ${goal.planted || 0} sown, ${goal.seedsFound || 0} seeds found in ${goal.grassBroken || 0} grass${goal.loaves ? `, ${goal.loaves} bread baked` : ''}${goal.stored ? `, ${goal.stored} put away` : ''}${goal.hoeMade ? ', a hoe made' : ''}${goal.gardenBegun ? ', the garden begun' : ''})` : ''}`);
       }
       if (session.relaunch) {
         relaunching = true;
