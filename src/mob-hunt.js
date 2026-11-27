@@ -25,6 +25,10 @@ const { bunkerFight, digBunker, raiseCover, openToward, swarm, nearWall, centroi
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const dimension = bot => String(bot.game.dimension).replace(/^minecraft:/, '').replace(/^the_/, '');
 const blocked = message => Object.assign(new Error(message), { name: 'Blocked' });
+// The herd by a house is never hunted (animals.js spared: by a house, penned, named, or the herd's place): a cow for
+// leather is a wild one, passed over where a target is chosen; the swing at one of the herd is refused anyway
+// (protected-animals.js).
+const herdOf = (bot, e) => { try { return !!require('./animals').spared(bot, e); } catch (_) { return false; } };
 const valid = (bot, target) => bot.entities[target.id] === target && target.isValid !== false && !observedDead(bot, target);
 
 // Gold on the feet in the Nether, where it keeps piglins neutral; the
@@ -1098,7 +1102,7 @@ async function huntObserved(bot, task, goal, save, actions, client) {
     try { held = require('./cage-hold').holding(bot, goal); } catch (_) { held = null; }
     if (held && await require('./empty-spawner').holdPlan(bot, task, goal, save, actions, held)) return true;
   }
-  const candidates = Object.values(bot.entities).filter(e => e.name === state.entity && valid(bot, e) &&
+  const candidates = Object.values(bot.entities).filter(e => e.name === state.entity && valid(bot, e) && !herdOf(bot, e) &&
     e.position.distanceTo(bot.entity.position) < 24 && isolated(bot, e, handler) &&
     !isSetAside(goal, 'hunt_target', e.uuid || e.id)).sort((a, b) => a.position.distanceTo(bot.entity.position) - b.position.distanceTo(bot.entity.position));
   // A blaze hunt about to go at blazes none of which sees the bot yet is a
@@ -1905,7 +1909,7 @@ async function prepareMobHunt(bot, task, step, goal, save, actions) {
     const until = state.deferredUntil > Date.now() ? state.deferredUntil : Date.now() + 60000;
     throw new WaysResting(`The ${step.entity.replaceAll('_', ' ')} hunt is left for now: Jev chose to leave them at the hunt's question, for two minutes (until ${new Date(until).toISOString().slice(11, 19)}Z)`, until);
   }
-  const near = Object.values(bot.entities || {}).filter(e => e.name === step.entity && e.isValid !== false &&
+  const near = Object.values(bot.entities || {}).filter(e => e.name === step.entity && e.isValid !== false && !herdOf(bot, e) &&
     !isSetAside(goal, 'hunt_target', e.uuid || e.id) && e.position.distanceTo(bot.entity.position) < 32)
     .sort((a, b) => a.position.distanceTo(bot.entity.position) - b.position.distanceTo(bot.entity.position))[0];
   if (near) {
@@ -5678,7 +5682,7 @@ function claim(bot, goal = {}) {
   if (/nether/.test(String(bot.game?.dimension || '')) && require('./rod-bank').pending(goal)) return null;
   const handler = handlers[state.entity] || {};
   if (!canBegin(bot, handler)) return null;
-  const near = Object.values(bot.entities || {}).filter(e => e.name === state.entity && valid(bot, e) && e.position.distanceTo(bot.entity.position) < 24)
+  const near = Object.values(bot.entities || {}).filter(e => e.name === state.entity && valid(bot, e) && !herdOf(bot, e) && e.position.distanceTo(bot.entity.position) < 24)
     .sort((a, b) => a.position.distanceTo(bot.entity.position) - b.position.distanceTo(bot.entity.position)).slice(0, 4);
   const target = near.find(e => isolated(bot, e, handler) && !isSetAside(goal, 'hunt_target', e.uuid || e.id) && !noWayFromHere(state, bot, e));
   if (!target) return null;
