@@ -20,7 +20,10 @@
 //
 // A run is one pass (work.js): a hoe made if none is carried and a cell wants tilling (planks and sticks from the wood
 // carried, the hoe at a crafting table already standing within TABLE_NEAR), seeds picked up from the grass about the
-// plot when too few are carried, then as many cells tilled as there are seeds for, and sown, from a stand beside the
+// plot when too few are carried (one round of GRASS_MOST a garden an in-game day: on the copy, 2026-11-27, a seed came
+// from one grass in twenty, and a garden begun with none would clear the lawn about a house in a few runs; the day is
+// the Overworld's count, world-clock.js, so a night slept through is a new one), then as many cells tilled as there are
+// seeds for, and sown, from a stand beside the
 // plot. Nothing is laid, no table is set down, nothing is fetched from farther off, nothing is picked up into full
 // pockets. Wheat seeds first, then beetroot seeds, then a carrot or a potato past the one of each kept to eat. A run
 // that came to nothing rests the garden five minutes, then ten, twenty, thirty.
@@ -35,7 +38,8 @@ const DOOR_CLEAR = 4;
 const WET = 4;                              // water this near across, at the farmland's level or one over, keeps it wet
 const LEVEL = 3;                            // the plot's ground this near the house's floor, up or down
 const SEED_REACH = 12;                      // grass broken for seeds this near the plot's middle
-const GRASS_MOST = 40;                      // grass broken in one run (a seed in about one in eight)
+const GRASS_MOST = 40;                      // grass broken for a garden in an in-game day: one round
+const DAY_MS = 20 * 60000;                  // an in-game day in real time, for a bot that knows no day count
 const GRASS_FEW = 8;                        // no seeds carried and fewer grass than this about: nothing to sow with
 const TABLE_NEAR = 16;
 const WALLS = 4;                            // made or laid blocks about a bed or a door that make it a house's
@@ -353,6 +357,17 @@ function grassAbout(bot, plot, house) {
   return find(bot, plot.middle, COVER, SEED_REACH, 64)
     .filter(p => Math.abs(p.y - (plot.middle.y + 1)) <= LEVEL && gapTo(p, house.min, house.max) > 0 && lowerHalf(bot, p) && !theirs(bot, p) && !marked(bot, p));
 }
+// What is left of the day's round of grass for a garden (none begun yet: the whole round), and the grass broken noted.
+const dayOf = (bot, now = Date.now()) => Number.isFinite(bot.time?.day) ? 'd' + bot.time.day : 'r' + Math.floor(now / DAY_MS);
+function grassLeftToday(bot, plot, now = Date.now()) {
+  const g = plot?.grass;
+  return g && g.day === dayOf(bot, now) ? Math.max(0, GRASS_MOST - (g.broken || 0)) : GRASS_MOST;
+}
+function noteGrass(bot, plot, n, now = Date.now()) {
+  if (!plot || !n) return;
+  const day = dayOf(bot, now);
+  plot.grass = { day, broken: (plot.grass?.day === day ? plot.grass.broken || 0 : 0) + n };
+}
 function grassCount(bot, plot, house, now) {
   const kept = bot._gardenGrass, k = keyOf(plot.middle);
   if (kept && kept.k === k && now - kept.at < HOUSES_MS) return kept.n;
@@ -390,11 +405,12 @@ function dueBy(bot, house, now) {
   const canTill = !!hoeCarried(bot) || (!!hoePlan(bot) && freeSlots(bot) > 0 && !!tableNear(bot, spot.middle, now));
   const cells = s.bare.length + (canTill ? s.untilled.length : 0);
   if (!cells) return null;
-  const seeds = seedsCarried(bot);
-  const grass = seeds >= cells || !room(bot, 'wheat_seeds') ? 0 : grassCount(bot, spot, house, now);
+  const seeds = seedsCarried(bot), allowance = grassLeftToday(bot, plot, now);
+  const about = seeds >= cells || !allowance || !room(bot, 'wheat_seeds') ? 0 : grassCount(bot, spot, house, now);
+  const grass = Math.min(about, allowance);
   if (!seeds && grass < GRASS_FEW) return null;
   const why = (plot ? 'the garden by ' : 'a garden to begin by ') + house.name + ': ' + [s.bare.length && s.bare.length + ' bare', canTill && s.untilled.length && s.untilled.length + ' to till']
-    .filter(Boolean).join(', ') + '; ' + seeds + ' seeds carried' + (grass ? ', ' + grass + ' grass about' : '') + (hoeCarried(bot) ? '' : ', a hoe to make');
+    .filter(Boolean).join(', ') + '; ' + seeds + ' seeds carried' + (about ? ', ' + about + ' grass about' + (allowance < GRASS_MOST ? ' (' + allowance + ' more to break today)' : '') : '') + (hoeCarried(bot) ? '' : ', a hoe to make');
   return { chore: 'garden', why, fresh: !plot, house: house.key, houseName: house.name, untilled: s.untilled.length, bare: s.bare.length, seeds, grass };
 }
 
@@ -435,38 +451,43 @@ async function craftOne(bot, task, name, table, openWindow) {
 }
 
 // Grass about the plot broken for its seeds, those on the plot first, the nearest next, until there are seeds for the
-// cells or GRASS_MOST are broken; the seeds picked up where they fell, never into full pockets.
-async function gatherSeeds(bot, task, goal, save, plot, house, want, { navigate, dig, collect }) {
+// cells or `most` are broken (what is left of the day's round); the seeds picked up where they fell, never into full
+// pockets. A round cut short counts what it broke.
+async function gatherSeeds(bot, task, goal, save, plot, house, want, most, { navigate, dig, collect }) {
   if (!dig) return 0;
   const tf = require('./tree-felling');
   const start = count(bot, 'wheat_seeds');
   const onPlot = p => Math.abs(p.x - plot.middle.x) <= 1 && Math.abs(p.z - plot.middle.z) <= 1 ? 1 : 0;
   const left = grassAbout(bot, plot, house);
   let broken = 0;
-  while (left.length && broken < GRASS_MOST && seedsCarried(bot) < want && tf.room(bot, 'wheat_seeds')) {
-    task.check();
-    const here = bot.entity.position;
-    left.sort((a, b) => onPlot(b) - onPlot(a) || at(a).distanceTo(here) - at(b).distanceTo(here));
-    const p = left.shift();
-    if (!COVER.test(nameOf(bot, p) || '')) continue;
-    goal.step = { action: 'garden_seeds', position: p }; save?.();
-    if (!inReachOf(bot, p)) {
-      if (!navigate) continue;
-      try { await navigate(bot, task, new goals.GoalNear(p.x, p.y, p.z, 2), { timeoutMs: 12000, stallMs: 4000 }); }
+  try {
+    while (left.length && broken < most && seedsCarried(bot) < want && tf.room(bot, 'wheat_seeds')) {
+      task.check();
+      const here = bot.entity.position;
+      left.sort((a, b) => onPlot(b) - onPlot(a) || at(a).distanceTo(here) - at(b).distanceTo(here));
+      const p = left.shift();
+      if (!COVER.test(nameOf(bot, p) || '')) continue;
+      goal.step = { action: 'garden_seeds', position: p }; save?.();
+      if (!inReachOf(bot, p)) {
+        if (!navigate) continue;
+        try { await navigate(bot, task, new goals.GoalNear(p.x, p.y, p.z, 2), { timeoutMs: 12000, stallMs: 4000 }); }
+        catch (err) { task.check(); if (fatal(err)) throw err; continue; }
+        if (!inReachOf(bot, p)) continue;
+      }
+      try { await dig(bot, task, at(p), { requireDrops: false }); }
       catch (err) { task.check(); if (fatal(err)) throw err; continue; }
-      if (!inReachOf(bot, p)) continue;
+      broken++;
+      await sleep(300);
+      if (collect && tf.room(bot, 'wheat_seeds') && tf.lyingLow(bot, 'wheat_seeds', at(p), 4)) {
+        try { await collect(bot, task, 'wheat_seeds', { origin: at(p), radius: 5, timeoutMs: 4000, waitForSpawnMs: 0 }); }
+        catch (err) { task.check(); if (fatal(err)) throw err; }
+      }
     }
-    try { await dig(bot, task, at(p), { requireDrops: false }); }
-    catch (err) { task.check(); if (fatal(err)) throw err; continue; }
-    broken++;
-    await sleep(300);
-    if (collect && tf.room(bot, 'wheat_seeds') && tf.lyingLow(bot, 'wheat_seeds', at(p), 4)) {
-      try { await collect(bot, task, 'wheat_seeds', { origin: at(p), radius: 5, timeoutMs: 4000, waitForSpawnMs: 0 }); }
-      catch (err) { task.check(); if (fatal(err)) throw err; }
-    }
+  } finally {
+    goal.grassBroken += broken;
+    goal.seedsFound += Math.max(0, count(bot, 'wheat_seeds') - start);
+    noteGrass(bot, plot, broken);
   }
-  goal.grassBroken += broken;
-  goal.seedsFound += Math.max(0, count(bot, 'wheat_seeds') - start);
   return broken;
 }
 
@@ -551,8 +572,8 @@ async function gardenStep(bot, task, goal, save, { navigate, dig, collect, openW
   try {
     if (plotStatus(bot, plot).untilled.length && !hoeCarried(bot) && hoePlan(bot)) goal.hoeMade = await makeHoe(bot, task, goal, save, plot, { navigate, openWindow });
     let s = plotStatus(bot, plot);
-    const want = s.bare.length + (hoeCarried(bot) ? s.untilled.length : 0);
-    if (want > seedsCarried(bot) && room(bot, 'wheat_seeds')) await gatherSeeds(bot, task, goal, save, plot, house, want, { navigate, dig, collect });
+    const want = s.bare.length + (hoeCarried(bot) ? s.untilled.length : 0), allowance = grassLeftToday(bot, plot);
+    if (want > seedsCarried(bot) && allowance > 0 && room(bot, 'wheat_seeds')) await gatherSeeds(bot, task, goal, save, plot, house, want, allowance, { navigate, dig, collect });
     if (seedsCarried(bot)) {
       if (!await toStand(bot, task, goal, save, plot, navigate)) throw new Error('No way to stand beside the garden');
       s = plotStatus(bot, plot);
@@ -575,5 +596,5 @@ async function gardenStep(bot, task, goal, save, { navigate, dig, collect, openW
   return true;
 }
 
-module.exports = { gardenDue, gardenStep, housesAbout, searchSite, siteBy, plotStatus, plotsHere, hoePlan, seedsCarried, grassAbout,
+module.exports = { gardenDue, gardenStep, housesAbout, searchSite, siteBy, plotStatus, plotsHere, hoePlan, seedsCarried, grassAbout, grassLeftToday,
   HOUSE_NEAR, PLOT_FROM, PLOT_TO, DOOR_CLEAR, WET, GRASS_MOST, GRASS_FEW, TABLE_NEAR, SOWN, KEEP };

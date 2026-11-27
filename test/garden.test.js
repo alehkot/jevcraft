@@ -339,6 +339,47 @@ test('nothing found to sow: the garden rests, longer each time; a carrot and a p
   assert.equal(counted(cook.inventory.items(), 'potato'), 1);
 });
 
+test('grass broken one round a garden an in-game day; seeds carried are still sown that day; a round cut short counts', async () => {
+  const { w, registry } = homestead();
+  const bot0 = botIn(w, { registry });
+  const m = garden.siteBy(bot0, garden.housesAbout(bot0, bot0.entity.position)[0]).site.middle;
+  let laid = 0;
+  for (let x = m.x - 4; x <= m.x + 4; x++) for (let z = m.z - 4; z <= m.z + 4; z++)
+    if (w.blockAt(v(x, 63, z)).name === 'grass_block' && w.blockAt(v(x, 64, z)).name === 'air') { w.set(v(x, 64, z), 'short_grass'); laid++; }
+  assert.ok(laid >= garden.GRASS_MOST + garden.GRASS_FEW + 4, laid + ' grass laid');
+  const bot = botIn(w, { registry, items: [['wooden_hoe', 1]] });
+  bot.time.day = 3;
+  const g1 = chores.goalFor(bot, garden.gardenDue(bot, {}), { now: 0 });
+  await quietlyAsync(() => garden.gardenStep(bot, task, g1, null, helpers(bot, w, { seedEvery: 0 })));
+  assert.equal(g1.grassBroken, garden.GRASS_MOST, 'the round');
+  const plot = garden.plotsHere(bot)[0];
+  assert.deepEqual(plot.grass, { day: 'd3', broken: garden.GRASS_MOST });
+  assert.equal(JSON.parse(fs.readFileSync(bot._gardenFile, 'utf8')).plots[0].grass.broken, garden.GRASS_MOST, 'kept across restarts');
+  const later = Date.now() + 3600000;
+  assert.equal(garden.gardenDue(bot, { now: later }), null, 'grass still about, but the day\'s round is broken');
+  bot.inventory.add('wheat_seeds', 2);
+  const d = garden.gardenDue(bot, { now: later });
+  assert.equal(d?.chore, 'garden', 'seeds carried: sown the same day');
+  assert.equal(d.grass, 0);
+  const g2 = chores.goalFor(bot, d, { now: later });
+  await quietlyAsync(() => garden.gardenStep(bot, task, g2, null, helpers(bot, w, { seedEvery: 1 })));
+  assert.equal(g2.grassBroken, 0, 'nothing more broken that day');
+  assert.equal(g2.planted, 2);
+  bot.time.day = 4;
+  const next = garden.gardenDue(bot, { now: later });
+  assert.equal(next?.chore, 'garden', 'the next day: another round');
+  assert.equal(next.grass, Math.min(garden.GRASS_MOST, laid - garden.GRASS_MOST), 'the plot\'s own grass went in the first round');
+  // Cut short by a request after five grass: the five are counted, the rest of the day's round is left.
+  let checks = 0;
+  const cancel = { check() { if (++checks > 6) { const e = new Error('cancelled'); e.name = 'Cancelled'; throw e; } } };
+  const g3 = chores.goalFor(bot, next, { now: later });
+  await assert.rejects(quietlyAsync(() => garden.gardenStep(bot, cancel, g3, null, helpers(bot, w, { seedEvery: 0 }))), { name: 'Cancelled' });
+  assert.equal(plot.grass.day, 'd4');
+  assert.ok(plot.grass.broken >= 1 && plot.grass.broken < garden.GRASS_MOST, 'counted: ' + plot.grass.broken);
+  assert.equal(garden.grassLeftToday(bot, plot), garden.GRASS_MOST - plot.grass.broken);
+  assert.equal(JSON.parse(fs.readFileSync(bot._gardenFile, 'utf8')).plots[0].grass.broken, plot.grass.broken, 'saved though cut short');
+});
+
 test('read again before each run: a cell built on is left; half of it gone, the garden is forgotten', async () => {
   const { w, registry } = homestead();
   const bot = botIn(w, { registry, items: [['wooden_hoe', 1], ['wheat_seeds', 4]] });
