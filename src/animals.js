@@ -18,7 +18,10 @@
 //     none is fed), and none bred past HERD of the kind about.
 // The wheat is put away from the hand at the end, whatever ended the run: an animal follows a hand with its food in it
 // anywhere. The garden's bread leaves the herd's wheat (wheatWanted). Nothing is said. Not yet: chickens and pigs
-// (seeds, carrots), a pen.
+// (seeds, carrots).
+// With a herd about and wheat (or a garden to grow it), a pen is built by the house first (pen.js: its wood carried,
+// made at a table there, or a tree felled for it); once it stands, the herd's place is the pen: those outside it led
+// in through its gates (one at a time, the pen holding HOLDS at most), and pairs in it fed over the fence.
 // And the herd is never hunted (spared, below; foraging.js preyFood asks it of every animal a hunt would take).
 const { goals } = require('mineflayer-pathfinder');
 const { Vec3 } = require('vec3');
@@ -42,6 +45,7 @@ const BRED_MS = 5 * 60000;                  // fed, or would not take it: let be
 const LED_MS = 5 * 60000, STAYED_MS = 30 * 60000;
 const MOST_LED = 3, MOST_PAIRS = 2;
 const TAKE = 2.5;                           // this near an animal to hand it the food: the reach is three
+const OVER = 3.8;                           // eye to an animal's middle over a fence: handed the food from outside it
 const LEG = 3;                              // blocks a leg, leading
 const WITHIN = 32;                          // chores.js WITHIN: the player waited with this near
 const SAYS = Object.freeze({ cow: ['cow', 'cows'], sheep: ['sheep', 'sheep'], mooshroom: ['mooshroom', 'mooshrooms'] });
@@ -166,8 +170,37 @@ function homeFor(bot, kind, herd, houses, plots) {
   const free = pointFor(herd, houses, plots);
   return free ? { point: { x: free.x, y: free.y, z: free.z }, kept: false } : null;
 }
+// A pen of a house about standing whole (pen.js). -> { pen, st } | null
+function penStanding(bot, houses) {
+  let P;
+  try { P = require('./pen'); } catch (_) { return null; }
+  for (const h of houses) {
+    const pen = P.penBy(bot, h);
+    if (!pen) continue;
+    const st = P.status(bot, pen);
+    if (st.built) return { pen, st };
+  }
+  return null;
+}
+// With a pen: the herd's place is the pen; those of the kind outside it (not penned elsewhere) are led in while it has
+// room, and the adults in it are the ones fed.
+function penPlan(bot, kind, { pen, st }, { player, houses, now }) {
+  const P = require('./pen'), s = st.shape, point = s.centre;
+  const herd = about(bot, kind, player, houses, point), adults = herd.filter(e => !baby(bot, e));
+  noteSeen(bot, kind, herd.length, adults.length, now);
+  const inPen = herd.filter(e => P.within(s, e.position)), room = Math.max(0, P.HOLDS - st.inside.length);
+  if (adults.length < 2) return null;
+  const strays = adults.filter(e => !P.within(s, e.position) && across(e.position, point) <= LEAD_FROM && !penned(bot, e.position) &&
+    since(bot, 'led', e, now) >= LED_MS && since(bot, 'stayed', e, now) >= STAYED_MS)
+    .sort((a, b) => across(a.position, point) - across(b.position, point)).slice(0, Math.min(MOST_LED, room));
+  const ready = inPen.filter(e => !baby(bot, e) && since(bot, 'fed', e, now) >= BRED_MS && since(bot, 'untaken', e, now) >= BRED_MS);
+  const pairs = Math.max(0, Math.min(MOST_PAIRS, Math.floor(ready.length / 2), Math.floor(wheat(bot) / 2), room - strays.length));
+  return { kind, point, kept: true, pen, herd, strays, ready, pairs, penned: inPen.length, shut: P.gatesOpen(bot, pen).length };
+}
 // What a run for a kind would do now: those to lead, the adults ready for the wheat, the pairs to feed.
 function planFor(bot, kind, { player, houses, plots, now }) {
+  const standing = penStanding(bot, houses);
+  if (standing) return penPlan(bot, kind, standing, { player, houses, now });
   const first = about(bot, kind, player, houses, memo(bot).home[kind] || null);
   const home = homeFor(bot, kind, first, houses, plots);
   const herd = home?.kept ? about(bot, kind, player, houses, home.point) : first, adults = herd.filter(e => !baby(bot, e));
@@ -188,21 +221,42 @@ function housesNear(bot, me) {
   return garden.housesAbout(bot, me).filter(h => gapTo(plain(me), h.min, h.max) <= garden.HOUSE_NEAR);
 }
 
-// Due: a house about, wheat carried, two adults of a kind about, and one of them away from the herd or a pair to feed.
-// -> { chore, kind, why, point, strays, pairs, herd } | null
+// A pen due to be built or put back by a house about (pen.js buildDue): a herd about (two adults of a kind), and its
+// wheat: two carried, or a garden by the house to grow it. -> pen.js buildDue's, with the herd's kind | null
+function penDue(bot, { houses, plots, player, now, goal = null }) {
+  const garden = require('./garden');
+  const fed = wheat(bot) >= 2 || plots.some(p => houses.some(h => gapTo(p.middle, h.min, h.max) <= garden.PLOT_TO + 2));
+  if (!fed) return null;
+  for (const kind of KINDS) {
+    const adults = about(bot, kind, player, houses, memo(bot).home[kind] || null).filter(e => !baby(bot, e));
+    if (adults.length < 2) continue;
+    const herdAt = { x: adults.reduce((n, e) => n + e.position.x, 0) / adults.length, z: adults.reduce((n, e) => n + e.position.z, 0) / adults.length };
+    let due = null;
+    try { due = require('./pen').buildDue(bot, { houses, plots, player, herdAt, goal, now }); } catch (err) { console.log('[animals] the pen: ' + err.message); }
+    return due ? { ...due, kind } : null;
+  }
+  return null;
+}
+
+// Due: a house about, and a pen to build there for a herd about (penDue); or wheat carried, two adults of a kind about,
+// and one of them away from the herd (or out of the pen) or a pair to feed.
+// -> { chore, kind, why, pen, point, strays, pairs, herd } | null
 function herdDue(bot, { player = null, now = Date.now() } = {}) {
   const me = bot.entity?.position;
-  if (!me || !wheat(bot)) return null;
+  if (!me) return null;
   const houses = housesNear(bot, me);
   if (!houses.length) return null;
   const plots = require('./garden').plotsHere(bot);
+  const build = penDue(bot, { houses, plots, player, now });
+  if (build) return { chore: 'animals', kind: build.kind, why: build.why, pen: 'build', point: plain(build.shape.centre), strays: 0, pairs: 0, herd: 0 };
+  if (!wheat(bot)) return null;
   for (const kind of KINDS) {
     const plan = planFor(bot, kind, { player, houses, plots, now });
-    if (!plan || (!plan.strays.length && !plan.pairs)) continue;
+    if (!plan || (!plan.strays.length && !plan.pairs && !plan.shut)) continue;
     const [one, many] = SAYS[kind], n = plan.strays.length;
-    const why = [n && n + ' ' + (n === 1 ? one : many) + ' away from the herd', plan.pairs && plan.pairs + (plan.pairs === 1 ? ' pair' : ' pairs') + ' to feed']
-      .filter(Boolean).join(', ') + '; ' + plan.herd.length + ' ' + (plan.herd.length === 1 ? one : many) + ' about, gathered at ' + where(plan.point) + ', ' + wheat(bot) + ' wheat carried';
-    return { chore: 'animals', kind, why, point: plain(plan.point), strays: n, pairs: plan.pairs, herd: plan.herd.length };
+    const why = [plan.shut && 'the pen\'s gate left open', n && n + ' ' + (n === 1 ? one : many) + (plan.pen ? ' to bring into the pen' : ' away from the herd'), plan.pairs && plan.pairs + (plan.pairs === 1 ? ' pair' : ' pairs') + ' to feed']
+      .filter(Boolean).join(', ') + '; ' + plan.herd.length + ' ' + (plan.herd.length === 1 ? one : many) + ' about, ' + (plan.pen ? plan.penned + ' in the pen at ' : 'gathered at ') + where(plan.point) + ', ' + wheat(bot) + ' wheat carried';
+    return { chore: 'animals', kind, why, pen: plan.pen ? 'in' : null, point: plain(plan.point), strays: n, pairs: plan.pairs, herd: plan.herd.length, shut: plan.shut || 0 };
   }
   return null;
 }
@@ -214,8 +268,10 @@ async function hold(bot) {
   await bot.equip(it, 'hand');
   return true;
 }
-// One led to the point: walked to with the wheat in hand, then a leg at a time, waiting at each for it to come.
-async function lead(bot, task, goal, save, e, point, navigate) {
+// One led to the point: walked to with the wheat in hand, then a leg at a time, waiting at each for it to come. within:
+// how near the point it is to end (a pen's gate stand: the bot there, it after); avoid(x, z): ground no leg ends on (a
+// pen's, which no walk goes into: the leg goes for the point itself, round it).
+async function lead(bot, task, goal, save, e, point, navigate, { within = SPREAD, avoid = null } = {}) {
   const gone = () => e.isValid === false || (bot.entities && !bot.entities[e.id]);
   const near = () => e.position.distanceTo(bot.entity.position);
   goal.step = { action: 'animals_lead', kind: e.name, from: plain(e.position), to: plain(point) }; save?.();
@@ -225,18 +281,37 @@ async function lead(bot, task, goal, save, e, point, navigate) {
     catch (err) { task.check(); if (fatal(err)) throw err; }
   }
   let came = !gone() && await waitFor(task, () => gone() || near() <= 3.5, 5000) && !gone();
-  for (let leg = 0; came && leg < 12 && across(e.position, point) > SPREAD / 2; leg++) {
+  const arrived = () => across(bot.entity.position, { x: point.x + 0.5, z: point.z + 0.5 }) <= 1;
+  for (let leg = 0; came && leg < 12 && across(e.position, point) > within / 2 && !(within < SPREAD && arrived()); leg++) {
     const here = bot.entity.position, left = across(here, { x: point.x + 0.5, z: point.z + 0.5 });
     const t = left <= LEG ? 1 : LEG / left;
-    const x = Math.floor(here.x + (point.x + 0.5 - here.x) * t), z = Math.floor(here.z + (point.z + 0.5 - here.z) * t);
-    try { await navigate(bot, task, new goals.GoalNearXZ(x, z, 1), { timeoutMs: 8000, stallMs: 4000 }); }
+    let x = Math.floor(here.x + (point.x + 0.5 - here.x) * t), z = Math.floor(here.z + (point.z + 0.5 - here.z) * t);
+    if (avoid && [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dz]) => avoid(x + dx, z + dz))) { x = point.x; z = point.z; }
+    try { await navigate(bot, task, new goals.GoalNearXZ(x, z, 1), { timeoutMs: avoid ? 15000 : 8000, stallMs: 4000 }); }
     catch (err) { task.check(); if (fatal(err)) throw err; break; }
     await hold(bot);
     came = await waitFor(task, () => gone() || near() <= 3.5, 5000) && !gone();
   }
-  const done = !gone() && across(e.position, point) <= SPREAD;
+  if (within < SPREAD && arrived() && !gone()) await waitFor(task, () => gone() || across(e.position, point) <= within, 5000);
+  const done = !gone() && across(e.position, point) <= within;
   memo(bot)[done ? 'led' : 'stayed'][idOf(e)] = Date.now();
   return done;
+}
+// One in a pen fed over its fence from outside: the wheat held up, waited for to come to the fence.
+async function feedOver(bot, task, goal, save, e) {
+  const gone = () => e.isValid === false || (bot.entities && !bot.entities[e.id]);
+  const aim = () => e.position.offset(0, (e.height || 1.3) * 0.6, 0);
+  const reach = () => bot.entity.position.offset(0, bot.entity.eyeHeight || 1.62, 0).distanceTo(aim());
+  goal.step = { action: 'animals_feed', kind: e.name, at: plain(e.position) }; save?.();
+  if (!await hold(bot)) return false;
+  await waitFor(task, () => gone() || reach() <= OVER, 5000);
+  if (gone() || reach() > OVER) return false;
+  const before = wheat(bot);
+  await bot.lookAt(aim(), true);
+  bot.useOn(e);
+  const took = await waitFor(task, () => wheat(bot) < before, 1500);
+  memo(bot)[took ? 'fed' : 'untaken'][idOf(e)] = Date.now();
+  return took;
 }
 // One fed: walked up to, the wheat handed it. -> whether it took it (the wheat carried went down).
 async function feed(bot, task, goal, save, e, navigate) {
@@ -260,13 +335,20 @@ async function feed(bot, task, goal, save, e, navigate) {
 
 // One run (work.js, kind 'animals'): -> true, with goal.led, goal.stayed, goal.fed and goal.pairs for the line in the
 // log (session.js). Throws when there is no house about after all.
-async function herdStep(bot, task, goal, save, { navigate } = {}) {
+async function herdStep(bot, task, goal, save, deps = {}) {
+  const { navigate } = deps;
   goal.led ||= 0; goal.stayed ||= 0; goal.fed ||= 0; goal.pairs ||= 0;
-  const me = bot.entity.position, now = Date.now();
+  const me = bot.entity.position, now = Date.now(), started = Date.now();
   const player = bot.players?.[goal.from]?.entity || (bot._company?.name === goal.from && bot._company.position ? { position: bot._company.position } : null);
   const houses = housesNear(bot, me);
   if (!houses.length) throw new Error('No house about to keep animals by');
   const plots = require('./garden').plotsHere(bot);
+  // The pen first, when one is due to be built or put back; the herd after, if the run has the time.
+  const build = penDue(bot, { houses, plots, player, now, goal });
+  if (build) {
+    await require('./pen').buildStep(bot, task, goal, save, build, deps, now);
+    if (!penStanding(bot, houses) || Date.now() - started > 150000) { save?.(); return true; }
+  }
   let plan = null;
   for (const kind of [goal.herdKind, ...KINDS.filter(k => k !== goal.herdKind)].filter(Boolean)) {
     const p = planFor(bot, kind, { player, houses, plots, now });
@@ -274,6 +356,13 @@ async function herdStep(bot, task, goal, save, { navigate } = {}) {
   }
   if (!plan) return true;
   goal.herdKind = plan.kind; goal.herdPoint = plain(plan.point);
+  if (plan.pen) {
+    try { await penRun(bot, task, goal, save, plan, { navigate, player, houses }); }
+    finally { if (bot.heldItem?.name === FOOD) { try { await require('./skills').emptyHand(bot); } catch (_) {} } }
+    if (goal.led || goal.penned || goal.pairs) console.log('[animals] ' + SAYS[plan.kind][1] + ' by the pen at ' + where(plan.point) + ': ' + goal.led + ' led, ' + (goal.penned || 0) + ' brought in, ' + goal.pairs + (goal.pairs === 1 ? ' pair' : ' pairs') + ' fed');
+    save?.();
+    return true;
+  }
   try {
     for (const e of plan.strays) {
       task.check();
@@ -309,6 +398,53 @@ async function herdStep(bot, task, goal, save, { navigate } = {}) {
   return true;
 }
 
+// A run with a pen: those outside it brought in, one at a time; then pairs in it fed over the fence from the stand
+// nearer them.
+async function penRun(bot, task, goal, save, plan, { navigate, player, houses }) {
+  const P = require('./pen'), s = P.shapeOf(plan.pen);
+  goal.penned ||= 0;
+  goal.shut = (goal.shut || 0) + await P.shutGates(bot, task, plan.pen, { navigate });
+  for (const e of plan.strays) {
+    task.check();
+    if (P.status(bot, plan.pen).inside.length >= P.HOLDS) break;
+    const r = await P.bringIn(bot, task, goal, save, plan.pen, e, { lead, navigate });
+    if (r.came) goal.led++; else goal.stayed++;
+    goal.penned += r.in;
+  }
+  const inPen = () => { const t = Date.now(); return about(bot, plan.kind, player, houses, s.centre).filter(e => P.within(s, e.position) && !baby(bot, e) &&
+    since(bot, 'fed', e, t) >= BRED_MS && since(bot, 'untaken', e, t) >= BRED_MS); };
+  let ready = inPen();
+  const room = () => P.HOLDS - P.status(bot, plan.pen).inside.length;
+  if (ready.length < 2 || wheat(bot) < 2 || room() < 1) return;
+  const mid = { x: ready.reduce((n, e) => n + e.position.x, 0) / ready.length, z: ready.reduce((n, e) => n + e.position.z, 0) / ready.length };
+  const stand = s.stands.slice().sort((a, b) => across(a, mid) - across(b, mid))[0];
+  try { await navigate(bot, task, new goals.GoalBlock(stand.x, stand.y, stand.z), { timeoutMs: 20000, stallMs: 5000 }); }
+  catch (err) { task.check(); if (fatal(err)) throw err; }
+  await hold(bot);
+  const wanted = Math.min(MOST_PAIRS, Math.floor(ready.length / 2), room());
+  // The waits at the fence for one to come are no stall (stillness.js; pen.js bringIn).
+  let release = () => {};
+  try { release = require('./stillness').holdWait(bot, 'pairs fed over the fence', 60000); } catch (_) { /* no rule to hold */ }
+  try { await feedPairs(bot, task, goal, save, inPen, wanted); } finally { release(); }
+}
+async function feedPairs(bot, task, goal, save, inPen, wanted) {
+  let ready;
+  for (let tries = 0; goal.pairs < wanted && tries < 3 * wanted && wheat(bot) >= 2; tries++) {
+    task.check();
+    const here = bot.entity.position;
+    ready = inPen();
+    const first = ready.filter(e => ready.some(o => o !== e && across(o.position, e.position) <= 6)).sort((a, b) => a.position.distanceTo(here) - b.position.distanceTo(here))[0];
+    if (!first) break;
+    if (!await feedOver(bot, task, goal, save, first)) continue;
+    goal.fed++;
+    const mates = inPen().filter(o => o !== first).sort((a, b) => a.position.distanceTo(here) - b.position.distanceTo(here)).slice(0, 3);
+    for (const mate of mates) {
+      if (!wheat(bot)) break;
+      if (await feedOver(bot, task, goal, save, mate)) { goal.fed++; goal.pairs++; break; }
+    }
+  }
+}
+
 // The wheat the garden's bread leaves for the herd about (garden.js loavesFor, surplusOf): two pairs' worth while two
 // adults of a kind are about under HERD, one to lead with while there are two at all, and for SEEN_MS after the herd
 // was last about (it wanders off and back); none with no house about or the chore off.
@@ -324,4 +460,4 @@ function wheatWanted(bot, { env = process.env, now = Date.now() } = {}) {
   return want;
 }
 
-module.exports = { herdDue, herdStep, wheatWanted, pointFor, planFor, spared, SPARE_KINDS, KINDS, FIND, HOME_NEAR, HOME_FROM, SEEN_MS, SPREAD, LEAD_FROM, HERD, PLOT_KEEP, BRED_MS, MOST_PAIRS };
+module.exports = { herdDue, herdStep, wheatWanted, pointFor, planFor, spared, lead, SPARE_KINDS, KINDS, FIND, HOME_NEAR, HOME_FROM, SEEN_MS, SPREAD, LEAD_FROM, HERD, PLOT_KEEP, BRED_MS, MOST_PAIRS };

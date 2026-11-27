@@ -116,6 +116,9 @@ function line(chore) {
     : "I'll plant some seeds in the garden.";
   if (chore.chore === 'animals') {
     const many = { cow: 'cows', sheep: 'sheep', mooshroom: 'mooshrooms' }[chore.kind] || 'animals';
+    if (chore.pen === 'build') return "I'll build a pen for the " + many + ' by the house.';
+    if (chore.pen === 'in' && chore.strays) return "I'll bring the " + many + ' into the pen.';
+    if (chore.pen === 'in' && chore.shut && !chore.pairs) return "I'll shut the gate of the pen.";
     return chore.strays ? "I'll bring the " + many + ' together.' : "I'll give the " + many + ' some wheat.';
   }
   if (chore.chore !== 'trees') return '';

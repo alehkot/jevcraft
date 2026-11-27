@@ -189,6 +189,8 @@ function activity(step = {}) {
     case 'garden_store': return "I'm putting the harvest away in the chest.";
     case 'animals_lead': return "I'm bringing the " + ({ cow: 'cows', sheep: 'sheep', mooshroom: 'mooshrooms' }[step.kind] || 'animals') + ' together.';
     case 'animals_feed': return "I'm giving the " + ({ cow: 'cows', sheep: 'sheep', mooshroom: 'mooshrooms' }[step.kind] || 'animals') + ' some wheat.';
+    case 'animals_pen': return step.felling ? "I'm cutting down a tree for the pen's fences." : step.making ? "I'm making fences for the pen." : "I'm building a pen for the animals by the house.";
+    case 'animals_pen_in': return "I'm bringing the " + ({ cow: 'cows', sheep: 'sheep', mooshroom: 'mooshrooms' }[step.kind] || 'animals') + ' into the pen.';
     case 'boat_travel': return "I'm taking a boat across the water.";
     case 'reach_shore': return "I'm swimming back to dry land.";
     case 'prepare_build_site': return step.operation === 'fill' ? "I'm filling in a solid base for the building." : "I'm making the ground level for the building.";

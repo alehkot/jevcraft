@@ -172,14 +172,17 @@ function plannedCells(bot, now = Date.now()) {
 // since, are not (claimedCells has them all).
 // The same of a cell, read only where a plan has one (a search asks it of
 // every block it finds).
+// A pen the animals chore built by a house is the bot's own as well (pen.js ownAt): its fences and gates as they stand.
+const penOwn = (bot, p) => { try { return require('./pen').ownAt(bot, p); } catch (_) { return false; } };
 function jevBuiltAt(bot, p) {
   const x = Math.floor(p.x), y = Math.floor(p.y), z = Math.floor(p.z), cell = plannedCells(bot).get(`${x},${y},${z}`);
-  if (!cell) return false;
+  if (!cell) return penOwn(bot, { x, y, z });
   try { return require('./build-blocks').matchesBuildBlock(bot.blockAt(new Vec3(x, y, z)), cell); } catch (_) { return false; }
 }
 function jevBuilt(bot, block) {
   const p = block?.position, cell = p && plannedCells(bot).get(`${p.x},${p.y},${p.z}`);
-  return !!cell && require('./build-blocks').matchesBuildBlock(block, cell);
+  if (!cell) return !!p && penOwn(bot, p);
+  return require('./build-blocks').matchesBuildBlock(block, cell);
 }
 function siteWork(bot, goal, site, { strict = true } = {}) {
   const { plot, footprint } = layout(site);

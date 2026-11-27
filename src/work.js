@@ -11531,7 +11531,7 @@ async function runGoal(bot, task, goal, store, { maxSteps = Infinity, onStep = (
       if (goal.kind === 'light_area') complete = await require('./companion-actions').lightArea(bot, task, goal, save, { acquireStep, place, navigate });
       if (goal.kind === 'replant') complete = await require('./tree-felling').replantStep(bot, task, goal, save, treeDeps(bot, goal));
       if (goal.kind === 'garden') complete = await require('./garden').gardenStep(bot, task, goal, save, { ...treeDeps(bot, goal), openWindow });
-      if (goal.kind === 'animals') complete = await require('./animals').herdStep(bot, task, goal, save, treeDeps(bot, goal));
+      if (goal.kind === 'animals') complete = await require('./animals').herdStep(bot, task, goal, save, { ...treeDeps(bot, goal), openWindow });
       if (goal.kind === 'place_at_site') complete = await workSites.placeAtSite(bot, task, goal, save, {
         acquireStep, place, navigate, available: p => stationCellOk(bot, goal, p) && !occupant(bot, p) && bedFloor(bot.blockAt(p.offset(0, -1, 0)))
       });
