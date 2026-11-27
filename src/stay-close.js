@@ -144,7 +144,7 @@ function due(bot, idle, now = Date.now(), goal = null) {
   const radius = preference(bot).radius, d = distance(bot.entity.position, at.position);
   const last = bot._closeRegroup;
   if (d <= radius) { bot._closeRegroup = { at: last?.at || 0, position: { x: at.position.x, y: at.position.y, z: at.position.z } }; return false; }
-  if (!idle && goal?.weaponErrand && bot._stayOut && now - bot._stayOut.since >= outMs() && !(last?.at && now - last.at < 20000)) return 'out';
+  if (!idle && (goal?.weaponErrand || goal?.chore) && bot._stayOut && now - bot._stayOut.since >= outMs() && !(last?.at && now - last.at < 20000)) return 'out';
   if (d < radius + (idle ? 1 : Math.max(3, radius / 3)) || (last?.at && now - last.at < (idle ? 4000 : 20000))) return false;
   // Working a fixed, distant site is legitimate. A player moving on can
   // call the work back; a stationary player does not cause a commute per block.
@@ -185,7 +185,7 @@ const FAR_KEYS = /^(?:travel_|explore$|loot$|trade$|visit_|deep_dark$|trial_cham
 const flat = (p, q) => Math.hypot(p.x - q.x, p.z - q.z);
 function boundOffers(bot, goal, options, { filler = false, now = Date.now() } = {}) {
   const p = options && preference(bot);
-  if (!p || exempt(bot, goal) || (!filler && !goal?.weaponErrand)) return options;
+  if (!p || exempt(bot, goal) || (!filler && !goal?.weaponErrand && !goal?.chore)) return options;
   const at = anchor(bot, now), me = bot.entity?.position;
   if (!at || !me) return options;
   const dropped = [], reach = p.radius + excursion(p.radius);

@@ -77,7 +77,7 @@ function unfinishedBuilds(registry, bot, { from, point, dimension } = {}) {
 
 // Said when an errand is done with work still set aside under it: how to get the bot back on that work.
 function reminder(done, { username = 'Jev' } = {}) {
-  if (!done || done.status !== 'complete' || done.dream || done.back || done.weaponErrand) return null;
+  if (!done || done.status !== 'complete' || done.dream || done.back || done.weaponErrand || done.chore) return null;
   const next = resumeSaved(done);
   if (!next || next === done || !playerWork(next) || errand(next)) return null;
   return `Say "${username} continue" when you want me back on ${said(next, username)}.`;

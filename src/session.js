@@ -298,7 +298,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     if (!active.idle) {
       // Ended by the bot itself (the idle timer: too long, or night) is not a player's stop.
       if (active.goal.weaponErrand && !active.goal.errandEnded) active.goal.errandStopped = status;
-      active.goal.status = active.goal.back || active.goal.weaponErrand ? 'complete' : status; workStore.save(active.goal);
+      if (active.goal.chore && !active.goal.choreEnded) active.goal.choreStopped = status;
+      active.goal.status = active.goal.back || active.goal.weaponErrand || active.goal.chore ? 'complete' : status; workStore.save(active.goal);
     }
     bot.pathfinder.setGoal(null);
     bot.clearControlStates();
@@ -311,13 +312,13 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     nextActivity();
     reactiveWait?.cancel().catch(() => {}); bedtime?.cancel().catch(() => {});
     // A request ends the scare a walk back was owed for (company.js): the player has said what comes next.
-    if (!goal.back && !goal.weaponErrand) require('./company').letGo(bot);
+    if (!goal.back && !goal.weaponErrand && !goal.chore) require('./company').letGo(bot);
     world.hydrate(goal);
     memory.bind(goal);
     goal.memoryContext = memory.context(goal.from);
     // A walk back after monsters is not a player's word: a bot told to stop is as stopped after it as before. Nor is
     // the bot's own errand for a sword (keep-armed.js).
-    if (!goal.back && !goal.weaponErrand) { survival.state.paused = false; delete survival.state.idleBlocked; delete survival.state.deathBlocked; saveSurvival(); }
+    if (!goal.back && !goal.weaponErrand && !goal.chore) { survival.state.paused = false; delete survival.state.idleBlocked; delete survival.state.deathBlocked; saveSurvival(); }
     // The goal's calls are charged to its run: the dream's when the dream
     // launched it, otherwise the request's own, picked back up by id.
     if (goal.dream) goal.ledgerRun = dreamRun(dreamStore.read()) ?? goal.ledgerRun;
@@ -356,7 +357,11 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       // A walk back after monsters that failed is the bot's own errand: nothing is said, nothing is left to resume, and
       // it is tried again later while the scare holds (company.js backDue).
       // The bot's own errand for a sword that failed: nothing said, nothing left to resume, rested (keep-armed.js).
-      if (err.name !== 'Cancelled' && goal.weaponErrand) {
+      // The bot's own chore that came to nothing (chores.js): nothing said, nothing left to resume, rested below.
+      if (err.name !== 'Cancelled' && goal.chore) {
+        goal.status = 'complete'; goal.choreFailed = err.message; saveGoal(goal);
+        observation?.sample('error', { message: err.message, chore: goal.chore }, goal);
+      } else if (err.name !== 'Cancelled' && goal.weaponErrand) {
         goal.status = 'complete'; goal.errandFailed = err.message; saveGoal(goal);
         observation?.sample('error', { message: err.message, weaponErrand: true }, goal);
         console.log(`${goal.mission ? '[mission] the step failed' : '[weapon] the errand failed'}: ${err.message}`);
@@ -388,6 +393,12 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
           setAside(survival, 'weapon_errand', 'sword', String(goal.errandFailed || goal.errandEnded || goal.errandStopped || 'over with no sword ready').slice(0, 160), arms.ERRAND_REST_MS); saveSurvival();
         }
         if (goal.returnTo && !goal.errandStopped) require('./company').oweBack(bot, goal.returnTo);
+      }
+      // A chore, over (chores.js): rested whatever came of it, so the next look does not start it again at once.
+      if (goal.chore && !session.relaunch) {
+        const how = String(goal.choreFailed || goal.choreEnded || goal.choreStopped || 'done').slice(0, 160);
+        setAside(survival, 'chore', goal.chore, how, require('./chores').REST_MS[goal.chore] || 180000); saveSurvival();
+        console.log(`[chore] ${goal.chore} over: ${how}${goal.kind === 'replant' ? ` (${goal.planted || 0} planted, ${goal.picked || 0} picked up, ${goal.standsDown || 0} stands taken down)` : ''}`);
       }
       if (session.relaunch) {
         relaunching = true;
@@ -539,6 +550,33 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     else if (goal.errandEnded === 'night is near' && goal.returnTo && !goal.errandStopped) {
       const scare = require('./company').oweBack(bot, goal.returnTo); if (scare) scare.errand = 'the first tools';
     }
+  }
+  // The waiting bot's chores (chores.js), looked at every ten seconds; none while the guide has a next request queued.
+  let choreCheckedAt = 0;
+  const choreSaidAt = {};
+  const waitedWith = now => { const seen = bot._company; return seen && now - seen.at <= require('./company').WITH_MS ? { name: seen.name, position: { ...seen.position } } : null; };
+  function choreDue(now, dark) {
+    const chores = require('./chores');
+    if (now - choreCheckedAt < chores.LOOK_MS || guideQueue?.rest?.length) return null;
+    choreCheckedAt = now;
+    try {
+      return chores.due(bot, { now, dark, paused: !!survival.state.paused, threatened: require('./danger').threats(bot, 16).some(t => t.visible),
+        resting: name => isSetAside(survival, 'chore', name), player: waitedWith(now) });
+    } catch (err) { console.error('[chore] the look:', err.message); return null; }
+  }
+  // A chore, begun as the bot's own errand: no model reads it, nobody's work to ask about (handoff.js), quiet when it
+  // comes to nothing, ended by "stop" or any request, never kept for a resume, rested after (launch, finally).
+  function launchChore(due) {
+    const chores = require('./chores'), now = Date.now();
+    const goal = { ...chores.goalFor(bot, due, { player: waitedWith(now), now }), version: 1, status: 'pending', createdAt: new Date().toISOString(),
+      suspendedTasks: suspendPrevious(store.read()), requesterPosition: null,
+      initialInventory: bot.inventory.items().map(i => ({ name: i.name, count: i.count })) };
+    saveGoal(goal);
+    console.log(`[chore] ${due.chore}: ${due.why}`);
+    // Said as it walks off, once in ten minutes a chore: the saplings come down over minutes, a few runs apart.
+    const said = chores.line(due);
+    if (said && now - (choreSaidAt[due.chore] || 0) > chores.SAID_MS) { choreSaidAt[due.chore] = now; bot.chat(said); }
+    launch(goal);
   }
   function armsDue(now, dark) {
     if (now - armsCheckedAt < 5000 || guideQueue?.rest?.length) return null;
@@ -752,6 +790,11 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         stop('interrupted').catch(console.error);
       }
     }
+    // A chore still at it after its minutes, or with half a minute of daylight left, is ended (chores.js over).
+    if (active && !active.idle && active.goal?.chore && !active.goal.choreEnded) {
+      const over = require('./chores').over(active.goal, bot, now);
+      if (over) { active.goal.choreEnded = over; console.log(`[chore] ${active.goal.chore} ended: ${over}`); stop('interrupted').catch(console.error); }
+    }
     if (ready && !pendingRequests && !launchingDream && (!active || active.idle) && now - waitCheckedAt > 5000) {
       waitCheckedAt = now;
       const saved = resumeSaved(store.read());
@@ -771,7 +814,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
     // for eight seconds. Not over a question still open, a message being read, a request in hand, or the guide's next
     // step for a player (lookOver).
     if (speakUnasked && guide && lookFor && !looking && !guideBusy && !pendingRequests && !guideQueue?.rest?.length && now - lastChatAt > LOOK_QUIET_MS
-        && !(active && !active.idle && active.goal && !active.goal.weaponErrand && !active.goal.back && !active.goal.dream)
+        && !(active && !active.idle && active.goal && !active.goal.weaponErrand && !active.goal.chore && !active.goal.back && !active.goal.dream)
         && guide.observeReady() && !handoff?.pending?.() && ![...clarifying.values()].some(q => q.until > now)) lookOver().catch(err => console.error('[observer]', err));
     if (waitMode) {
       // JEV_IDLE=wait: nothing is done between requests but answering what would
@@ -803,7 +846,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         // told to stop makes them too, and is as stopped after: it was the monsters that moved it, and a "stop" said
         // during the walk back ends that walk (stop() lets the scare go).
         // Neither rule may end the waiting itself: what goes wrong in one is logged, and the bot waits as before.
-        let hurting = false, abed = false, back = null, armsNow = null;
+        let hurting = false, abed = false, back = null, armsNow = null, choreNow = null;
         try {
           company.withPlayer(bot, now);
           hurting = !!require('./reactive-wait').emergency(bot);
@@ -824,6 +867,8 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
         else if (own === 'run' && !survival.state.paused && !survival.state.idleBlocked) launchIdle();
         else if (hurting || !toBed()) {
           if (!hurting && !survival.state.paused && !bot._reactiveWaitActive && stayClose.due(bot, true)) walkWhileWaiting();
+          // A chore about here (chores.js), looked at every ten seconds.
+          else if (!hurting && !bot._reactiveWaitActive && (choreNow = choreDue(now, dark))) launchChore(choreNow);
           else reactiveWait.tick().catch(err => console.error('[reactive wait]', err));
         }
       }
@@ -1401,7 +1446,7 @@ function createSession(config, client, { stateDirectory = path.join(__dirname, '
       console.log(JSON.stringify({ sessionReady: true, username: bot.username }));
       const saved = store.read();
       // A walk back after monsters from before this start is over: the scare it answered went with that run.
-      if ((saved?.back || saved?.weaponErrand) && saved.status !== 'complete') { saved.status = 'complete'; store.save(saved); }
+      if ((saved?.back || saved?.weaponErrand || saved?.chore) && saved.status !== 'complete') { saved.status = 'complete'; store.save(saved); }
       // A "come here" is not taken up again when its player is not in the
       // game, or it was said minutes ago (company.js lapsed).
       if (saved && ['running', 'recovering'].includes(saved.status) && require('./company').lapsed(saved, bot)) {

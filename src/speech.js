@@ -225,6 +225,8 @@ function completion(goal) {
   if (goal.callerLeft) return `${goal.target || goal.from} has left the game, so I've stopped ${goal.kind === 'follow' ? 'following' : 'coming over'}.`;
   // Back with its player after monsters (company.js backDue): said when it set out, not again on arriving.
   if (goal.back) return '';
+  // The bot's own chore (chores.js): said as it set out, if at all.
+  if (goal.chore) return '';
   // Its own errand for a sword (keep-armed.js): said as it set out; one made from the pockets is not said again.
   // The first tools (first-tools.js) are quiet step by step: a line as they begin and one when all are made.
   if (goal.weaponErrand) return goal.errandPockets || goal.mission ? '' : `I've made ${/^[aeiou]/i.test(name(goal.item)) ? 'an' : 'a'} ${name(goal.item)} to carry.`;

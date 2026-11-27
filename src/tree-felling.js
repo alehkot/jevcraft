@@ -497,28 +497,80 @@ function lyingLow(bot, item, origin, radius = 10) {
     e.position.distanceTo(origin) <= radius && e.position.y <= origin.y + 1.5);
 }
 
-// A player's "replant the trees" (companion-actions.js): the saplings owed where the bot cut trees within 64 blocks
-// planted, each stump walked to and the saplings and logs lying about it picked up there first. -> true (done), with
-// goal.planted, goal.replantLeft and goal.replantNone for the line said at the end (speech.js).
-async function replantStep(bot, task, goal, save, { navigate, place, collect, forbidden } = {}) {
+// Room in the pockets for one more of an item: a slot to spare, or a stack of it not full. The bot's own chore picks up
+// nothing into full pockets: the tidy that makes room drops gear and says so (on the copy, 2026-11-27).
+function room(bot, item) {
+  const free = typeof bot.inventory?.emptySlotCount === 'function' ? bot.inventory.emptySlotCount() : 2;
+  if (free > 1) return true;
+  return (typeof bot.inventory?.items === 'function' ? bot.inventory.items() : []).some(i => i.name === item && i.count < (i.stackSize || 64));
+}
+
+// The trees cut lately, kept a while (an item lies five minutes): about each, the logs that lay on its leaves come down
+// with them, and the saplings with them (chores.js). At most sixteen; read for this dimension.
+const FELLED_MS = 5 * 60000;
+function noteFelled(bot, block, cell, now = Date.now()) {
+  if (!cell || !SAPLING[block]) return;
+  const list = bot._felled ||= [], dimension = bot.game?.dimension;
+  const same = list.find(f => f.x === cell.x && f.y === cell.y && f.z === cell.z && f.dimension === dimension);
+  if (same) same.until = now + FELLED_MS;
+  else list.push({ block, x: cell.x, y: cell.y, z: cell.z, dimension, until: now + FELLED_MS });
+  while (list.length > 16) list.shift();
+}
+function felledHere(bot, now = Date.now()) {
+  bot._felled = (bot._felled || []).filter(f => f.until > now);
+  return bot._felled.filter(f => f.dimension === bot.game?.dimension);
+}
+
+// A player's "replant the trees" (companion-actions.js), or the bot's own chore about here (chores.js): the saplings
+// owed where the bot cut trees within 64 blocks planted, each stump walked to and the saplings and logs lying about it
+// picked up there first. The chore walks only to the stumps it has a sapling for (carried, or lying about the stump),
+// takes a stand left up a trunk down first, picks up what lies about the trees cut lately, and plants nowhere else.
+// -> true (done), with goal.planted, goal.replantLeft and goal.replantNone for the line said at the end (speech.js),
+// and for a chore goal.picked and goal.standsDown.
+async function replantStep(bot, task, goal, save, { navigate, place, collect, forbidden, dig } = {}) {
+  const chore = !!goal.chore;
   const near = () => owedHere(bot).filter(s => at(s.cells[0]).distanceTo(bot.entity.position) <= 64);
-  const owed = near().sort((a, b) => at(a.cells[0]).distanceTo(bot.entity.position) - at(b.cells[0]).distanceTo(bot.entity.position));
-  goal.planted ||= 0; goal.replantNone = !owed.length;
-  for (const s of owed.slice(0, 8)) {
-    task.check();
-    const stump = toStump(s), sapling = SAPLING[s.block];
-    if (stumpTaken(bot, stump)) { forget(bot, stump); continue; }
-    goal.step = { action: 'replant', item: sapling, position: { x: stump.cells[0].x, y: stump.cells[0].y, z: stump.cells[0].z } }; save?.();
-    if (stump.cells[0].distanceTo(bot.entity.position) > 4 && navigate) {
-      try { await navigate(bot, task, new goals.GoalNear(stump.cells[0].x, stump.cells[0].y, stump.cells[0].z, 2), { timeoutMs: 30000, stallMs: 5000 }); }
-      catch (err) { task.check(); if (fatal(err)) throw err; continue; }
+  const ready = s => { const sapling = SAPLING[s.block]; return carried(bot, sapling) >= (FOUR.has(sapling) ? 4 : 1) || ((!chore || room(bot, sapling)) && lyingLow(bot, sapling, at(s.cells[0]))); };
+  const nearest = list => list.sort((a, b) => at(a.cells?.[0] || a).distanceTo(bot.entity.position) - at(b.cells?.[0] || b).distanceTo(bot.entity.position));
+  const walkTo = async c => {
+    if (c.distanceTo(bot.entity.position) <= 4 || !navigate) return true;
+    try { await navigate(bot, task, new goals.GoalNear(c.x, c.y, c.z, 2), { timeoutMs: 30000, stallMs: 5000 }); return true; }
+    catch (err) { task.check(); if (fatal(err)) throw err; return false; }
+  };
+  const visited = [];
+  const plantOwed = async list => {
+    for (const s of list.slice(0, 8)) {
+      task.check();
+      const stump = toStump(s), sapling = SAPLING[s.block];
+      if (stumpTaken(bot, stump)) { forget(bot, stump); continue; }
+      goal.step = { action: 'replant', item: sapling, position: { x: stump.cells[0].x, y: stump.cells[0].y, z: stump.cells[0].z } }; save?.();
+      if (!await walkTo(stump.cells[0])) continue;
+      visited.push(stump.cells[0]);
+      if ((!chore || room(bot, s.block)) && lyingLow(bot, s.block, stump.cells[0])) goal.picked += await gatherAll(bot, task, collect, s.block, stump.cells[0], { radius: 10, waitForSpawnMs: 0, timeoutMs: 3000, rounds: 8 });
+      goal.planted += await replant(bot, task, stump, { place, collect, forbidden });
     }
-    if (lyingLow(bot, s.block, stump.cells[0])) await gatherAll(bot, task, collect, s.block, stump.cells[0], { radius: 10, waitForSpawnMs: 0, timeoutMs: 3000, rounds: 8 });
-    goal.planted += await replant(bot, task, stump, { place, collect, forbidden });
+  };
+  goal.planted ||= 0; goal.picked ||= 0;
+  if (chore && dig) goal.standsDown = await clearLeftStands(bot, task, { dig, within: 40 });
+  const owed = nearest(near().filter(s => !chore || ready(s)));
+  goal.replantNone = !owed.length;
+  await plantOwed(owed);
+  if (chore) {
+    // What lies about the trees cut lately: the logs come down with the leaves, and the saplings.
+    for (const f of nearest(felledHere(bot).filter(f => at(f).distanceTo(bot.entity.position) <= 40)).slice(0, 6)) {
+      task.check();
+      const o = at(f), kinds = [f.block, SAPLING[f.block]].filter(k => room(bot, k) && lyingLow(bot, k, o));
+      if (!kinds.length) continue;
+      goal.step = { action: 'pick_up', item: kinds[0], position: { x: o.x, y: o.y, z: o.z } }; save?.();
+      if (!await walkTo(o)) continue;
+      for (const k of kinds) if (room(bot, k)) goal.picked += await gatherAll(bot, task, collect, k, o, { radius: 10, waitForSpawnMs: 0, timeoutMs: 3000, rounds: 8 });
+    }
+    // The stumps the saplings picked up there are for.
+    await plantOwed(nearest(near().filter(s => ready(s) && !visited.some(c => c.equals(at(s.cells[0]))))));
   }
   goal.replantLeft = near().length;
   // Nothing owed about here and saplings carried: planted about the player who asked, on open soil a few apart.
-  if (!owed.length) {
+  if (!owed.length && !chore) {
     const who = (goal.from && bot.players?.[goal.from]?.entity?.position) || bot.entity.position;
     const taken = [];
     goal.plantedHere = 0;
@@ -542,4 +594,4 @@ async function replantStep(bot, task, goal, save, { navigate, place, collect, fo
 }
 
 module.exports = { LOG, SAPLING, STAND, gatherAll, treeLogs, stumpOf, standFor, withinArm, cutInReach, digUnder, lowerStand, clearLeftStands, fellFromStands,
-  plantCells, spotsNear, stumpTaken, replant, replantOwed, replantStep, owe, forget, owedHere, loadOwed, saveOwed, lyingLow };
+  plantCells, spotsNear, stumpTaken, replant, replantOwed, replantStep, owe, forget, owedHere, loadOwed, saveOwed, lyingLow, noteFelled, felledHere, toStump, FOUR, FELLED_MS, room };

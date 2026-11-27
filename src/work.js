@@ -2597,6 +2597,8 @@ async function workSource(bot, task, step, goal, save, source) {
         }
       }
       if (felling) {
+        // The trees cut, kept a while for what comes down with their leaves (chores.js).
+        for (const stump of stumps) if (stump) felling.noteFelled(bot, source.block, stump.cells[0]);
         const left = standing().length;
         if (left) console.log(`[tree] ${left} ${source.block.replaceAll('_', ' ')}s of the tree at ${stumps.at(-1)?.cells[0] || p} left standing: ${String(goal.lastMiningError || 'none could be reached').slice(0, 140)}`);
         // A sapling where each trunk cut stood, if one is carried or lies about; else owed, planted on the way back.
@@ -2610,7 +2612,10 @@ async function workSource(bot, task, step, goal, save, source) {
   }
   catch (err) {
     // The stumps cut this far are owed their saplings.
-    if (felling) for (const stump of stumps) if (stump && !stump.cells.some(c => bot.blockAt(c)?.name === source.block)) felling.owe(bot, stump);
+    if (felling) for (const stump of stumps) if (stump) {
+      felling.noteFelled(bot, source.block, stump.cells[0]);
+      if (!stump.cells.some(c => bot.blockAt(c)?.name === source.block)) felling.owe(bot, stump);
+    }
     // A missing or worn-out tool is the bot's problem, not the vein's: the
     // tree or the ore is still there once a tool is in hand, and setting it
     // aside sent the bot looking for another after the pickaxe was made.
