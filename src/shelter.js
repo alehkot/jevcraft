@@ -142,8 +142,95 @@ function wetBelow(bot, origin) {
   return n;
 }
 
+// The rooms of a house of the bot's (a refuge of kind 'house', recorded at its plan's origin): its plan's empty cells.
+// Every house drawn since the designer has its origin at the plan's corner, a block of its wall, not a cell to stand
+// in. Read as a pocket round that corner (the bot in it within a block of the corner, its door two north of it, its
+// sides dug through when that door was not there), the bot was in the house while it worked outside the corner, and
+// left it by digging the corner's blocks: in the test window of 2026-11-25 two blocks of a player's ring went so, and
+// the dig guard turned the same leave away in three runs. A house with rooms is entered and left on foot, by a door or
+// an open doorway, and nothing of it is dug or filled with a block to shut it (exits, closures, missingShell).
+// -> null for a refuge that is no house or has no rooms drawn: the pocket's rules, as before.
+const roomsKept = new WeakMap();
+// How far round a house's plan, and through how many cells, the air of its rooms is followed (opening).
+const FLOOD_REACH = 8, FLOOD_CELLS = 1500;
+function rooms(shelter) {
+  const plan = shelter?.kind === 'house' ? shelter.blueprint : null;
+  if (!Array.isArray(plan?.empty) || !plan.empty.length) return null;
+  if (roomsKept.has(plan)) return roomsKept.get(plan);
+  const key = p => `${p.x},${p.y},${p.z}`;
+  const cells = new Set(plan.empty.map(key));
+  // Where a body stands in them: a room cell over one that is not, with a room cell over it for the head.
+  const floor = plan.empty.filter(c => !cells.has(`${c.x},${c.y - 1},${c.z}`) && cells.has(`${c.x},${c.y + 1},${c.z}`)).map(position);
+  // The box its rooms' air is followed through: its plan's, and FLOOD_REACH round it.
+  const all = [...plan.empty, ...(plan.blocks || [])], edge = (f, k) => f(...all.map(c => c[k]));
+  const lo = plan.bounds?.min || { x: edge(Math.min, 'x'), y: edge(Math.min, 'y'), z: edge(Math.min, 'z') };
+  const hi = plan.bounds?.max || { x: edge(Math.max, 'x'), y: edge(Math.max, 'y'), z: edge(Math.max, 'z') };
+  const box = { min: { x: lo.x - FLOOD_REACH, y: lo.y - FLOOD_REACH, z: lo.z - FLOOD_REACH }, max: { x: hi.x + FLOOD_REACH, y: hi.y + FLOOD_REACH, z: hi.z + FLOOD_REACH } };
+  const found = { cells, floor, box, has: p => cells.has(key(p)) };
+  roomsKept.set(plan, found);
+  return found;
+}
+// Where the bot stands for the night in a house: the floor cell of its rooms nearest their middle, on the lowest floor.
+function spot(shelter) {
+  const r = rooms(shelter);
+  if (!r?.floor.length) return position(shelter.origin);
+  const y = Math.min(...r.floor.map(c => c.y)), low = r.floor.filter(c => c.y === y);
+  const mx = low.reduce((s, c) => s + c.x, 0) / low.length, mz = low.reduce((s, c) => s + c.z, 0) / low.length;
+  return [...low].sort((a, b) => Math.hypot(a.x - mx, a.z - mz) - Math.hypot(b.x - mx, b.z - mz) || a.x - b.x || a.z - b.z)[0];
+}
+// A cell walked through on the way out of a house: open, or a door or a gate, which the walk opens (movement.js); an
+// iron door needs redstone.
+const walkable = b => !!b && (replaceable(b) || (b.boundingBox === 'empty' && !/^(water|lava|bubble_column)$|fire|cobweb|sweet_berry_bush|powder_snow/.test(b.name)) ||
+  (/_door$|_fence_gate$/.test(b.name) && b.name !== 'iron_door'));
+// Where the air of a house's rooms goes out to the open: the first cell past its rooms on the way, or null while the
+// house is shut. Followed from its rooms through every cell no block fills (a torch, a sign, water: a mob comes through
+// them), it is shut while it reaches neither past FLOOD_REACH round its plan nor through more than FLOOD_CELLS cells. A
+// door or a gate shuts its cell, open or not: the bot closes none. So a room added on beside it, or a bed or a chest
+// of its plan taken out, leaves it shut; a doorway opened in a wall, a hole in its roof or floor, or the house gone,
+// opens it, and a house not all in sight is not read shut (the cell out of sight is returned marked unseen). Nothing is
+// put into it to close it.
+const SIDES = [...directions, new Vec3(0, 1, 0), new Vec3(0, -1, 0)];
+function opening(bot, shelter) {
+  const r = rooms(shelter);
+  if (!r) return null;
+  const { min, max } = r.box, seen = new Set(r.cells), stack = [...r.cells].map(k => [new Vec3(...k.split(',').map(Number)), null]);
+  let followed = 0;
+  while (stack.length) {
+    const [c, via] = stack.pop();
+    for (const d of SIDES) {
+      const n = c.plus(d), k = `${n.x},${n.y},${n.z}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const out = via || n;
+      if (n.x < min.x || n.x > max.x || n.y < min.y || n.y > max.y || n.z < min.z || n.z > max.z) return out;
+      const block = bot.blockAt(n);
+      if (!block) return Object.assign(out.clone(), { unseen: true });
+      if (block.boundingBox === 'block') continue;
+      if (++followed > FLOOD_CELLS) return out;
+      stack.push([n, out]);
+    }
+  }
+  return null;
+}
+// The ways out of a house's rooms on foot: a side of a floor cell that is no room, open at the feet and the head or a
+// door there, with standing room beyond it that is no room either (a door between two rooms is no way out). A door of
+// the plan counts, and so does a doorway a player opened through their own wall.
+function houseWays(bot, r) {
+  const ways = new Map();
+  for (const c of r.floor) for (const d of directions) {
+    const door = c.plus(d), outside = door.plus(d);
+    if (r.has(door) || r.has(outside) || ways.has(`${door}`)) continue;
+    if (!walkable(bot.blockAt(door)) || !walkable(bot.blockAt(door.offset(0, 1, 0)))) continue;
+    if (!replaceable(bot.blockAt(outside)) || !replaceable(bot.blockAt(outside.offset(0, 1, 0))) || !solid(bot.blockAt(outside.offset(0, -1, 0)))) continue;
+    ways.set(`${door}`, { door, outside });
+  }
+  return [...ways.values()];
+}
+
 function enclosure(shelter) {
   if (shelter.kind !== 'house') return [...foundation(shelter.origin), ...shell(shelter.origin)];
+  // A house with rooms is its plan's blocks: its way in is a door, not two cells a block closes for the night.
+  if (rooms(shelter)) return shelter.blueprint.blocks.map(position);
   const o = position(shelter.origin);
   return [...shelter.blueprint.blocks.map(position), o.offset(0, 0, -2), o.offset(0, 1, -2)];
 }
@@ -169,6 +256,8 @@ const floorSolid = b => b?.boundingBox === 'block' && !['magma_block', 'cactus',
 const FLUIDS = new Set(['water', 'lava', 'bubble_column']);
 const fixed = b => !!b && b.diggable === false && !FLUIDS.has(b.name) && !replaceable(b);
 function missingShell(bot, shelter) {
+  // Nothing is put into a house with rooms to shut it for the night: it stands as it was built (rooms, above).
+  if (rooms(shelter)) return [];
   const floorY = shelter.kind !== 'house' ? position(shelter.origin).y - 1 : null;
   return enclosure(shelter).filter(p => { const b = bot.blockAt(p); return !(p.y === floorY ? floorSolid : solid)(b) && !fixed(b) && !enclosedAir(bot, p); });
 }
@@ -181,10 +270,15 @@ function inside(bot, shelter) {
   // nothing and threw "Shelter verification failed", every five seconds
   // for nine minutes.
   const feet = require('./terrain').feetCell(bot), o = position(shelter.origin);
+  // In a house with rooms: in one of them (rooms, above), not beside its corner.
+  const r = rooms(shelter);
+  if (r) return r.has(feet);
   return shelter.kind === 'house' ? Math.abs(feet.x - o.x) <= 1 && Math.abs(feet.z - o.z) <= 1 && feet.y >= o.y && feet.y < o.y + 2 : feet.equals(o);
 }
 function sealed(bot, shelter) {
   const o = position(shelter.origin);
+  // A house with rooms: shut while the air of its rooms is closed in (opening); nothing is put into it either way.
+  if (rooms(shelter)) return !opening(bot, shelter);
   if (shelter.kind === 'house') return !missingShell(bot, shelter).length && shelter.blueprint.empty
     .filter(p => !(p.x === o.x && p.z === o.z - 2))
     .every(p => replaceable(bot.blockAt(position(p))));
@@ -253,6 +347,9 @@ function supplyTarget(bot, shortage) {
   return { item: 'dirt', count: (stock.dirt || 0) + shortage };
 }
 function exits(bot, shelter) {
+  // A house with rooms: its doors and doorways, walked through (houseWays).
+  const r = rooms(shelter);
+  if (r) return houseWays(bot, r);
   const o = position(shelter.origin);
   return (shelter.kind === 'house' ? [{ door: o.offset(0, 0, -2), outside: o.offset(0, 0, -3) }] :
     directions.map(d => ({ door: o.plus(d), outside: o.plus(d.scaled(2)) })))
@@ -267,6 +364,8 @@ function exits(bot, shelter) {
 // the doors of a shelter that has no two-block exit. Nearest a passable
 // cell beyond first, so the door opens back onto the staircase.
 function closures(bot, shelter) {
+  // Never a house's walls: a house with rooms is left by its doors (exits).
+  if (rooms(shelter)) return [];
   const o = position(shelter.origin);
   const doors = directions.map(d => o.plus(d))
     .filter(door => buildingMaterials.has(bot.blockAt(door)?.name) && buildingMaterials.has(bot.blockAt(door.offset(0, 1, 0))?.name))
@@ -282,4 +381,4 @@ function beyond(bot, o, door) {
   return [-1, 0, 1].filter(dy => replaceable(bot.blockAt(door.plus(d).offset(0, dy, 0)))).length;
 }
 
-module.exports = { burns, builds, lavaInReach, wetBelow, foundation, shell, enclosure, safeSite, shelterSites, missingShell, inside, sealed, closedIn, materialStock, supplyTarget, plankCraft, exits, closures, buildingMaterials, buildingItem, LAST_MATERIALS, NETHER_WOOD, solid, replaceable, fixed };
+module.exports = { rooms, spot, opening, burns, builds, lavaInReach, wetBelow, foundation, shell, enclosure, safeSite, shelterSites, missingShell, inside, sealed, closedIn, materialStock, supplyTarget, plankCraft, exits, closures, buildingMaterials, buildingItem, LAST_MATERIALS, NETHER_WOOD, solid, replaceable, fixed };

@@ -2711,6 +2711,11 @@ const pocketOpenSays = open => `shut to walkers, but ${open.length} cell${open.l
 // and asked nothing (note 758).
 function pocketNow(bot, refuge) {
   if (!refuge || !shelter.inside(bot, refuge)) return null;
+  // A house with rooms is the night's shelter by night, for a bot alone, while it stands shut: by day, at night with a
+  // player near (JEV_NIGHT=company, company.js staysUp) or with the house open, the bot in it is at home, with no
+  // pocket to wait in or leave. In the test window of 2026-11-25 the bot at work by the corner of one was asked
+  // pocket_next by day, leave its one way, and that leave dug at the corner (shelter.js rooms).
+  if (shelter.rooms(refuge) && (!shelterNeeded(bot) || require('./company').staysUp(bot) || !shelter.sealed(bot, refuge))) return null;
   if (shelter.sealed(bot, refuge)) return { sealed: true };
   const shutOpen = shelter.closedIn(bot, refuge);
   if (shutOpen) return { shutOpen };
@@ -3357,9 +3362,22 @@ class Survival {
         (pos(s.origin).distanceTo(bot.entity.position) <= 12 && Math.abs(s.origin.y - bot.entity.position.y) <= 3)) &&
       // A pocket well below is not worth the walk back down when a new one
       // costs five blocks: the by-hand climb lost a day's height each dusk.
-      !(s.kind !== 'house' && !shelter.inside(bot, s) && s.origin.y < bot.entity.position.y - 6 && shelter.materialStock(bot) >= 16))
+      !(s.kind !== 'house' && !shelter.inside(bot, s) && s.origin.y < bot.entity.position.y - 6 && shelter.materialStock(bot) >= 16) &&
+      // A house seen open (a wall or its roof holed, its walls gone: shelter.js opening) is no shelter while it stands
+      // so, the bot in it or not; one not all in sight is kept, and read again as the bot comes to it.
+      !this.houseOpen(s))
       .sort((a, b) => pos(a.origin).distanceTo(bot.entity.position) + (a.verifiedAt ? 0 : 32) -
         pos(b.origin).distanceTo(bot.entity.position) - (b.verifiedAt ? 0 : 32))[0];
+  }
+
+  // Whether a house with rooms is seen open (shelter.js opening), read again after two seconds.
+  houseOpen(s) {
+    if (s.kind !== 'house' || !shelter.rooms(s)) return false;
+    const kept = (this._houseOpen ||= new WeakMap()).get(s), now = Date.now();
+    if (kept && now - kept.at < 2000) return kept.open;
+    const out = shelter.opening(this.bot, s), open = !!out && !out.unseen;
+    this._houseOpen.set(s, { at: now, open });
+    return open;
   }
 
   rememberHouse(blueprint) {
@@ -8919,7 +8937,8 @@ class Survival {
     const stock = shelter.materialStock(bot);
     // Navigation can consume scaffold blocks or clear natural walls. Keep a
     // small travel reserve, then recheck the actual shell after entering.
-    const required = missing.length + (shelter.inside(bot, refuge) ? 0 : 4);
+    // A house with rooms has no shell to build: the walk to it needs no blocks put by.
+    const required = missing.length + (shelter.inside(bot, refuge) || shelter.rooms(refuge) ? 0 : 4);
     if (stock < required) {
       // A site selected above a mining pocket can reserve every block needed
       // to escape it. Reach that still-empty site before searching for supplies;
@@ -8960,15 +8979,17 @@ class Survival {
       return;
     }
     if (!shelter.inside(bot, refuge)) {
-      // Reenter a previously sealed room through a verified two-block exit.
-      if (shelter.sealed(bot, refuge)) {
+      // Reenter a previously sealed room through a verified two-block exit. Not a house with rooms: it is walked into
+      // by its door, nothing of it dug (shelter.js rooms).
+      if (!shelter.rooms(refuge) && shelter.sealed(bot, refuge)) {
         const exit = shelter.exits(bot, refuge).sort((a, b) => a.outside.distanceTo(bot.entity.position) - b.outside.distanceTo(bot.entity.position))[0];
         if (!exit) throw new Error('The saved shelter has no safe approach');
         await this.actions.navigate(bot, task, new goals.GoalBlock(exit.outside.x, exit.outside.y, exit.outside.z), { timeoutMs: 20000 });
         await this.actions.dig(bot, task, exit.door.offset(0, 1, 0), { requireDrops: false });
         await this.actions.dig(bot, task, exit.door, { requireDrops: false });
       }
-      const o = pos(refuge.origin);
+      // A house's corner, where it is recorded, is a block of its wall: the walk is to the floor of its rooms.
+      const o = shelter.rooms(refuge) ? shelter.spot(refuge) : pos(refuge.origin);
       // A walk to it that finds no route is that shelter out of reach from
       // here, said and set aside, not walked for again every pass: 25594
       // (12:39Z) chose saved_shelter, "9 blocks away", in a geode at y 7 and
@@ -10334,7 +10355,8 @@ class Survival {
     if (!exit) {
       // Said as it is: a door refused for a mob, or no door at all.
       const sides = shelter.exits(bot, refuge).length + shelter.closures(bot, refuge).length + (cap ? 1 : 0);
-      const why = sides ? 'Nearby threats still block the shelter exits' : 'No wall of this pocket can be opened as a door';
+      const why = shelter.rooms(refuge) ? (sides ? 'Nearby threats still block the doors of the house' : 'No door or doorway of the house opens onto ground to walk out by')
+        : sides ? 'Nearby threats still block the shelter exits' : 'No wall of this pocket can be opened as a door';
       this.state.leaveRefused = why;
       await this.wait(task, goal, save, why);
       return false;
@@ -10347,6 +10369,17 @@ class Survival {
     const via = (new Error().stack || '').split('\n').slice(2, 5).map(l => (l.match(/at (?:async )?([\w.<>]+)/) || [])[1]).filter(Boolean).join(' < ');
     this.report(goal, save, { action: 'leave_shelter', origin: refuge.origin, reason, via, ...(this.state.leaveChosen ? { chosen: true } : {}) });
     delete this.state.leaveChosen;
+    // Out of a house with rooms by its door or doorway, on foot (shelter.js rooms): nothing of it is dug, and the walk
+    // opens the door (movement.js). The pocket's way, a side dug through, took two corner blocks of a house built onto
+    // a player's ring of cobblestone (2026-11-25).
+    if (shelter.rooms(refuge)) {
+      try { await this.actions.navigate(bot, task, new goals.GoalBlock(exit.outside.x, exit.outside.y, exit.outside.z), { timeoutMs: 15000, stallMs: 4000, onFoot: true }); }
+      catch (err) {
+        task.check(); if (['NeedsAir', 'NeedsSafety', 'Cancelled'].includes(err.name)) throw err;
+        throw new Error(`No way out of the house on foot by (${exit.door.x}, ${exit.door.y}, ${exit.door.z}): ${String(err.message || err).slice(0, 120)}`);
+      }
+      return true;
+    }
     // Opening our temporary closure is necessary even if the last pick broke.
     // Bare-handed stone clearing loses its drop but must not imprison the bot
     // inside a one-cell shelter with no room to place a crafting table.
@@ -13832,6 +13865,13 @@ function sleepRefusalSays(key, bot = null) {
 // the body takes not what a pocket needs.
 function shellUnfinishedSays(bot, refuge) {
   const o = pos(refuge.origin), at = `(${o.x}, ${o.y}, ${o.z})`;
+  // A house with rooms: where the air of its rooms goes out (shelter.js opening). Its corner, where it is recorded, is
+  // a block of its wall, not a cell to stand in.
+  if (shelter.rooms(refuge)) {
+    const f = feetCell(bot), out = shelter.inside(bot, refuge) ? shelter.opening(bot, refuge) : null;
+    if (!shelter.inside(bot, refuge)) return `the house with its corner at ${at} is no shelter from here: the bot is at (${f.x}, ${f.y}, ${f.z}), not in its rooms`;
+    return out ? `the house with its corner at ${at} is open to the night by (${out.x}, ${out.y}, ${out.z}) (${bot.blockAt(out)?.name || 'not loaded'})` : `the house with its corner at ${at} reads shut but not sealed`;
+  }
   if (!shelter.inside(bot, refuge)) { const f = feetCell(bot); return `the pocket at ${at} did not seal: the bot is at (${f.x}, ${f.y}, ${f.z}), not in its cell`; }
   const parts = [];
   const open = shelter.missingShell(bot, refuge);
@@ -14211,4 +14251,4 @@ function claim(bot, goal = {}, survival = null) {
   return made;
 }
 
-module.exports = { RUN_STANCES, sealedWaitHolds, bedSiteNear, runCellsAside, runLavaSays, blazeStanceSays, mobsMetHereSays, shooterCover, dropBesideSays, STANDING_WAYS, runGroundOf, bedAfterSleepTree, sealedWaitCostSays, bedLoopOf, caveBedSaysFor, wardenBoom, LEAVES_THE_BOOM, PUSH_RECORD, pushRecordOn, blockRecord, BLOCK_RECORD, bedClimbable, BED_CLIMB, pricedRunCell, runFromRecord, RUN_FROM_RECORD, spawnBedNear, homeBedReach, fleeFrom, furnaceFood, runFromCreeper, deadlyEdgeWalk, sprintByHeading, nightEnds, sealThreatNear, scoutBudget, SCOUT_MS, SCOUT_FAR_MS, mealSays, nightMinePickSays, bedSafetyAt, healWaitSays, WAITS_IN, wearGoldOf, piglinGoldClause, blowsLead, pastFollowOf, sealedWaitSaysFor: (bot, opts) => sealedWaitSays(bot, opts), lavaExitCost, nookSaysFor: (bot, nook, opts) => nookSays(bot, nook, opts), nightMineHolds, NIGHT_MINE_IDLE_MS, underRock, sleepRefusalSays, shellUnfinishedSays, spawnerMob, routeOf, shotsDue, shotChanceNow, routeEdge, pushCarries, pushFooting, blastPushesOver, blastOverSays, pushAtSays, shotPushers, BLAST_THROW, wallCells, wallStock, searchBudget, lavaTop, lavaFill, swimReach, pocketPlan, pocketRestsOf, pocketBiters, farBiters, piglinGoldSays, claim, chaseSays, chaseCost, groundBeside, onPillarTop, eatApple, LAVA_BLOCKS_A_SECOND, effectsSay, spawnerAbout, unseenBiters, fartherShootersSay, mobSourceAbout, shieldFacing, biterAtArm, pickaxeReserve, chargeSays, creeperSays, costSays, openCells, eatSays, mealHelps, EAT_AFTER, PILLAR_SECONDS, BLOCK_SECONDS, EAT_SECONDS, CLIMBERS, MOVING_STANCES, chargeStopsAt, usesToClimbOut, SLEEP_DEBT_TICKS, Survival, inLava, inWater, lavaExit, besideDrop, firmGround, night, shelterNeeded, lavaBeside, bedSite, bedNook, monstersByBed, monstersAtBed, refusalSays, nearbyHomeBed, observedBed, sleepable, SLEEP_FROM, keepShieldForStance, SHIELD_STANCES, ORE_YIELD, nightMineOn };
+module.exports = { RUN_STANCES, sealedWaitHolds, bedSiteNear, runCellsAside, runLavaSays, blazeStanceSays, mobsMetHereSays, shooterCover, dropBesideSays, STANDING_WAYS, runGroundOf, bedAfterSleepTree, sealedWaitCostSays, bedLoopOf, caveBedSaysFor, wardenBoom, LEAVES_THE_BOOM, PUSH_RECORD, pushRecordOn, blockRecord, BLOCK_RECORD, bedClimbable, BED_CLIMB, pricedRunCell, runFromRecord, RUN_FROM_RECORD, spawnBedNear, homeBedReach, fleeFrom, furnaceFood, runFromCreeper, deadlyEdgeWalk, sprintByHeading, nightEnds, sealThreatNear, scoutBudget, SCOUT_MS, SCOUT_FAR_MS, mealSays, nightMinePickSays, bedSafetyAt, healWaitSays, WAITS_IN, wearGoldOf, piglinGoldClause, blowsLead, pastFollowOf, sealedWaitSaysFor: (bot, opts) => sealedWaitSays(bot, opts), lavaExitCost, nookSaysFor: (bot, nook, opts) => nookSays(bot, nook, opts), nightMineHolds, NIGHT_MINE_IDLE_MS, underRock, sleepRefusalSays, shellUnfinishedSays, spawnerMob, routeOf, shotsDue, shotChanceNow, routeEdge, pushCarries, pushFooting, blastPushesOver, blastOverSays, pushAtSays, shotPushers, BLAST_THROW, wallCells, wallStock, searchBudget, lavaTop, lavaFill, swimReach, pocketPlan, pocketRestsOf, pocketBiters, farBiters, piglinGoldSays, claim, chaseSays, chaseCost, groundBeside, onPillarTop, eatApple, LAVA_BLOCKS_A_SECOND, effectsSay, spawnerAbout, unseenBiters, fartherShootersSay, mobSourceAbout, shieldFacing, biterAtArm, pickaxeReserve, chargeSays, creeperSays, costSays, openCells, eatSays, mealHelps, EAT_AFTER, PILLAR_SECONDS, BLOCK_SECONDS, EAT_SECONDS, CLIMBERS, MOVING_STANCES, chargeStopsAt, usesToClimbOut, SLEEP_DEBT_TICKS, Survival, inLava, inWater, lavaExit, besideDrop, firmGround, night, shelterNeeded, lavaBeside, bedSite, bedNook, monstersByBed, monstersAtBed, refusalSays, nearbyHomeBed, observedBed, sleepable, SLEEP_FROM, keepShieldForStance, SHIELD_STANCES, ORE_YIELD, nightMineOn, pocketNow };
