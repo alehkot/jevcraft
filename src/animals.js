@@ -19,7 +19,9 @@
 // The wheat is put away from the hand at the end, whatever ended the run: an animal follows a hand with its food in it
 // anywhere. The garden's bread leaves the herd's wheat (wheatWanted). Nothing is said. Not yet: chickens and pigs
 // (seeds, carrots), a pen.
+// And the herd is never hunted (spared, below; foraging.js preyFood asks it of every animal a hunt would take).
 const { goals } = require('mineflayer-pathfinder');
+const { Vec3 } = require('vec3');
 
 const KINDS = Object.freeze(['cow', 'sheep', 'mooshroom']);
 const FOOD = 'wheat';
@@ -60,6 +62,64 @@ function baby(bot, e) {
 // Who was fed, would not take it, was led, or would not come, and when: five minutes to half an hour, kept in memory.
 const memo = bot => (bot._herd ||= { fed: {}, untaken: {}, led: {}, stayed: {}, seen: {}, home: {} });
 const since = (bot, list, e, now) => now - (memo(bot)[list][idOf(e)] || 0);
+// ---- the herd spared (the user, 2026-11-27: "yes hunting should spare the herd")
+// An animal a hunt would take for food (foraging.js preyFood: a cow, a mooshroom, a sheep, a pig, a chicken, a rabbit)
+// is never hunted when it is someone's or the herd's:
+//   - it bears a name (a name tag);
+//   - it stands penned: the first thing in its way at its feet's level, each of the four ways within PENNED, is a made
+//     block (a fence, a gate, a wall, planks: built.js structure), not the ground or a tree;
+//   - it stands within HOME_NEAR of the walls of a house about (garden.js housesAbout: the bot's own, one a player
+//     labelled theirs, a bed or a door inside walls under a roof), as the herd is counted here;
+//   - it is of a kind herded within LEAD_FROM of the herd's place kept by a house.
+// But for the home base's own cull, asked with cull (home-base.js takeSteak: a cow past its pen's breeding pair).
+// Asked of every animal in view each time a hunt looks: kept SPARED_MS an animal.
+const SPARE_KINDS = new Set(['cow', 'mooshroom', 'sheep', 'pig', 'chicken', 'rabbit']);
+const SPARED_MS = 5000, PENNED = 8;
+const blockAt = (bot, p) => { try { return bot.blockAt(new Vec3(p.x, p.y, p.z)) || null; } catch (_) { return null; } };
+function named(bot, e) {
+  const keys = bot.registry?.entitiesByName?.[e.name]?.metadataKeys || [], i = keys.indexOf('custom_name');
+  const n = i >= 0 ? e.metadata?.[i] : undefined;
+  return n != null && n !== '' && n !== false && !(typeof n === 'object' && (n.present === false || !Object.keys(n).length));
+}
+function penned(bot, position) {
+  let structure; try { ({ structure } = require('./built')); } catch (_) { return false; }
+  const f = plain(position);
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    let walled = false;
+    for (let n = 1; n <= PENNED; n++) {
+      const b = blockAt(bot, { x: f.x + dx * n, y: f.y, z: f.z + dz * n });
+      if (!b) break;
+      if (b.boundingBox !== 'block') continue;
+      walled = !!structure(b.name);
+      break;
+    }
+    if (!walled) return false;
+  }
+  return true;
+}
+function sparedNow(bot, e, now) {
+  if (named(bot, e)) return 'named';
+  if (penned(bot, e.position)) return 'penned';
+  const me = bot.entity?.position, p = plain(e.position);
+  let houses = [];
+  try { houses = me ? require('./garden').housesAbout(bot, me, now) : []; } catch (_) { houses = []; }
+  if (houses.some(h => gapTo(p, h.min, h.max) <= HOME_NEAR && Math.abs(p.y - (h.floor ?? h.min.y)) <= UP + 2)) return 'by the house';
+  const home = memo(bot).home[e.name];
+  if (home && across(e.position, home) <= LEAD_FROM) return 'the herd';
+  return false;
+}
+// -> 'named' | 'penned' | 'by the house' | 'the herd' | false
+function spared(bot, e, { now = Date.now(), cull = false } = {}) {
+  if (!e?.position || !SPARE_KINDS.has(e.name) || cull || (bot?._cull && bot._cull === e)) return false;
+  const kept = (bot._spared ||= new Map()), k = idOf(e), hit = kept.get(k);
+  if (hit && now - hit.at < SPARED_MS) return hit.why;
+  let why = false;
+  try { why = sparedNow(bot, e, now); } catch (_) { why = false; }
+  if (kept.size >= 512) kept.clear();
+  kept.set(k, { at: now, why });
+  return why;
+}
+
 async function waitFor(task, fn, ms, every = 100) {
   const end = Date.now() + ms;
   while (Date.now() < end) { task.check(); if (fn()) return true; await sleep(every); }
@@ -264,4 +324,4 @@ function wheatWanted(bot, { env = process.env, now = Date.now() } = {}) {
   return want;
 }
 
-module.exports = { herdDue, herdStep, wheatWanted, pointFor, planFor, KINDS, FIND, HOME_NEAR, HOME_FROM, SEEN_MS, SPREAD, LEAD_FROM, HERD, PLOT_KEEP, BRED_MS, MOST_PAIRS };
+module.exports = { herdDue, herdStep, wheatWanted, pointFor, planFor, spared, SPARE_KINDS, KINDS, FIND, HOME_NEAR, HOME_FROM, SEEN_MS, SPREAD, LEAD_FROM, HERD, PLOT_KEEP, BRED_MS, MOST_PAIRS };

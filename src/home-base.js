@@ -1245,7 +1245,8 @@ async function takeSteak(bot, task, goal, save, home, actions) {
   if (status.adults < 3) throw new Error('The pen has only its breeding pair');
   const cow = status.adultCows.sort((a, b) => a.position.distanceTo(bot.entity.position) - b.position.distanceTo(bot.entity.position))[0];
   goal.step = { action: 'take_steak', cows: status.cows }; save();
-  try { await require('./foraging').hunt(bot, task, cow, actions, goal, save); }
+  // The pen's own cull (foraging.js preyFood cull): the herd is otherwise never hunted (animals.js spared).
+  try { await require('./foraging').hunt(bot, task, cow, { ...actions, cull: true }, goal, save); }
   finally { try { await closeGate(bot, task, home); } catch (_) {} }
   home.pen.cows = penStatus(bot, home).cows; save();
 }

@@ -39,12 +39,19 @@ function nearShot(bot, target) {
 const sweeps = bot => /_sword$/.test(bot.heldItem?.name || '') && !!bot.entity?.onGround &&
   !(bot.getControlState ? bot.getControlState('sprint') : bot.controlState?.sprint);
 
+const herdOf = (bot, target) => { try { return require('./animals').spared(bot, target); } catch (_) { return false; } };
+
 function installGuard(bot) {
   if (!bot || bot._protectedGuard || typeof bot.attack !== 'function') return;
   const attack = bot.attack.bind(bot);
   bot._protectedGuard = { refused: 0 };
   bot.attack = (target, ...rest) => {
     if (isProtected(target)) { bot._protectedGuard.refused++; throw new ProtectedAnimal(`Never a ${target.name}: the swing was refused`); }
+    // Nor one of the herd (animals.js spared; the home base's own cull aside): the hunts never pick one, and this is
+    // the one place a swing leaves the bot. A sweep reaching one is not refused: a sweep is a point of harm, and a
+    // fight by the pen goes on.
+    const herd = herdOf(bot, target);
+    if (herd) { bot._protectedGuard.refused++; throw new ProtectedAnimal(`The ${target.name} is the herd's (${herd}): the swing was refused`); }
     const near = sweeps(bot) ? nearTarget(bot, target) : [];
     if (near.length) { bot._protectedGuard.refused++; throw new ProtectedAnimal(`A ${near[0].name} beside the ${target?.name || 'target'} would be caught by the sword's sweep: the swing was refused`); }
     return attack(target, ...rest);

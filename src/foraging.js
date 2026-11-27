@@ -19,11 +19,15 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 // hostile mobs need their own mechanics before becoming candidates.
 // Pigs and chickens too since 2026-10-19 (the user lifted the rule that spared them).
 const landPrey = new Set(['cow', 'mooshroom', 'sheep', 'rabbit', 'pig', 'chicken']);
-function preyFood(bot, entity) {
+// The herd is never food (animals.js spared, the user 2026-11-27: "hunting should spare the herd"): a named animal, a
+// penned one, one by a house, the herd led together there. cull: the home base's own (home-base.js takeSteak).
+const herdSpared = (bot, entity, cull) => { try { return require('./animals').spared(bot, entity, { cull }); } catch (_) { return false; } };
+function preyFood(bot, entity, { cull = false } = {}) {
   if (!landPrey.has(entity.name)) return undefined;
   const keys = bot.registry.entitiesByName[entity.name]?.metadataKeys || [];
   if (entity.metadata?.[keys.indexOf('baby')] === true ||
     (entity.name === 'rabbit' && entity.metadata?.[keys.indexOf('type')] === 99)) return undefined;
+  if (herdSpared(bot, entity, cull)) return undefined;
   return vanilla.entityLoot[entity.name]?.pools?.flatMap(pool => pool.entries || [])
     .filter(entry => entry.type === 'minecraft:item').map(entry => entry.name.replace('minecraft:', ''))
     .find(name => bot.registry.foodsByName[name]);
@@ -58,6 +62,13 @@ async function candidates(bot, task, state) {
       surface.isSurface(e.position) &&
       e.position.distanceTo(bot.entity.position) < 32 && !(state.failedPrey?.[e.uuid || e.id] > Date.now() - 120000))
       .sort((a, b) => a.position.distanceTo(bot.entity.position) - b.position.distanceTo(bot.entity.position));
+    // The herd passed over, said in the log once a minute.
+    const kept = Object.values(bot.entities).filter(e => landPrey.has(e.name) && e.isValid !== false && e.position?.distanceTo(bot.entity.position) < 32 && herdSpared(bot, e, false));
+    if (kept.length && Date.now() - (bot._sparedSaid || 0) > 60000) {
+      bot._sparedSaid = Date.now();
+      const kinds = [...new Set(kept.map(e => e.name))].join(', ');
+      console.log('[hunt] ' + kept.length + ' animals of the herd passed over (' + kinds + '; ' + [...new Set(kept.map(e => require('./animals').spared(bot, e)))].join(', ') + '); ' + observed.length + ' others to hunt');
+    }
     const reachable = [];
     // A partial path is an unfinished search, not an unreachable animal.
     // Bound the whole survey by checking at most eight nearby candidates.
@@ -78,8 +89,11 @@ async function candidates(bot, task, state) {
 async function hunt(bot, task, target, actions, goal, save) {
   let climbAllowed = false;
   const surface = surfaceMovement(bot);
+  // The home base's cull (home-base.js takeSteak) alone takes one of a herd, and its swing passes the guard.
+  const cull = !!actions?.cull;
+  if (cull) bot._cull = target;
   try {
-    const item = preyFood(bot, target);
+    const item = preyFood(bot, target, { cull });
     if (!item) throw new Error(`Food target ${target.name} is not an eligible passive adult`);
     // No slot for the meat is no reason to kill: make room first, and if
     // there is none to make, say so rather than leave another carcass.
@@ -95,7 +109,7 @@ async function hunt(bot, task, target, actions, goal, save) {
     let attacks = 0, missed = 0, nearest = Infinity;
     while (valid() && Date.now() < deadline) {
       task.check(); checkAir(bot); checkThreats(bot);
-      if (preyFood(bot, target) !== item) throw new Error(`Food target ${target.name} is no longer an eligible passive adult`);
+      if (preyFood(bot, target, { cull }) !== item) throw new Error(`Food target ${target.name} is no longer an eligible passive adult`);
       if (!surface.isSurface(target.position)) throw new Error(`Food target ${target.name} moved away from safe surface terrain`);
       if (bot.entity.position.distanceTo(target.position) > 2.8) {
         // Done at the swing's own distance, not at the follow's two blocks.
@@ -141,7 +155,7 @@ async function hunt(bot, task, target, actions, goal, save) {
     goal.survivalAction = { action: 'food_collected', source: target.name, item, count: count(bot, item) - before,
       needsCooking: !safeFood(bot, { name: item }), attacks, foodPointsGained: foodSupply(bot) - foodBefore, at: new Date().toISOString() };
     save();
-  } finally { surface.restore(); }
+  } finally { surface.restore(); if (cull && bot._cull === target) bot._cull = null; }
 }
 
 // `target`: the reserve the food is for, in points (the kit's 12 unless said).

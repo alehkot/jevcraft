@@ -257,6 +257,44 @@ test('none would come to the kept place: it is let go, and taken afresh where mo
   assert.equal(again.point.z, -11, 'by the pen now');
 });
 
+test('the herd is never hunted: by the house, named or penned; a cow off in the wild is, and the home base\'s own cull', () => {
+  const foraging = require('../src/foraging');
+  const fence = {};
+  for (let i = 38; i <= 42; i++) for (const [x, z] of [[i, 38], [i, 42], [38, i], [42, i]]) fence[x + ',64,' + z] = 'oak_fence';
+  for (const [x, z] of [[48, 50], [52, 50], [50, 48], [50, 52]]) fence[x + ',64,' + z] = 'stone';
+  const { w, registry } = homestead(fence);
+  const byHouse = animal('cow', 8, 8), wild = animal('cow', 60, 60), tagged = animal('cow', 70, 40), pennedCow = animal('cow', 40, 40), inPit = animal('sheep', 50, 50);
+  const bot = botIn(w, { registry, herd: [byHouse, wild, tagged, pennedCow, inPit] });
+  bot.registry.foodsByName = { beef: { foodPoints: 3 }, mutton: { foodPoints: 2 } };
+  for (const kind of ['cow', 'sheep']) bot.registry.entitiesByName[kind].metadataKeys = bot.registry.entitiesByName[kind].metadataKeys.map((k, i) => i === 2 ? 'custom_name' : k);
+  tagged.metadata[2] = 'Bessie';
+  assert.equal(animals.spared(bot, byHouse), 'by the house');
+  assert.equal(foraging.preyFood(bot, byHouse), undefined, 'by the house: not food');
+  assert.equal(foraging.preyFood(bot, tagged), undefined, 'a name tag');
+  assert.equal(animals.spared(bot, tagged), 'named');
+  assert.equal(animals.spared(bot, pennedCow), 'penned');
+  assert.equal(foraging.preyFood(bot, pennedCow), undefined, 'inside a fence');
+  assert.equal(foraging.preyFood(bot, wild), 'beef', 'off in the wild');
+  assert.equal(foraging.preyFood(bot, inPit), 'mutton', 'stone about is the ground, not a pen');
+  assert.equal(foraging.preyFood(bot, byHouse, { cull: true }), 'beef', 'the home base\'s own cull');
+  assert.equal(animals.spared(bot, { ...wild, name: 'zombie' }), false, 'only animals a hunt takes for food');
+});
+
+test('a swing at one of the herd is refused; at a zombie it goes, and at the cull\'s own cow', () => {
+  const guard = require('../src/protected-animals');
+  const { w, registry } = homestead();
+  const cow = animal('cow', 8, 8), zombie = { id: 999, uuid: 'z', name: 'zombie', type: 'hostile', position: v(9.5, 64, 9.5), isValid: true, metadata: [] };
+  const bot = botIn(w, { registry, herd: [cow, zombie] });
+  const swung = [];
+  bot.attack = e => { swung.push(e.name); };
+  guard.installGuard(bot);
+  assert.throws(() => bot.attack(cow), /the herd's \(by the house\): the swing was refused/);
+  bot.attack(zombie);
+  bot._cull = cow;
+  bot.attack(cow);
+  assert.deepEqual(swung, ['zombie', 'cow']);
+});
+
 test('a run cut short: the wheat is put away from the hand all the same', async () => {
   const { w, registry } = homestead();
   const bot = botIn(w, { registry, items: [['wheat', 6]], herd: [animal('cow', -8, 8), animal('cow', -7, 10), animal('cow', -8, 22)] });
